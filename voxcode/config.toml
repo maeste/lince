@@ -24,7 +24,19 @@ prefix = "comando"        # prefix for voice commands (e.g. "comando: invia")
 # device = 13             # audio input device index (run --list-devices to find yours)
                           # leave commented to use system default
 
+[multiplexer]
+# backend = "auto"        # "auto" | "tmux" | "zellij"
+# send_enter = false       # send Enter after text (submits to Claude)
+# launch_command = "claude" # command for --launch
+
 [tmux]
 auto_detect = true        # auto-detect tmux pane running claude
 target_pane = ""          # manual override: "session:window.pane"
 launch_command = "claude" # command to run in the first pane with --launch
+
+[zellij]
+# Target pane direction: left, right, up, down, next, previous
+# "next" (default) cycles to the next pane — works for 2-pane layouts
+# Directional values (left/right/up/down) are more reliable for 3+ pane layouts
+# Can also be set via --target-pane CLI argument (takes priority)
+# target_pane = "right"

@@ -384,6 +384,11 @@ def main():
         "--backend", choices=["auto", "tmux", "zellij"],
         help="Terminal multiplexer backend (default: auto-detect)",
     )
+    parser.add_argument(
+        "--target-pane",
+        choices=["left", "right", "up", "down", "next", "previous"],
+        help="Target pane direction for Zellij (overrides config)",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -425,6 +430,8 @@ def main():
         config.audio.device = args.audio_device
     if args.language:
         config.general.language = args.language
+    if args.target_pane:
+        config.zellij.target_pane = args.target_pane
 
     app = VoxCode(config)
     app.run()

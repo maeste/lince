@@ -59,7 +59,7 @@ class TmuxConfig:
 @dataclass
 class ZellijConfig:
     auto_detect: bool = True
-    target_pane: str = ""  # "" | "next" | "previous"
+    target_pane: str = ""  # "" | "next" | "previous" | "left" | "right" | "up" | "down"
 
 
 @dataclass
