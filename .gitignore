@@ -5,5 +5,4 @@ __pycache__/
 uv.lock
 .claude/
 .claude-sandbox/
-backlog/
 .serena
