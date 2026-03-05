@@ -530,13 +530,13 @@ web_client {
 // can be useful for removing wrappers around commands
 // Note: be sure to escape backslashes and similar characters properly
 // post_command_discovery_hook "echo $RESURRECT_COMMAND | sed <your_regex_here>"
-// Usa il layout three-pane come default
+// Use three-pane layout as default
 default_layout "three-pane"
 
-// Opzionale: altre configurazioni utili
-theme "dracula"  // o "catppuccin-mocha", "tokyo-night", etc.
+// Optional: other useful configurations
+theme "dracula"  // or "catppuccin-mocha", "tokyo-night", etc.
 
-// Copia su selezione (come tmux)
+// Copy on select (like tmux)
 copy_on_select true
 
 // Scrollback buffer
