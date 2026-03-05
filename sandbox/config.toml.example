@@ -59,6 +59,8 @@ passthrough = [
 # Additional environment variables to set inside the sandbox
 [env.extra]
 # CUSTOM_VAR = "value"
+UV_CACHE_DIR="~/.claude-sandbox/toolchains/uv-cache"
+UV_TOOL_DIR = "~/.claude-sandbox/toolchains/uv-tools"
 
 [logging]
 # Enable transcript logging by default (toggle with --log / --no-log)
