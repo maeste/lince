@@ -11,16 +11,16 @@ layout {
     
     tab name="work" {
         pane split_direction="horizontal" {
-            pane size="50%" { // Pannello superiore (metà schermo)
+            pane size="50%" { // Top pane (half screen)
 	        command "claude-sandbox"
 		args "run" "-P" "mm"
 	    }		
             pane split_direction="vertical" {
-                pane size="50%" { // Pannello in basso a sinistra
+                pane size="50%" { // Bottom left pane
 		    command "backlog"
 	            args "board"
                 }
-                pane size="50%" {  // Pannello in basso a destra
+                pane size="50%" {  // Bottom right pane
              
                 }
             }
