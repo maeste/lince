@@ -28,6 +28,11 @@ No Electron wrappers, no IDE overhead — just a terminal multiplexer, a sandbox
 │   right here      │   Talk to Claude    │
 │                   │                     │
 └───────────────────┴─────────────────────┘
+
+VoxTTS completes the voice loop — read Claude's output or any text aloud:
+
+    voxtts --pane --play        # read pane content through speakers
+    voxtts notes.md -o notes.mp3  # convert markdown to audio file
 ```
 
 This is what it looks like when you run `z3` (a shell alias) — Zellij opens a three-pane layout where everything is connected:
@@ -54,6 +59,10 @@ Custom [Zellij](https://zellij.dev) configuration with predefined three-pane lay
 
 Voice-controlled coding assistant that bridges local speech recognition (Whisper, runs on your GPU) with Claude Code via terminal multiplexer panes. All audio processing happens locally — nothing leaves your machine.
 
+### [voxtts/](voxtts/)
+
+Text-to-Speech with local GPU/CPU engines. The output counterpart to VoxCode — converts text files, clipboard content, stdin pipes, or terminal pane captures into natural-sounding audio. Supports Kokoro TTS (neural, high quality) and Piper TTS (fast, CPU-optimized), with auto language detection, streaming playback, and MP3/WAV output. All synthesis runs locally on your machine.
+
 ### [agent-ready-skill/](agent-ready-skill/)
 
 [Agent Skills](https://agentskills.io) that assess a project's readiness for agentic coding. Scans 8 dimensions (instructions, navigability, testing, CI/CD, specs, skills, docs, Claude-specific tooling), produces a 0-100 score, and can auto-generate missing files to improve readiness. Works with Claude Code via symlinks into `.claude/skills/`.
@@ -66,8 +75,8 @@ Voice-controlled coding assistant that bridges local speech recognition (Whisper
 - **Zellij** (installed by `zellij-setup/install.sh`)
 - **Claude Code** (`npm install -g @anthropic-ai/claude-code`)
 - **bubblewrap** (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`)
-- **A microphone** and an **NVIDIA GPU** (for VoxCode; CPU-only works but is slower)
-- **[uv](https://github.com/astral-sh/uv)** (for VoxCode's Python environment)
+- **A microphone** and an **NVIDIA GPU** (for VoxCode/VoxTTS; CPU-only works but is slower)
+- **[uv](https://github.com/astral-sh/uv)** (for VoxCode and VoxTTS Python environments)
 
 ### Step 1: Set up the sandbox
 
@@ -123,7 +132,22 @@ uv run voxcode --audio-device <number>
 
 See [voxcode/README.md](voxcode/README.md) for model options, PTT mode, and configuration details.
 
-### Step 5: Launch everything
+### Step 5: Set up VoxTTS (optional)
+
+```bash
+cd voxtts
+uv sync
+```
+
+Test that TTS works:
+
+```bash
+echo "Hello world" | uv run voxtts --play --device cpu
+```
+
+The first run downloads the Kokoro model (~300 MB). See [voxtts/README.md](voxtts/README.md) for engine options, voices, and configuration.
+
+### Step 6: Launch everything
 
 ```bash
 z3    # opens Zellij with the three-pane layout
