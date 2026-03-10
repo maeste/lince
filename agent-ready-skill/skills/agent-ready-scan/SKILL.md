@@ -26,18 +26,26 @@ Resolve the target directory, then execute ALL of these searches **in parallel**
 - Glob: `**/README.md`, `**/PROJECT_INDEX.md`, `**/ARCHITECTURE.md`
 - Bash: `find <target> -type d -not -path '*/.git/*' -not -path '*/node_modules/*' -not -path '*/__pycache__/*' -not -path '*/.venv/*' -not -path '*/venv/*' | awk -F/ '{print NF-1}' | sort -rn | head -1` to check max directory depth
 - Sample 20 file names to assess naming consistency (snake_case vs camelCase vs kebab-case)
+- Glob: `**/package-lock.json`, `**/uv.lock`, `**/Cargo.lock`, `**/go.sum`, `**/poetry.lock`, `**/Pipfile.lock`, `**/Gemfile.lock`, `**/composer.lock`, `**/yarn.lock`, `**/pnpm-lock.yaml`
+- Glob: `**/.env.example`, `**/.env.template`
+- Glob: `**/.devcontainer/**/Dockerfile`, `**/.devcontainer/docker-compose*.yml`
 
 ### Batch 3 — Testing & Validation (weight 16)
 - Glob: `**/test*/**/*.{py,js,ts,go,rs}`, `**/*test*.{py,js,ts}`, `**/*spec*.{js,ts}`, `**/__tests__/**`
 - Glob: `**/pytest.ini`, `**/jest.config*`, `**/vitest.config*`, `**/.coveragerc`, `**/pyproject.toml`
 - Grep in CLAUDE.md, Makefile, package.json for test command patterns (`test`, `pytest`, `jest`, `cargo test`)
+- Sample 3-5 test files and check assertion quality: look for bare `assert` without messages vs `assert ... , "message"` or framework-specific assertions with messages
+- Glob: `**/mypy.ini`, `**/pyrightconfig.json`, `**/.mypy.ini`, `**/setup.cfg` (for mypy section); check `tsconfig.json` for `"strict": true`
 
-### Batch 4 — CI/CD & Automation (weight 10)
+### Batch 4 — CI/CD & Automation (weight 12)
 - Glob: `**/.github/workflows/*.yml`, `**/.gitlab-ci.yml`, `**/Jenkinsfile`, `**/.circleci/**`
 - Glob: `**/.pre-commit-config.yaml`, `**/.husky/**`, `**/.lefthook.yml`
 - Grep for linting/formatting tools in config files (ruff, eslint, prettier, black, rustfmt, gofmt)
+- Glob: `**/CODEOWNERS`, `**/.github/CODEOWNERS`
+- Glob: `**/.github/dependabot.yml`, `**/renovate.json`, `**/renovate.json5`, `**/.renovaterc`, `**/.renovaterc.json`
+- Grep CI workflow files for security/scanning keywords: `security`, `scan`, `audit`, `snyk`, `trivy`, `codeql`, `dependabot`
 
-### Batch 5 — Spec-Driven Workflow (weight 12)
+### Batch 5 — Spec-Driven Workflow (weight 10)
 - Glob: `**/specs/**`, `**/spec/**`, `**/tasks/**`, `**/prd/**`, `**/PRD/**`
 - Glob: `**/docs/adr/**`, `**/adr/**`, `**/ADR/**`
 - Glob: `**/.github/ISSUE_TEMPLATE/**`, `**/.github/pull_request_template*`
@@ -48,11 +56,13 @@ Resolve the target directory, then execute ALL of these searches **in parallel**
 - Glob: `**/scripts/**`, `**/tools/**`, `**/bin/**`
 - Read `.claude/settings*` files for MCP configuration
 
-### Batch 7 — Documentation (weight 8)
+### Batch 7 — Documentation & Comprehension (weight 8)
 - Glob: `**/docs/**`, `**/CHANGELOG*`, `**/HISTORY*`
 - Glob: `**/openapi*`, `**/swagger*`
 - If CLAUDE.md exists, grep for links/references to other files
 - Sample 3-5 source files to check docstring/comment presence
+- Sample 3-5 source files to check type annotation presence (Python: `def foo(x: int) -> str`, TypeScript: `: type` annotations)
+- Check for files > 500 lines: `find <target> -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.rs" | xargs wc -l | awk '$1 > 500'`
 
 ### Batch 8 — Claude-Specific (weight 8)
 - Glob: `**/.claude/**`
@@ -93,10 +103,10 @@ Display results in this exact format:
 Agent Instructions   <bar>  <weighted>/20
 Project Navigability <bar>  <weighted>/18
 Testing & Validation <bar>  <weighted>/16
-CI/CD & Automation   <bar>  <weighted>/10
-Spec-Driven Workflow <bar>  <weighted>/12
+CI/CD & Automation   <bar>  <weighted>/12
+Spec-Driven Workflow <bar>  <weighted>/10
 Skills & Tooling     <bar>  <weighted>/8
-Documentation        <bar>  <weighted>/8
+Docs & Comprehension <bar>  <weighted>/8
 Claude-Specific      <bar>  <weighted>/8
 
 ### 🔍 Agnostic Analysis (valid for any AI agent)
@@ -145,8 +155,8 @@ Create `claudedocs/` directory if needed, then save:
     },
     "project_navigability": { "weight": 18, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
     "testing_validation": { "weight": 16, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
-    "cicd_automation": { "weight": 10, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
-    "spec_driven_workflow": { "weight": 12, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
+    "cicd_automation": { "weight": 12, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
+    "spec_driven_workflow": { "weight": 10, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
     "skills_tooling": { "weight": 8, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
     "documentation": { "weight": 8, "raw_score": 0, "weighted_score": 0, "subcriteria": {} },
     "claude_specific": { "weight": 8, "raw_score": 0, "weighted_score": 0, "subcriteria": {} }

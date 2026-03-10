@@ -49,12 +49,12 @@ For full scoring details, sub-criteria definitions, and the JSON schema, see [re
 
 **8 Dimensions** (weight totals 100):
 1. Agent Instructions (20) — CLAUDE.md, hierarchical rules, build/test/lint docs
-2. Project Navigability (18) — Structure, index files, README, naming consistency
-3. Testing & Validation (16) — Test suite, documented commands, coverage, speed
-4. CI/CD & Automation (10) — Pipeline, linting, pre-commit hooks
-5. Spec-Driven Workflow (12) — Specs, issue templates, ADR, acceptance criteria
+2. Project Navigability (18) — Structure, index files, README, naming consistency, environment reproducibility
+3. Testing & Validation (16) — Test suite, documented commands, coverage, speed, error feedback quality
+4. CI/CD & Automation (12) — Pipeline, linting, pre-commit hooks, governance guardrails
+5. Spec-Driven Workflow (10) — Specs, issue templates, ADR, acceptance criteria
 6. Skills & Tooling (8) — Skills, Makefile, scripts, MCP config
-7. Documentation (8) — Linked docs, API docs, architecture, changelog
+7. Documentation & Comprehension (8) — Linked docs, API docs, architecture, changelog, code comprehension signals
 8. Claude-Specific (8) — .claude/ dir, settings, hooks, MCP integration
 
 **Levels**: 🔴 0-30 Not Ready | 🟡 31-60 Partially Ready | 🟢 61-80 Ready | 🏆 81-100 Optimized

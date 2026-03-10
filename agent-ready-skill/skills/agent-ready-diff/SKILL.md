@@ -52,13 +52,13 @@ Also compute:
 Agent Instructions      14       18     +4 📈
 Project Navigability    12       12      0 ➡️
 Testing & Validation    14       14      0 ➡️
-CI/CD & Automation       4        8     +4 📈
-Spec-Driven Workflow     0        6     +6 📈
+CI/CD & Automation       4       10     +6 📈
+Spec-Driven Workflow     0        5     +5 📈
 Skills & Tooling         4        4      0 ➡️
-Documentation            4        6     +2 📈
+Docs & Comprehension     4        6     +2 📈
 Claude-Specific          0        4     +4 📈
 ─────────────────────────────────────────────
-Overall                 52       72    +20 📈
+Overall                 52       73    +21 📈
 
 ### Layer Changes
 

@@ -21,10 +21,10 @@ Produces a quantitative score (0-100) across 8 weighted dimensions plus actionab
 | 1 | Agent Instructions | 20 | CLAUDE.md, hierarchical rules, build/test/lint docs |
 | 2 | Project Navigability | 18 | Structure clarity, index files, README, naming consistency |
 | 3 | Testing & Validation | 16 | Test suite, documented commands, coverage, speed |
-| 4 | CI/CD & Automation | 10 | Pipeline, linting, pre-commit hooks |
-| 5 | Spec-Driven Workflow | 12 | Task specs, PRD, acceptance criteria, issue templates, ADR |
+| 4 | CI/CD & Automation | 12 | Pipeline, linting, pre-commit hooks |
+| 5 | Spec-Driven Workflow | 10 | Task specs, PRD, acceptance criteria, issue templates, ADR |
 | 6 | Skills & Tooling | 8 | Local skills, Makefile, scripts, MCP config |
-| 7 | Documentation | 8 | Linked docs, API docs, architecture, changelog |
+| 7 | Documentation & Comprehension | 8 | Linked docs, API docs, architecture, changelog |
 | 8 | Claude-Specific | 8 | .claude/ directory, settings, hooks, MCP integration |
 
 **Two analysis layers**:
@@ -32,6 +32,30 @@ Produces a quantitative score (0-100) across 8 weighted dimensions plus actionab
 - **Claude-Specific** (dimensions 6-8, max 24 pts) — specific to Claude Code
 
 **Score levels**: 🔴 0-30 Not Ready | 🟡 31-60 Partially Ready | 🟢 61-80 Ready | 🏆 81-100 Optimized
+
+## Why These Dimensions?
+
+Each dimension targets a specific aspect of agent effectiveness:
+
+1. **Agent Instructions (20)** — The single most impactful factor. Without clear instructions, agents waste cycles guessing project conventions, build commands, and code style. Weight reflects that poor instructions cascade into every other dimension.
+
+2. **Project Navigability (18)** — Agents navigate by reading files, not by memory. Clear structure, consistent naming, lock files for reproducible environments, and good READMEs reduce the search space and prevent agents from getting lost in deep or ambiguous directory trees.
+   - *Environment Reproducibility*: Lock files and `.env.example` templates let agents set up identical environments without guessing dependency versions.
+
+3. **Testing & Validation (16)** — Agents need fast, reliable feedback to know if their changes work. Test suites, documented commands, and good error messages in assertions are the agent's primary quality gate.
+   - *Error Feedback Quality*: Bare `assert x` gives no signal on failure. Descriptive assertion messages and type checker configs give agents actionable diagnostics.
+
+4. **CI/CD & Automation (12)** — Automated pipelines catch what agents miss. Linting, formatting, pre-commit hooks, governance files (CODEOWNERS, Dependabot), and security scanning provide guardrails that prevent agents from introducing regressions.
+   - *Governance Guardrails*: CODEOWNERS ensures human review of critical paths. Dependabot/Renovate keeps dependencies current without agent intervention.
+
+5. **Spec-Driven Workflow (10)** — Structured specs, templates, and acceptance criteria give agents unambiguous goals. Without them, agents must infer intent from vague descriptions, increasing error rates.
+
+6. **Skills & Tooling (8)** — Custom skills, Makefiles, and MCP configurations extend agent capabilities. They encode project-specific workflows that would otherwise require manual instruction each session.
+
+7. **Documentation & Comprehension (8)** — Linked docs, API documentation, and architecture overviews help agents understand the *why* behind code. Type annotations and manageable file sizes improve code comprehension for both agents and humans.
+   - *Code Comprehension Signals*: Type annotations, reasonable file sizes (< 500 lines), and inline documentation help agents understand code semantics without running it.
+
+8. **Claude-Specific (8)** — `.claude/` configuration, hooks, permissions, and MCP server integration are specific to Claude Code but can significantly improve the agent experience for Claude users.
 
 ## Usage
 
@@ -94,9 +118,9 @@ Score Breakdown
 Agent Instructions   ███████████░░░░░  14/20
 Project Navigability ██████████░░░░░░  12/18
 Testing & Validation ██████████████░░  14/16
-CI/CD & Automation   ██████░░░░░░░░░░   4/10
-Spec-Driven Workflow ░░░░░░░░░░░░░░░░   0/12
+CI/CD & Automation   ██████░░░░░░░░░░   4/12
+Spec-Driven Workflow ░░░░░░░░░░░░░░░░   0/10
 Skills & Tooling     ████████░░░░░░░░   4/8
-Documentation        ████████░░░░░░░░   4/8
+Doc & Comprehension  ████████░░░░░░░░   4/8
 Claude-Specific      ░░░░░░░░░░░░░░░░   0/8
 ```

@@ -50,14 +50,20 @@ For each gap (highest impact first), generate **contextualized** files:
 ### Project Navigability gaps
 - **PROJECT_INDEX.md**: Auto-generated map of project structure with descriptions
 - **README.md** improvements: Add missing sections (only if README is absent or very sparse)
+- **`.env.example`** if missing: scan the project for environment variable references (e.g., `os.environ`, `process.env`, `env::var`), generate a `.env.example` with discovered variables and placeholder values
+- Suggest adding lock files to version control if they exist but are gitignored (check `.gitignore` for `package-lock.json`, `uv.lock`, `Cargo.lock`, etc.)
 
 ### Testing gaps
 - Add test commands to CLAUDE.md if missing
 - Create **Makefile** targets for test/lint if no task runner exists
+- **Type checker config**: If Python project lacks `mypy.ini` or `[tool.mypy]` in pyproject.toml, suggest creating a basic `mypy.ini` with sensible defaults. If TypeScript project has `tsconfig.json` without `"strict": true`, suggest enabling it.
+- **Assertion message patterns**: If test files contain bare `assert x` (without messages), suggest adding descriptive messages for better agent feedback. Show examples of good vs bad assertions.
 
 ### CI/CD gaps
 - **`.pre-commit-config.yaml`** with language-appropriate hooks
 - **`.github/workflows/ci.yml`** basic CI pipeline if missing
+- **`CODEOWNERS`** template: Generate a basic `CODEOWNERS` file based on directory structure (e.g., `* @default-owner`, specific paths for key directories)
+- **`dependabot.yml`** or **`renovate.json`**: Generate dependency update config if missing. Detect package ecosystem (npm, pip, cargo, go) and generate appropriate config.
 
 ### Spec-Driven gaps
 - **`specs/TEMPLATE.md`** with structured task template
@@ -71,6 +77,8 @@ For each gap (highest impact first), generate **contextualized** files:
 ### Documentation gaps
 - Ensure CLAUDE.md links to key docs
 - **ARCHITECTURE.md** overview if missing and project is non-trivial
+- **File size warnings**: Note any source files > 500 lines that should be considered for splitting
+- **Type annotation improvements**: If source files lack type annotations, suggest adding them to the most critical files first (entry points, public APIs)
 
 ### Claude-Specific gaps
 - **`.claude/settings.local.json`** with sensible defaults if missing
