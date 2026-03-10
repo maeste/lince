@@ -46,10 +46,10 @@ Written for a technical lead audience. Be honest and specific.>
 Agent Instructions   [████████████░░░░]  14/20  (70%)
 Project Navigability [██████████░░░░░░]  12/18  (67%)
 Testing & Validation [██████████████░░]  14/16  (88%)
-CI/CD & Automation   [████████░░░░░░░░]   4/10  (40%)
-Spec-Driven Workflow [░░░░░░░░░░░░░░░░]   0/12  ( 0%)
+CI/CD & Automation   [█████░░░░░░░░░░░]   4/12  (33%)
+Spec-Driven Workflow [░░░░░░░░░░░░░░░░]   0/10  ( 0%)
 Skills & Tooling     [████████░░░░░░░░]   4/8   (50%)
-Documentation        [████████░░░░░░░░]   4/8   (50%)
+Docs & Comprehension [████████░░░░░░░░]   4/8   (50%)
 Claude-Specific      [░░░░░░░░░░░░░░░░]   0/8   ( 0%)
 
 ---
