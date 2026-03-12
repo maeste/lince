@@ -185,7 +185,9 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                     claude_args: list[str],
                     log_file: Path | None = None,
                     profile: str | None = None,
-                    safe_mode: bool = False) -> list[str]:
+                    safe_mode: bool = False,
+                    extra_rw_cli: list[str] | None = None,
+                    extra_ro_cli: list[str] | None = None) -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
@@ -211,11 +213,18 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
 
     # --- 2. Fresh tmpfs for sensitive / temporary locations -------------------
     cmd += ["--tmpfs", "/tmp"]
-    # Hide user runtime sockets (DBus, Wayland, PipeWire) but keep
+    # Hide user runtime sockets (DBus, PipeWire) but keep
     # /run/systemd/resolve intact so DNS works (resolv.conf is a symlink
     # to /run/systemd/resolve/stub-resolv.conf on systemd distros).
     uid = os.getuid()
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{uid}")
     cmd += ["--tmpfs", f"/run/user/{uid}"]
+
+    # --- 2b. Re-expose Wayland socket so clipboard (wl-paste) works ----------
+    wayland_display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+    wayland_socket = f"{runtime_dir}/{wayland_display}"
+    if os.path.exists(wayland_socket):
+        cmd += ["--ro-bind", wayland_socket, f"/run/user/{uid}/{wayland_display}"]
     cmd += ["--tmpfs", "/var/tmp"]
     cmd += ["--dev", "/dev"]
     cmd += ["--proc", "/proc"]
@@ -303,11 +312,27 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
             else:
                 cmd += ["--bind", str(d), mount_point]
 
-    # --- 10. Extra read-write dirs -------------------------------------------
+    # --- 10. Extra read-write dirs (config) -----------------------------------
     for d in sandbox.get("extra_rw", []):
         ep = str(expand(d))
         if os.path.isdir(ep):
             cmd += ["--bind", ep, ep]
+
+    # --- 10b. CLI extra read-only dirs ----------------------------------------
+    for d in (extra_ro_cli or []):
+        ep = str(expand(d))
+        if os.path.isdir(ep):
+            cmd += ["--ro-bind", ep, ep]
+        else:
+            print(f"Warning: --ro directory does not exist, skipping: {d}", file=sys.stderr)
+
+    # --- 10c. CLI extra read-write dirs ---------------------------------------
+    for d in (extra_rw_cli or []):
+        ep = str(expand(d))
+        if os.path.isdir(ep):
+            cmd += ["--bind", ep, ep]
+        else:
+            print(f"Warning: --rw directory does not exist, skipping: {d}", file=sys.stderr)
 
     # --- 11. Security options ------------------------------------------------
     if sec.get("unshare_pid", True):
@@ -346,6 +371,12 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     cmd += ["--setenv", "GOMODCACHE", f"{home}/.go/pkg/mod"]
     cmd += ["--setenv", "UV_CACHE_DIR", f"{home}/.uv-cache"]
     cmd += ["--setenv", "UV_TOOL_DIR", f"{home}/.uv-tools"]
+
+    # --- Wayland env vars (clipboard access for wl-paste) --------------------
+    for wl_var in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"):
+        val = os.environ.get(wl_var)
+        if val is not None:
+            cmd += ["--setenv", wl_var, val]
 
     # User-whitelisted env vars
     for var in env_conf.get("passthrough", []):
@@ -548,7 +579,8 @@ def cmd_run(args, claude_extra: list[str]) -> None:
 
     # Build command
     cmd = build_bwrap_cmd(config, project_dir, claude_extra, log_file,
-                          profile=profile, safe_mode=args.safe)
+                          profile=profile, safe_mode=args.safe,
+                          extra_rw_cli=args.rw, extra_ro_cli=args.ro)
 
     if args.dry_run:
         print("# bwrap command that would be executed:\n")
@@ -579,6 +611,10 @@ def cmd_run(args, claude_extra: list[str]) -> None:
     print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")
     print(f"  env vars    clearenv + whitelist")
     print(f"  permissions {'ask (safe mode)' if args.safe else 'skip (--dangerously-skip-permissions)'}")
+    if args.rw:
+        print(f"  extra rw    {', '.join(args.rw)}")
+    if args.ro:
+        print(f"  extra ro    {', '.join(args.ro)}")
     if log_file:
         print(f"  logging     {log_file}")
     print()
@@ -879,6 +915,10 @@ def main() -> None:
                        help="Disable --dangerously-skip-permissions for this run")
     p_run.add_argument("--dry-run", action="store_true",
                        help="Print bwrap command without executing")
+    p_run.add_argument("--rw", action="append", default=[],
+                       metavar="DIR", help="Extra read-write directory for this run (repeatable)")
+    p_run.add_argument("--ro", action="append", default=[],
+                       metavar="DIR", help="Extra read-only directory for this run (repeatable)")
 
     # diff
     sub.add_parser("diff",
