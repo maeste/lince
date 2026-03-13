@@ -1,0 +1,43 @@
+# VoxTTS Configuration
+# Copy to config.toml or ~/.config/voxtts/config.toml
+
+[general]
+# TTS engine: "kokoro" (default, high quality) or "piper" (fast, CPU-optimized)
+engine = "kokoro"
+# Language: "auto" for auto-detection, or ISO 639-1 code (en, it, es, fr, de, ...)
+language = "auto"
+# Default output format when saving: "mp3" or "wav"
+output_format = "mp3"
+
+[kokoro]
+# Compute device: "cuda" (GPU, default) or "cpu"
+device = "cuda"
+# Voice preset (see --list-voices for available voices)
+voice = "af_heart"
+
+[piper]
+# Piper ONNX model name (auto-downloaded on first use)
+model = "en_US-lessac-medium"
+# Custom data directory for models (empty = default cache)
+data_dir = ""
+
+[audio]
+# Output device index (null = system default, use --list-devices to see options)
+# device = 0
+
+[playback]
+# Stream playback sentence-by-sentence for low latency
+stream = false
+
+[multiplexer]
+# Multiplexer backend for pane capture: "auto", "tmux", or "zellij"
+backend = "auto"
+
+[tmux]
+# Target pane for capture (empty = current pane, or tmux pane id like "0:0.1")
+target_pane = ""
+
+[zellij]
+# Target pane for capture: "left", "right", "up", "down", "next", "previous"
+# Empty = current pane. Override per-invocation with --pane-target
+target_pane = "up"
