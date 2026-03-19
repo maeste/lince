@@ -1,9 +1,11 @@
 ---
 id: LINCE-38
 title: Add TOML configuration parsing for dashboard settings
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - claude
 created_date: '2026-03-19 10:38'
+updated_date: '2026-03-19 13:06'
 labels:
   - dashboard
   - config
@@ -45,16 +47,28 @@ Add TOML config parsing to the dashboard plugin. Config controls default agent p
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 src/config.rs exists with DashboardConfig struct, enums, and parsing logic
-- [ ] #2 lince-dashboard/config.toml exists with all options documented as comments
-- [ ] #3 Missing config file falls back to defaults without crashing
-- [ ] #4 Invalid TOML shows a warning in render but does not panic
-- [ ] #5 Plugin still compiles to WASM and loads
+- [x] #1 src/config.rs exists with DashboardConfig struct, enums, and parsing logic
+- [x] #2 lince-dashboard/config.toml exists with all options documented as comments
+- [x] #3 Missing config file falls back to defaults without crashing
+- [x] #4 Invalid TOML shows a warning in render but does not panic
+- [x] #5 Plugin still compiles to WASM and loads
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Executed Plan\n1. Added `serde` (with derive) and `toml = \"0.8\"` to Cargo.toml\n2. Created `src/config.rs` with AgentLayout/FocusMode/StatusMethod enums, DashboardConfig struct with serde defaults, DashboardConfigFile wrapper for [dashboard] TOML table, and `load()` returning (config, Option<error>)\n3. Created `lince-dashboard/config.toml` with all options documented\n4. Updated `src/lib.rs` to load config from Zellij plugin configuration map's `config_path` key\n5. Config errors shown as status message in dashboard render
+<!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+## LINCE-38 Completed\n\n### Files created\n- `src/config.rs` — DashboardConfig with serde deserialization, TOML loading, default fallback\n- `config.toml` — documented default configuration\n\n### Files modified\n- `Cargo.toml` — added serde + toml deps\n- `src/lib.rs` — integrated config loading in load(), config error display in render()\n\n### Key decisions\n- Used DashboardConfigFile wrapper for `[dashboard]` table prefix\n- load() returns (config, Option<error>) tuple — never panics\n- Config path passed via Zellij plugin configuration map (config_path key in KDL)
+<!-- SECTION:FINAL_SUMMARY:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 All config fields have sensible defaults documented in code and config.toml
-- [ ] #2 Plugin loads with and without config file present
-- [ ] #3 Unit-level parse test documented (valid TOML string to correct struct values)
+- [x] #1 All config fields have sensible defaults documented in code and config.toml
+- [x] #2 Plugin loads with and without config file present
+- [x] #3 Unit-level parse test documented (valid TOML string to correct struct values)
 <!-- DOD:END -->

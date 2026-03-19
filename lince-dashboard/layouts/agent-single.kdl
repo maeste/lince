@@ -1,0 +1,38 @@
+// Reference layout for a single floating agent pane.
+//
+// NOTE: This file is documentation only. The lince-dashboard plugin creates
+// floating agent panes programmatically at runtime; it does NOT load this file.
+//
+// How it works:
+//   1. The plugin calls open_command_pane_floating() to spawn the agent process.
+//   2. The command executed is:
+//        claude-sandbox run -P <profile> -p <project_dir>
+//      where <profile> and <project_dir> come from the dashboard configuration.
+//   3. The pane is hidden by default and shown on demand via show_pane_with_id().
+//
+// Equivalent KDL structure (for reference):
+//
+//   layout {
+//       default_tab_template {
+//           pane size=1 borderless=true {
+//               plugin location="zellij:tab-bar"
+//           }
+//           children
+//           pane size=2 borderless=true {
+//               plugin location="zellij:status-bar"
+//           }
+//       }
+//
+//       tab name="agent-{id}" {
+//           pane split_direction="horizontal" {
+//               pane {
+//                   command "claude-sandbox"
+//                   args "run" "-P" "{PROFILE}" "-p" "{PROJECT_DIR}"
+//               }
+//           }
+//           floating_panes {
+//               // The plugin manages floating pane lifecycle directly
+//               // via open_command_pane_floating() and show_pane_with_id()
+//           }
+//       }
+//   }

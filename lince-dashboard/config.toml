@@ -1,0 +1,26 @@
+# Lince Dashboard Configuration
+
+[dashboard]
+# Default sandbox profile for new agents (empty = no -P flag)
+# default_profile = ""
+
+# Default working directory for new agents (empty = current dir)
+# default_project_dir = ""
+
+# Path to claude-sandbox command
+sandbox_command = "claude-sandbox"
+
+# Agent pane layout: "single" (just agent) or "multi" (agent + backlog + shell)
+agent_layout = "single"
+
+# How to show agent pane: "floating" (overlay) or "replace" (tab switch)
+focus_mode = "floating"
+
+# Status detection: "pipe" (zellij pipe, recommended) or "file" (/tmp polling)
+status_method = "pipe"
+
+# Directory for status files (when using file method)
+status_file_dir = "/tmp/lince-dashboard"
+
+# Maximum concurrent agents
+max_agents = 8

@@ -10,6 +10,14 @@
 - **voxcode**: `cd voxcode && uv sync && uv run voxcode --help`
 - **voxtts**: `cd voxtts && uv sync && uv run voxtts --help`
 
+## Installation Conventions
+
+Every module must provide `install.sh`, `update.sh`, and `uninstall.sh` scripts.
+- All file copies, config changes, and system modifications go through these scripts — never done manually or directly by Claude
+- This applies to all modules: sandbox, voxcode, voxtts, lince-dashboard, and any future modules
+- Scripts must be idempotent and safe to run multiple times
+- The system must be installable by third parties from a clean clone
+
 ## Code Style
 - Python: ruff defaults, line length 119
 - Use absolute imports (never relative)

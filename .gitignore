@@ -6,3 +6,19 @@ uv.lock
 .claude/
 .claude-sandbox/
 .serena
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

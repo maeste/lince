@@ -1,0 +1,48 @@
+// Multi-pane agent tab layout: claude-sandbox + backlog board + shell.
+//
+// NOTE: The lince-dashboard plugin constructs this layout string dynamically
+// at runtime via new_tab_with_layout(). This file serves as the canonical
+// template that the plugin reproduces programmatically.
+//
+// Placeholder substitution (performed by the plugin at runtime):
+//   {PROFILE}     -> agent profile name from config (e.g. "backend", "frontend")
+//   {PROJECT_DIR} -> absolute path to the project directory
+//
+// The resulting tab name follows the pattern "agent-{id}" where {id} is the
+// agent identifier assigned by the dashboard.
+//
+// Structure:
+//   ┌───────────────────────────────────┐
+//   │ claude-sandbox (50%)              │
+//   ├─────────────────┬─────────────────┤
+//   │ backlog (50%)   │ shell (50%)     │
+//   └─────────────────┴─────────────────┘
+
+layout {
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    tab name="agent-{id}" {
+        pane split_direction="horizontal" {
+            pane size="50%" {
+                command "claude-sandbox"
+                args "run" "-P" "{PROFILE}" "-p" "{PROJECT_DIR}"
+            }
+            pane split_direction="vertical" {
+                pane size="50%" {
+                    command "backlog"
+                    args "board"
+                }
+                pane size="50%" {
+                }
+            }
+        }
+    }
+}

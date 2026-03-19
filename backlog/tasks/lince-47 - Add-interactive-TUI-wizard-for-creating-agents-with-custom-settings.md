@@ -4,7 +4,7 @@ title: Add interactive TUI wizard for creating agents with custom settings
 status: To Do
 assignee: []
 created_date: '2026-03-19 10:40'
-updated_date: '2026-03-19 10:45'
+updated_date: '2026-03-19 14:37'
 labels:
   - dashboard
   - tui
@@ -19,7 +19,7 @@ priority: low
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Replace "press n to spawn with defaults" with an interactive multi-step wizard in the dashboard TUI.
+Add another key press "N" keeping the "press n to spawn with defaults". The capital letter N create a new agent with an interactive multi-step wizard in the dashboard TUI.
 
 ## Implementation Plan
 
