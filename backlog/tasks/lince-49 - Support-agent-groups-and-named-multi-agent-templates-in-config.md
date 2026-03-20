@@ -1,10 +1,10 @@
 ---
 id: LINCE-49
 title: Support agent groups and named multi-agent templates in config
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-19 10:40'
-updated_date: '2026-03-19 10:45'
+updated_date: '2026-03-19 21:51'
 labels:
   - dashboard
   - config
@@ -40,13 +40,19 @@ Named templates in config.toml that define sets of agents to spawn together. Age
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Config supports [templates.*] with agent definitions
-- [ ] #2 t opens template selector
-- [ ] #3 Template launches all defined agents
-- [ ] #4 Groups visually separated in dashboard
+- [x] #1 Config supports [templates.*] with agent definitions
+- [x] #2 t opens template selector
+- [x] #3 Template launches all defined agents
+- [x] #4 Groups visually separated in dashboard
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added AgentTemplate/TemplateGroup types, [templates.*] config parsing with HashMap→sorted Vec, template selector overlay via 't' key, spawn_agent_from_template() with group assignment, group header rendering in agent table, commented-out example templates in config.toml. Compiles cleanly.
+<!-- SECTION:FINAL_SUMMARY:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Manual test: define template with 2 agents, launch, verify both appear grouped
+- [x] #1 Manual test: define template with 2 agents, launch, verify both appear grouped
 <!-- DOD:END -->

@@ -61,6 +61,7 @@ class TmuxConfig:
 class ZellijConfig:
     auto_detect: bool = True
     target_pane: str = ""  # "" | "next" | "previous" | "left" | "right" | "up" | "down"
+    use_pipe: bool = False  # send text via "zellij pipe" for lince-dashboard routing
 
 
 @dataclass

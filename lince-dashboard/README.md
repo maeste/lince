@@ -5,19 +5,17 @@ Multi-agent TUI dashboard for managing Claude Code instances in [Zellij](https:/
 ## Overview
 
 ```
-┌───────────────────────────────────────────────┐
-│ LINCE Dashboard  (3 agents)                   │
-├───┬────────────┬─────────┬─────────┬──────────┤
-│ # │ Name       │ Profile │ Project │ Status   │
-├───┼────────────┼─────────┼─────────┼──────────┤
-│ 1 │ agent-1    │ vertex  │ backend │ Running  │
-│>2 │ agent-2    │         │ frontend│ INPUT    │
-│ 3 │ agent-3    │ zai     │ tests   │ Running  │
-├───┴────────────┴─────────┴─────────┴──────────┤
-│ [n]ew  [f]ocus  [h]ide  [k]ill  [i]nput      │
-├───────────────────┬───────────────────────────┤
-│ VoxCode (PTT)     │ Shell                     │
-└───────────────────┴───────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│ LINCE Dashboard  (3 agents)                           │
+├───┬────────────┬──────────┬────────┬────────┬─────────┤
+│ # │ Name       │ Status   │ Tokens │Profile │ Project │
+├───┼────────────┼──────────┼────────┼────────┼─────────┤
+│ 1 │ agent-1    │ Running  │ 1.2k/5k│ vertex │ backend │
+│>2 │ agent-2    │ INPUT    │    -   │        │ frontend│
+│ 3 │ agent-3    │ Running 2⚙│ 3k/12k│ zai   │ tests   │
+├───┴────────────┴──────────┴────────┴────────┴─────────┤
+│ [n] New [N] Wizard [f] Focus [Q] Save+Quit            │
+└───────────────────────────────────────────────────────┘
 ```
 
 Agents run inside the existing [claude-sandbox](../sandbox/) — the dashboard only manages pane lifecycle, not isolation.
@@ -69,8 +67,9 @@ Edit `~/.config/lince-dashboard/config.toml`:
 # Path to claude-sandbox command
 sandbox_command = "claude-sandbox"
 
-# Agent pane layout: "single" (just agent) or "multi" (agent + backlog + shell)
-agent_layout = "single"
+# Agent pane layout: "floating" (overlay, default) or "tiled" (fixed in layout grid)
+# Use "tiled" with layouts/dashboard-tiled.kdl for agents in a fixed split
+agent_layout = "floating"
 
 # How to show agent pane: "floating" (overlay) or "replace" (tab switch)
 focus_mode = "floating"
@@ -79,43 +78,159 @@ focus_mode = "floating"
 status_method = "pipe"
 
 # Directory for status files (when using file method)
-status_file_dir = "/tmp"
+status_file_dir = "/tmp/lince-dashboard"
 
 # Maximum concurrent agents
 max_agents = 8
 ```
 
+### Config Hot-Reload
+
+The plugin automatically detects changes to `config.toml` every 5 seconds and applies them without restart. A "Config reloaded" notification appears in the status bar.
+
+**Hot-reloadable settings** (applied immediately):
+- `focus_mode`, `status_method`, `max_agents`, `status_file_dir`
+- `agent_layout`, `default_profile`, `default_project_dir`
+
+**Not hot-reloadable** (only affects new agents after restart):
+- `sandbox_command`
+
+If the config file has a parse error, the previous working config is preserved and an error message is shown.
+
+### Tiled Pane Layout
+
+By default agents spawn as floating overlay panes. Set `agent_layout = "tiled"` to have agents open as tiled panes in a fixed position within the Zellij layout grid.
+
+Use the included tiled layout for a split view (agents left, dashboard right):
+
+```bash
+zellij --layout ~/.config/zellij/layouts/dashboard-tiled.kdl
+```
+
+```
+┌────────────────────┬────────────────┐
+│ Agent panes (60%)  │ Dashboard (40%)│
+│ (spawned by plugin)│ plugin         │
+└────────────────────┴────────────────┘
+```
+
+In tiled mode:
+- New agents appear as tiled panes (Zellij places them in the largest available area)
+- Focus (`f`/`Enter`) switches terminal focus to the agent pane
+- No show/hide toggling — tiled panes are always visible
+- `h`/`Esc` returns focus to the dashboard
+
 ## Keybindings
+
+### Normal Mode
 
 | Key | Action |
 |-----|--------|
-| `n` | Spawn new agent with default settings |
-| `k` | Kill (stop) the selected agent |
-| `f` / `Enter` | Focus: show the selected agent's pane |
+| `n` | Show name prompt, then spawn agent with that name |
+| `N` (Shift+n) | Open agent creation wizard (name, profile, directory) |
+| `r` | Rename the selected agent |
+| `x` | Kill (stop) the selected agent |
+| `f` | Focus: show the selected agent's pane |
+| `Enter` | Toggle detail panel for the selected agent |
 | `h` / `Esc` | Hide: hide the focused agent's pane |
+| `Q` | Save agent state to `.lince-dashboard` and quit Zellij |
 | `j` / `Down` | Select next agent in list |
 | `Up` | Select previous agent in list |
 | `]` | Focus next agent directly |
 | `[` | Focus previous agent directly |
-| `i` | Enter input mode (type to agent) |
-| `Esc` (in input mode) | Exit input mode |
+| `i` | Toggle info/detail panel |
+
+### Inline Name Prompt (n)
+
+Pressing `n` shows a blue prompt bar at the bottom of the dashboard:
+
+```
+Name: my-agent█          (default: agent-3)  [Enter] OK  [Esc] Cancel
+```
+
+- Type a custom name or press `Enter` to accept the default (`agent-N`)
+- `Esc` cancels without spawning
+- Profile and project directory use config defaults (use `N` wizard for full control)
+
+### Wizard Mode (Shift+N)
+
+A 4-step interactive wizard for creating agents with custom settings:
+
+1. **Agent Name** — custom name or leave empty for default
+2. **Profile** — sandbox profile name or leave empty for default
+3. **Project Directory** — path to project directory (default: current directory)
+4. **Confirm** — review settings and create
+
+Navigation: `Enter` advances, `Backspace` goes back, `Esc` cancels.
+
+## Session Save & Restore
+
+Press `Q` to save the current agent configuration and quit Zellij. On next launch from the same directory, agents are automatically re-spawned with the same names, profiles, project directories, and token counts.
+
+- State is saved to `.lince-dashboard` in the directory where `zd` was launched
+- Different directories maintain independent state (launch from `~/project-a` and `~/project-b` for separate sessions)
+- The state file is kept after restore, so an ungraceful quit (`Ctrl-Q`) still preserves the last saved state
+- If no `.lince-dashboard` file exists, the dashboard starts empty as usual
+
+## Swimlane Grouping
+
+When agents span multiple project directories, the dashboard automatically groups them into swimlanes with colored headers:
+
+```
+ ┌ ~/project/lince ──────────────────────────
+   1  agent-1 [fullstack]  Running   1.2k/5k
+ > 2  agent-2              INPUT     -
+ ┌ ~/project/other-app ──────────────────────
+   3  agent-3              Running   3k/12k
+```
+
+- Agents are grouped by `project_dir` and sorted by name within each group
+- Swimlane headers show shortened paths (`~` replaces `$HOME`)
+- When all agents share the same directory, no headers are shown (flat list)
+- Group names (if set) appear as dim suffixes: `agent-1 [web-stack]`
+- Navigation (`j`/`k`) moves through agents only — headers are visual-only
+
+## Agent Detail Panel
+
+Press `Enter` on any agent to toggle a detail panel below the table showing:
+
+- **Status** with color coding
+- **Profile** and project directory
+- **Token usage** (input/output with k/M suffixes)
+- **Active tool** name (reported by hooks during `PreToolUse` events)
+- **Subagent count** (running sub-agents shown as `N⚙`)
+- **Started at** timestamp
+- **Last error** (if any)
+
+Press `Enter` again to close the panel. `f` still focuses the agent pane.
 
 ## Agent Lifecycle
 
-1. Press `n` → dashboard spawns a floating pane running `claude-sandbox run`
-2. Pane is hidden by default — agent appears in the dashboard table as "Starting"
+1. Press `n` (name prompt → Enter) or `N` (wizard) → dashboard spawns agent panes running `claude-sandbox run`
+2. Panes are hidden by default — agents appear in the dashboard table as "Starting"
 3. Claude Code hooks report status via Zellij pipe → dashboard updates to "Running"
 4. When Claude needs input → status shows "INPUT" (bold yellow, attention-grabbing)
-5. Press `f` to show the agent's pane, interact, press `h` to hide it back
-6. Press `k` to kill the agent and close its pane
+5. When sub-agents are running → status shows subagent count (e.g. "Running 2⚙")
+6. Press `f` to show the agent's pane, interact, press `h` to hide it back
+7. Press `Enter` to view detailed status (tokens, tool, elapsed time)
+8. Press `k` to kill the agent and close its pane
 
 ## Voice Relay
 
-VoxCode runs in the fixed bottom-left pane. When configured to use pipe mode, transcribed text is sent to the dashboard plugin which forwards it to the active agent:
+VoxCode runs in the fixed bottom-left pane. When configured with `use_pipe = true` in VoxCode's `[zellij]` config, transcribed text is sent via pipe to the dashboard plugin which forwards it to the active agent:
 
 ```
 VoxCode → zellij pipe --name "voxcode-text" → Dashboard Plugin → agent pane
 ```
+
+To enable pipe mode in VoxCode, set in your voxcode config:
+
+```toml
+[zellij]
+use_pipe = true
+```
+
+When `use_pipe = false` (default), VoxCode uses the legacy focus-switch + write-chars method, which works without the dashboard.
 
 Target priority:
 1. Focused agent (if one is shown)
@@ -132,11 +247,15 @@ Claude Code hooks send status via `zellij pipe`:
 zellij pipe --name "claude-status" --payload '{"agent_id":"agent-1","event":"idle"}'
 ```
 
-Events: `stopped`, `running`, `idle`, `permission`
+Events: `idle`, `running`, `permission`, `subagent_start`, `subagent_stop`
+
+Additional fields in payload:
+- `tool_name` — active tool name (on `PreToolUse` events)
+- `subagent_type` — sub-agent type (on `SubagentStart`/`SubagentStop` events)
 
 ### File mode (fallback)
 
-Hooks write status to `/tmp/claude-{agent_id}.state`. The plugin polls every 2 seconds.
+Hooks write status to `/tmp/lince-dashboard/claude-{agent_id}.state`. The plugin polls every 2 seconds.
 
 Set `status_method = "file"` in config to use this mode.
 
@@ -148,17 +267,19 @@ lince-dashboard/
 │   ├── Cargo.toml              # Rust WASM crate
 │   ├── build.sh                # Build → .wasm
 │   └── src/
-│       ├── lib.rs              # Plugin entry, key handling, pipe dispatch
-│       ├── config.rs           # TOML config parsing
-│       ├── types.rs            # AgentInfo, AgentStatus, StatusMessage
-│       ├── dashboard.rs        # TUI rendering (ANSI)
+│       ├── main.rs             # Plugin entry, key handling, pipe dispatch
+│       ├── config.rs           # TOML config parsing (dashboard settings)
+│       ├── types.rs            # AgentInfo, AgentStatus, StatusMessage, WizardState, etc.
+│       ├── dashboard.rs        # TUI rendering (ANSI), overlays (wizard, help)
 │       ├── agent.rs            # Agent spawn/stop/tracking
-│       └── pane_manager.rs     # Pane focus/hide/show
+│       ├── pane_manager.rs     # Pane focus/hide/show
+│       └── state_file.rs       # Save/restore agent state (.lince-dashboard)
 ├── hooks/
 │   ├── claude-status-hook.sh   # Claude Code hook → pipe + file
 │   └── install-hooks.sh        # Hook installer
 ├── layouts/
 │   ├── dashboard.kdl           # Main layout (plugin + voxcode + shell)
+│   ├── dashboard-tiled.kdl     # Tiled layout (agents left, dashboard right)
 │   ├── agent-single.kdl        # Reference: single floating pane
 │   └── agent-multi.kdl         # Template: agent + backlog + shell tab
 ├── config.toml                 # Default configuration
@@ -170,13 +291,15 @@ lince-dashboard/
 
 | Zellij API | Purpose |
 |------------|---------|
-| `open_command_pane_floating()` | Spawn agent panes |
+| `open_command_pane_floating()` / `open_command_pane()` | Spawn agent panes (floating or tiled) |
 | `hide_pane_with_id()` / `show_pane_with_id()` | Toggle pane visibility |
 | `focus_terminal_pane()` | Focus a specific pane |
 | `close_terminal_pane()` | Kill agent panes |
 | `write_chars_to_pane_id()` | Forward voice text to agent |
 | `PaneUpdate` event | Track pane lifecycle |
 | `pipe()` method | Receive status + voice messages |
+| `run_command()` | Detect launch directory (pwd) |
+| `quit_zellij()` | Save state and exit session |
 
 ## Sandbox Integration
 
@@ -198,7 +321,7 @@ passthrough = ["ZELLIJ", "ZELLIJ_SESSION_NAME", "LINCE_AGENT_ID"]
 ### Status not updating
 - Verify hooks are installed: check `~/.claude/settings.json` for `hooks` section
 - Test hook manually: `echo '{"hook_event_name":"Stop"}' | LINCE_AGENT_ID=test-1 bash ~/.local/bin/claude-status-hook.sh`
-- Check file fallback: `cat /tmp/claude-test-1.state`
+- Check file fallback: `cat /tmp/lince-dashboard/claude-test-1.state`
 - Ensure sandbox passes env vars (see Sandbox Integration above)
 
 ### Agent panes not hiding
@@ -209,3 +332,4 @@ passthrough = ["ZELLIJ", "ZELLIJ_SESSION_NAME", "LINCE_AGENT_ID"]
 - VoxCode must send via pipe: `zellij pipe --name "voxcode-text" --payload "text"`
 - Check an agent is selected/focused in the dashboard
 - Test manually: `zellij pipe --name "voxcode-text" --payload "hello"`
+- Ensure VoxCode has `use_pipe = true` in its `[zellij]` config section

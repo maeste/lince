@@ -1,10 +1,10 @@
 ---
 id: LINCE-50
 title: Update VoxCode ZellijBridge to use pipe-based communication with dashboard
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-19 10:41'
-updated_date: '2026-03-19 10:45'
+updated_date: '2026-03-19 21:51'
 labels:
   - voxcode
   - dashboard
@@ -33,14 +33,20 @@ Add `use_pipe` mode to VoxCode's ZellijBridge, sending transcribed text via `zel
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 use_pipe config option exists in voxcode [zellij] section
-- [ ] #2 When enabled, text sent via zellij pipe instead of write-chars
-- [ ] #3 When disabled, existing behavior preserved
+- [x] #1 use_pipe config option exists in voxcode [zellij] section
+- [x] #2 When enabled, text sent via zellij pipe instead of write-chars
+- [x] #3 When disabled, existing behavior preserved
 - [ ] #4 End-to-end: VoxCode pipe -> dashboard -> agent pane
 <!-- AC:END -->
 
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added use_pipe parameter to ZellijBridge (default False). When enabled, send_text() uses `zellij pipe --name voxcode-text --payload TEXT` instead of focus+write-chars. Wired through ZellijConfig dataclass and create_bridge factory. Pipe name matches dashboard's expected voxcode-text pipe handler. Existing behavior fully preserved when use_pipe=False.
+<!-- SECTION:FINAL_SUMMARY:END -->
+
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Both pipe and legacy modes tested
-- [ ] #2 No regression in existing non-dashboard workflows
+- [x] #1 Both pipe and legacy modes tested
+- [x] #2 No regression in existing non-dashboard workflows
 <!-- DOD:END -->

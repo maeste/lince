@@ -4,14 +4,23 @@
 # Default sandbox profile for new agents (empty = no -P flag)
 # default_profile = ""
 
+# Available sandbox profiles shown in the wizard selector.
+# Auto-discovered from ~/.claude-sandbox/config.toml [profiles.*] sections.
+# Override with an explicit list if needed:
+# profiles = ["anthropic", "vertex"]
+
+# Path to sandbox config for profile auto-discovery (default: ~/.claude-sandbox/config.toml)
+# sandbox_config_path = "/custom/path/to/config.toml"
+
 # Default working directory for new agents (empty = current dir)
 # default_project_dir = ""
 
 # Path to claude-sandbox command
 sandbox_command = "claude-sandbox"
 
-# Agent pane layout: "single" (just agent) or "multi" (agent + backlog + shell)
-agent_layout = "single"
+# Agent pane layout: "floating" (overlay, default) or "tiled" (fixed position in layout grid)
+# Use "tiled" with layouts/dashboard-tiled.kdl for a split view (agents left, dashboard right)
+agent_layout = "floating"
 
 # How to show agent pane: "floating" (overlay) or "replace" (tab switch)
 focus_mode = "floating"
@@ -24,3 +33,4 @@ status_file_dir = "/tmp/lince-dashboard"
 
 # Maximum concurrent agents
 max_agents = 8
+

@@ -1,10 +1,10 @@
 ---
 id: LINCE-48
 title: 'Display detailed agent status with token usage, active tool, and elapsed time'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-19 10:40'
-updated_date: '2026-03-19 10:45'
+updated_date: '2026-03-19 21:51'
 labels:
   - dashboard
   - status
@@ -31,14 +31,20 @@ Extend hooks and dashboard to show richer agent info: token usage, active tool n
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Hook reports tool name in payload for PreToolUse events
-- [ ] #2 Dashboard table shows token count column
-- [ ] #3 Agent detail panel shows full status info
-- [ ] #4 Elapsed time updates every timer tick
+- [x] #1 Hook reports tool name in payload for PreToolUse events
+- [x] #2 Dashboard table shows token count column
+- [x] #3 Agent detail panel shows full status info
+- [x] #4 Elapsed time updates every timer tick
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Extended StatusMessage with tool_name/tokens_in/tokens_out/error fields. Extended AgentInfo with token tracking, current_tool, started_at, last_error. Updated hook to extract tool_name from PreToolUse events. Added Tokens column to table (wide mode), detail panel via Enter key, context-sensitive status bar. Compiles cleanly.
+<!-- SECTION:FINAL_SUMMARY:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 Manual test: trigger PreToolUse hook, verify tool name in dashboard
-- [ ] #2 Detail panel renders correctly at various pane sizes
+- [x] #1 Manual test: trigger PreToolUse hook, verify tool name in dashboard
+- [x] #2 Detail panel renders correctly at various pane sizes
 <!-- DOD:END -->

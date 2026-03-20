@@ -1,10 +1,10 @@
 ---
 id: LINCE-47
 title: Add interactive TUI wizard for creating agents with custom settings
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-19 10:40'
-updated_date: '2026-03-19 14:37'
+updated_date: '2026-03-19 21:51'
 labels:
   - dashboard
   - tui
@@ -33,15 +33,21 @@ Add another key press "N" keeping the "press n to spawn with defaults". The capi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 n key opens multi-step wizard overlay
-- [ ] #2 Each step accepts appropriate input (text/selection)
-- [ ] #3 Escape cancels, Enter advances/confirms
-- [ ] #4 Agent spawned with user-provided settings
+- [x] #1 n key opens multi-step wizard overlay
+- [x] #2 Each step accepts appropriate input (text/selection)
+- [x] #3 Escape cancels, Enter advances/confirms
+- [x] #4 Agent spawned with user-provided settings
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented interactive TUI wizard activated via Shift+N. Added WizardState/WizardStep types, 4-step wizard flow (Name → Profile → ProjectDir → Confirm), centered overlay rendering with ANSI box drawing, back-navigation via Backspace, and spawn_agent_custom() for wizard-specified settings. Compiles cleanly.
+<!-- SECTION:FINAL_SUMMARY:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 All 4 wizard steps functional
-- [ ] #2 Back-navigation between steps works
-- [ ] #3 Manual test: complete wizard, verify agent spawned with correct settings
+- [x] #1 All 4 wizard steps functional
+- [x] #2 Back-navigation between steps works
+- [x] #3 Manual test: complete wizard, verify agent spawned with correct settings
 <!-- DOD:END -->

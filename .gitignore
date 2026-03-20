@@ -22,3 +22,7 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+
+#Lince dashboard files
+.lince-dashboard

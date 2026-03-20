@@ -1,0 +1,44 @@
+// Tiled agent layout for lince-dashboard.
+//
+// Agents spawn as tiled panes in the left area instead of floating overlays.
+// Requires `agent_layout = "tiled"` in config.toml.
+//
+// Usage:
+//   zellij --layout ./layouts/dashboard-tiled.kdl
+//
+// Structure:
+//   ┌───────────────────────────────────────────┐
+//   │ tab-bar (borderless, size=1)              │
+//   ├─────────────────────┬─────────────────────┤
+//   │ Agent panes (60%)   │ Dashboard (40%)     │
+//   │ (spawned at runtime │ plugin              │
+//   │  by the plugin)     │                     │
+//   ├─────────────────────┴─────────────────────┤
+//   │ status-bar (borderless, size=2)           │
+//   └───────────────────────────────────────────┘
+
+layout {
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    tab name="dashboard" {
+        pane split_direction="vertical" {
+            pane size="60%" {
+                // Agent tiled panes will be spawned into this area by the plugin.
+                // Zellij places new tiled panes in the largest available space.
+            }
+            pane size="40%" {
+                plugin location="file:~/.config/zellij/plugins/lince-dashboard.wasm" {
+                    config_path "~/.config/lince-dashboard/config.toml"
+                }
+            }
+        }
+    }
+}

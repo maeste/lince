@@ -35,6 +35,7 @@ layout {
             pane split_direction="vertical" {
                 pane size="50%" {
                     command "voxcode"
+                    args "--use-pipe"
                 }
                 pane size="50%" {
                 }

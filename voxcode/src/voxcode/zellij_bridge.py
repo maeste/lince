@@ -21,10 +21,12 @@ OPPOSITE_DIRECTION = {
 class ZellijBridge:
     """Sends text to a Zellij pane running Claude Code.
 
-    Supports two navigation modes:
+    Supports three delivery modes:
     - Cycle targets (next/previous): uses focus-next-pane / focus-previous-pane
     - Directional targets (left/right/up/down): uses move-focus for deterministic
       targeting in layouts with 3+ panes
+    - Pipe mode (use_pipe=True): sends text via ``zellij pipe`` so the
+      lince-dashboard plugin can route it to the correct agent
     """
 
     def __init__(
@@ -32,19 +34,28 @@ class ZellijBridge:
         target_pane: str | None = None,
         auto_detect: bool = True,
         send_enter: bool = False,
+        use_pipe: bool = False,
     ):
         self.target_pane = target_pane
         self.auto_detect = auto_detect
         self.send_enter = send_enter
+        self.use_pipe = use_pipe
 
     def validate(self) -> None:
-        """Check that Zellij is available, we are inside a session, and target is valid."""
+        """Check that Zellij is available, we are inside a session, and target is valid.
+
+        When ``use_pipe`` is True only the zellij binary and an active session
+        are required — target_pane validation is skipped because the dashboard
+        plugin handles routing.
+        """
         if not shutil.which("zellij"):
             raise RuntimeError("zellij is not installed. Install it from https://zellij.dev")
         if not os.environ.get("ZELLIJ") and not os.environ.get("ZELLIJ_SESSION_NAME"):
             raise RuntimeError(
                 "Not inside a Zellij session. Start Zellij first, then run VoxCode inside it."
             )
+        if self.use_pipe:
+            return
         if self.target_pane and self.target_pane not in VALID_TARGETS:
             valid = ", ".join(sorted(VALID_TARGETS))
             raise RuntimeError(
@@ -76,11 +87,30 @@ class ZellijBridge:
             )
 
     def send_text(self, text: str) -> None:
-        """Send text to the Claude Code pane via Zellij focus-switch.
+        """Send text to the Claude Code pane.
 
-        When send_enter=False: focus Claude pane, write text, stay on Claude pane.
-        When send_enter=True: focus Claude pane, write text, send Enter, focus back.
+        In pipe mode the text is delivered via ``zellij pipe`` so the
+        lince-dashboard plugin can route it to the active agent.
+
+        In the default (focus-switch) mode:
+        - send_enter=False: focus Claude pane, write text, stay on Claude pane.
+        - send_enter=True: focus Claude pane, write text, send Enter, focus back.
         """
+        if self.use_pipe:
+            # Fire-and-forget: zellij pipe blocks waiting for plugin output,
+            # so we run it detached with a short timeout as a safety net.
+            proc = subprocess.Popen(
+                ["zellij", "pipe", "--name", "voxcode-text", "--", text],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            return
+
         direction = self.get_target_pane()
         opposite = OPPOSITE_DIRECTION[direction]
 

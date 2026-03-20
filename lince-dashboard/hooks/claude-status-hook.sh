@@ -5,6 +5,7 @@
 # Claude Code pipes JSON to stdin with fields:
 #   hook_event_name, session_id, transcript_path, cwd, ...
 #   For Notification events: notification_type
+#   For PreToolUse events: tool_name
 #
 # Environment:
 #   LINCE_AGENT_ID  — set by the dashboard when spawning the agent
@@ -40,19 +41,30 @@ if [ ! -t 0 ]; then
     INPUT=$(cat)
 fi
 
-# Parse hook event name — try jq first, fall back to grep
-HOOK_EVENT=""
-if command -v jq >/dev/null 2>&1 && [ -n "$INPUT" ]; then
-    HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null || true)
-fi
+# Cache jq availability once (avoid repeated command -v calls)
+HAS_JQ=false
+command -v jq >/dev/null 2>&1 && HAS_JQ=true
 
-# Fallback: extract with bash pattern matching
-if [ -z "$HOOK_EVENT" ] && [ -n "$INPUT" ]; then
-    # Match "hook_event_name":"VALUE"
-    if [[ "$INPUT" =~ \"hook_event_name\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
-        HOOK_EVENT="${BASH_REMATCH[1]}"
+# Extract a field from the JSON input (jq first, bash regex fallback).
+extract_json_field() {
+    local field="$1"
+    if $HAS_JQ && [ -n "$INPUT" ]; then
+        local val
+        val=$(echo "$INPUT" | jq -r ".$field // empty" 2>/dev/null || true)
+        if [ -n "$val" ]; then
+            echo "$val"
+            return
+        fi
     fi
-fi
+    if [ -n "$INPUT" ]; then
+        if [[ "$INPUT" =~ \"${field}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return
+        fi
+    fi
+}
+
+HOOK_EVENT=$(extract_json_field "hook_event_name")
 
 if [ -z "$HOOK_EVENT" ]; then
     echo "  EXIT: no HOOK_EVENT parsed (input: ${INPUT:0:80})" >> "$LOG_FILE" 2>/dev/null || true
@@ -62,26 +74,30 @@ echo "  HOOK_EVENT=$HOOK_EVENT" >> "$LOG_FILE" 2>/dev/null || true
 
 # Map hook events to dashboard status
 STATUS=""
+TOOL_NAME=""
+SUBAGENT_TYPE=""
 case "$HOOK_EVENT" in
     Stop)
-        # Claude finished its turn and is waiting for user input
         STATUS="idle"
         ;;
-    UserPromptSubmit | PreToolUse)
+    UserPromptSubmit)
         STATUS="running"
         ;;
+    PreToolUse)
+        STATUS="running"
+        TOOL_NAME=$(extract_json_field "tool_name")
+        ;;
+    SubagentStart)
+        STATUS="subagent_start"
+        SUBAGENT_TYPE=$(extract_json_field "agent_type")
+        ;;
+    SubagentStop)
+        STATUS="subagent_stop"
+        SUBAGENT_TYPE=$(extract_json_field "agent_type")
+        ;;
     Notification)
-        # Extract notification_type
-        NOTIF_TYPE=""
-        if command -v jq >/dev/null 2>&1 && [ -n "$INPUT" ]; then
-            NOTIF_TYPE=$(echo "$INPUT" | jq -r '.notification_type // empty' 2>/dev/null || true)
-        fi
-        if [ -z "$NOTIF_TYPE" ] && [ -n "$INPUT" ]; then
-            if [[ "$INPUT" =~ \"notification_type\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
-                NOTIF_TYPE="${BASH_REMATCH[1]}"
-            fi
-        fi
-        case "$NOTIF_TYPE" in
+        NOTIF_TYPE=$(extract_json_field "notification_type")
+        case "${NOTIF_TYPE:-}" in
             idle_prompt)       STATUS="idle" ;;
             permission_prompt) STATUS="permission" ;;
             *)                 STATUS="running" ;;
@@ -97,13 +113,31 @@ if [ -z "$STATUS" ]; then
 fi
 
 TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
-PAYLOAD="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${STATUS}\",\"timestamp\":\"${TIMESTAMP}\"}"
+
+# Build JSON payload safely with jq if available, string concat as fallback
+if $HAS_JQ; then
+    PAYLOAD=$(jq -nc \
+        --arg id "$AGENT_ID" \
+        --arg event "$STATUS" \
+        --arg ts "$TIMESTAMP" \
+        --arg tool "${TOOL_NAME:-}" \
+        --arg subtype "${SUBAGENT_TYPE:-}" \
+        '{agent_id: $id, event: $event, timestamp: $ts} + (if $tool != "" then {tool_name: $tool} else {} end) + (if $subtype != "" then {subagent_type: $subtype} else {} end)')
+else
+    PAYLOAD="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${STATUS}\",\"timestamp\":\"${TIMESTAMP}\""
+    if [ -n "${TOOL_NAME:-}" ]; then
+        PAYLOAD="${PAYLOAD},\"tool_name\":\"${TOOL_NAME}\""
+    fi
+    if [ -n "${SUBAGENT_TYPE:-}" ]; then
+        PAYLOAD="${PAYLOAD},\"subagent_type\":\"${SUBAGENT_TYPE}\""
+    fi
+    PAYLOAD="${PAYLOAD}}"
+fi
 
 echo "  STATUS=$STATUS  PAYLOAD=$PAYLOAD" >> "$LOG_FILE" 2>/dev/null || true
 
 # Primary: send via zellij pipe (if inside a Zellij session)
 if [ -n "${ZELLIJ:-}" ] && command -v zellij >/dev/null 2>&1; then
-    # Timeout after 2s to avoid blocking Claude Code if socket is unreachable
     PIPE_OUT=$(echo "$PAYLOAD" | timeout 2 zellij pipe --name "claude-status" 2>&1) && \
         echo "  PIPE: ok" >> "$LOG_FILE" || \
         echo "  PIPE: failed ($PIPE_OUT)" >> "$LOG_FILE" 2>/dev/null || true

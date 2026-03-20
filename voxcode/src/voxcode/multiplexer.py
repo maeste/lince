@@ -54,6 +54,7 @@ def create_bridge(config: VoxCodeConfig) -> MultiplexerBridge:
             target_pane=config.zellij.target_pane or None,
             auto_detect=config.zellij.auto_detect,
             send_enter=send_enter,
+            use_pipe=config.zellij.use_pipe,
         )
     else:
         raise ValueError(f"Unknown multiplexer backend: {backend}")

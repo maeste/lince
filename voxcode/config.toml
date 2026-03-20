@@ -41,3 +41,4 @@ launch_command = "claude" # command to run in the first pane with --launch
 # Directional values (left/right/up/down) are more reliable for 3+ pane layouts
 # Can also be set via --target-pane CLI argument (takes priority)
 # target_pane = "right"
+# use_pipe = false  # set true (or use --use-pipe CLI flag) for lince-dashboard routing
