@@ -63,6 +63,10 @@ Voice-controlled coding assistant that bridges local speech recognition (Whisper
 
 Text-to-Speech with local GPU/CPU engines. The output counterpart to VoxCode — converts text files, clipboard content, stdin pipes, or terminal pane captures into natural-sounding audio. Supports Kokoro TTS (neural, high quality) and Piper TTS (fast, CPU-optimized), with auto language detection, streaming playback, and MP3/WAV output. All synthesis runs locally on your machine.
 
+### [lince-dashboard/](lince-dashboard/)
+
+Multi-agent TUI dashboard — a Zellij WASM plugin (Rust) that manages multiple Claude Code instances running in hidden panes. Spawn agents, track their status (running/idle/waiting for input), show/hide panes, and relay voice input — all from a single dashboard pane. Agents run inside [claude-sandbox](sandbox/) for isolation.
+
 ### [agent-ready-skill/](agent-ready-skill/)
 
 [Agent Skills](https://agentskills.io) that assess a project's readiness for agentic coding. Scans 8 dimensions (instructions, navigability, testing, CI/CD, specs, skills, docs, Claude-specific tooling), produces a 0-100 score, and can auto-generate missing files to improve readiness. Works with Claude Code via symlinks into `.claude/skills/`.

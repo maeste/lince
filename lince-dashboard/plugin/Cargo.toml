@@ -1,0 +1,20 @@
+[package]
+name = "lince-dashboard"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-agent TUI dashboard for managing Claude Code instances in Zellij"
+
+[[bin]]
+name = "lince-dashboard"
+path = "src/main.rs"
+
+[dependencies]
+zellij-tile = "0.42.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

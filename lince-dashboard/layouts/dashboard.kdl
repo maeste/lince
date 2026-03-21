@@ -1,0 +1,45 @@
+// Main dashboard layout for lince-dashboard Zellij plugin.
+//
+// Usage:
+//   zellij --layout ./layouts/dashboard.kdl
+//
+// Structure:
+//   ┌───────────────────────────────────┐
+//   │ tab-bar (borderless, size=1)      │
+//   ├───────────────────────────────────┤
+//   │ Dashboard Plugin (60%)            │
+//   ├─────────────────┬─────────────────┤
+//   │ VoxCode (50%)   │ Shell (50%)     │
+//   ├─────────────────┴─────────────────┤
+//   │ status-bar (borderless, size=2)   │
+//   └───────────────────────────────────┘
+
+layout {
+    default_tab_template {
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+        children
+        pane size=2 borderless=true {
+            plugin location="zellij:status-bar"
+        }
+    }
+
+    tab name="dashboard" {
+        pane split_direction="horizontal" {
+            pane size="60%" {
+                plugin location="file:~/.config/zellij/plugins/lince-dashboard.wasm" {
+                    config_path "~/.config/lince-dashboard/config.toml"
+                }
+            }
+            pane split_direction="vertical" {
+                pane size="50%" {
+                    command "voxcode"
+                    args "--use-pipe"
+                }
+                pane size="50%" {
+                }
+            }
+        }
+    }
+}

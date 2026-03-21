@@ -54,6 +54,10 @@ passthrough = [
     "LC_ALL",
     "EDITOR",
     "VISUAL",
+    # Required for lince-dashboard agent status hooks
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
+    "LINCE_AGENT_ID",
 ]
 
 # Additional environment variables to set inside the sandbox

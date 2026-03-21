@@ -436,6 +436,10 @@ def main():
         choices=["left", "right", "up", "down", "next", "previous"],
         help="Target pane direction for Zellij (overrides config)",
     )
+    parser.add_argument(
+        "--use-pipe", action="store_true", default=None,
+        help="Send text via zellij pipe for lince-dashboard routing (overrides config)",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -467,6 +471,22 @@ def main():
             _launch_tmux_session(command)
         return
 
+    # Interactive wizard for unset options
+    mode_explicit = args.mode is not None
+    device_explicit = args.audio_device is not None
+
+    if not mode_explicit or not device_explicit:
+        from voxcode.wizard import run_wizard
+
+        wizard_mode, wizard_device = run_wizard(
+            ask_mode=not mode_explicit,
+            ask_device=not device_explicit,
+        )
+        if wizard_mode:
+            config.general.mode = wizard_mode
+        if wizard_device is not None:
+            config.audio.device = wizard_device
+
     if args.mode:
         config.general.mode = args.mode
     if args.model:
@@ -479,6 +499,8 @@ def main():
         config.general.language = args.language
     if args.target_pane:
         config.zellij.target_pane = args.target_pane
+    if args.use_pipe:
+        config.zellij.use_pipe = True
 
     app = VoxCode(config)
     app.run()

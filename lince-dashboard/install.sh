@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo -e "${BLUE}================================================${NC}"
+echo -e "${BLUE}   LINCE Dashboard — Installer${NC}"
+echo -e "${BLUE}================================================${NC}"
+echo ""
+
+confirm() {
+    read -p "$1 (y/n): " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]]
+}
+
+# ── Step 1: Prerequisites ─────────────────────────────────────────────
+echo -e "${GREEN}[1/8] Checking prerequisites...${NC}"
+
+MISSING=()
+
+if ! command -v zellij >/dev/null 2>&1; then
+    MISSING+=("zellij (>= 0.40)")
+else
+    echo -e "${GREEN}  ✓ zellij $(zellij --version 2>/dev/null | awk '{print $2}')${NC}"
+fi
+
+if ! command -v rustc >/dev/null 2>&1; then
+    MISSING+=("rustc")
+else
+    echo -e "${GREEN}  ✓ rustc $(rustc --version 2>/dev/null | awk '{print $2}')${NC}"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    MISSING+=("cargo")
+else
+    echo -e "${GREEN}  ✓ cargo${NC}"
+fi
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo -e "${RED}Missing prerequisites:${NC}"
+    for m in "${MISSING[@]}"; do
+        echo "  - $m"
+    done
+    echo ""
+    echo "Install them first, then re-run this script."
+    exit 1
+fi
+echo ""
+
+# ── Step 2: WASM target ───────────────────────────────────────────────
+echo -e "${GREEN}[2/8] Checking wasm32-wasip1 target...${NC}"
+
+# Ensure rustup toolchain takes precedence
+export PATH="$HOME/.cargo/bin:$PATH"
+
+if command -v rustup >/dev/null 2>&1; then
+    if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
+        echo "  Installing wasm32-wasip1 target..."
+        rustup target add wasm32-wasip1
+    fi
+    echo -e "${GREEN}  ✓ wasm32-wasip1 target installed${NC}"
+else
+    echo -e "${YELLOW}  ⚠ rustup not found — assuming wasm32-wasip1 is available${NC}"
+fi
+echo ""
+
+# ── Step 3: Build plugin ──────────────────────────────────────────────
+echo -e "${GREEN}[3/8] Building plugin...${NC}"
+
+if ! "$SCRIPT_DIR/plugin/build.sh"; then
+    echo -e "${RED}Build failed. Check errors above.${NC}"
+    exit 1
+fi
+echo ""
+
+# ── Step 4: Install WASM plugin ───────────────────────────────────────
+echo -e "${GREEN}[4/8] Installing plugin...${NC}"
+
+PLUGIN_DIR="$HOME/.config/zellij/plugins"
+mkdir -p "$PLUGIN_DIR"
+
+WASM_SRC="$SCRIPT_DIR/plugin/lince-dashboard.wasm"
+WASM_DST="$PLUGIN_DIR/lince-dashboard.wasm"
+
+if [ -f "$WASM_DST" ]; then
+    echo -e "${YELLOW}  Existing plugin found, backing up...${NC}"
+    cp "$WASM_DST" "${WASM_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+fi
+
+cp "$WASM_SRC" "$WASM_DST"
+echo -e "${GREEN}  ✓ Installed: $WASM_DST${NC}"
+echo ""
+
+# ── Step 5: Install layouts ───────────────────────────────────────────
+echo -e "${GREEN}[5/8] Installing layouts...${NC}"
+
+LAYOUT_DIR="$HOME/.config/zellij/layouts"
+mkdir -p "$LAYOUT_DIR"
+
+for layout in dashboard.kdl agent-single.kdl agent-multi.kdl; do
+    SRC="$SCRIPT_DIR/layouts/$layout"
+    DST="$LAYOUT_DIR/$layout"
+    if [ -f "$SRC" ]; then
+        cp "$SRC" "$DST"
+        echo -e "${GREEN}  ✓ $layout${NC}"
+    fi
+done
+echo ""
+
+# ── Step 6: Install config ────────────────────────────────────────────
+echo -e "${GREEN}[6/8] Installing configuration...${NC}"
+
+CONFIG_DIR="$HOME/.config/lince-dashboard"
+CONFIG_DST="$CONFIG_DIR/config.toml"
+
+mkdir -p "$CONFIG_DIR"
+
+if [ -f "$CONFIG_DST" ]; then
+    echo -e "${YELLOW}  Config already exists — keeping current: $CONFIG_DST${NC}"
+else
+    cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
+    echo -e "${GREEN}  ✓ Installed: $CONFIG_DST${NC}"
+fi
+echo ""
+
+# ── Step 7: Install hooks ─────────────────────────────────────────────
+echo -e "${GREEN}[7/8] Installing Claude Code hooks...${NC}"
+
+if [ -f "$SCRIPT_DIR/hooks/install-hooks.sh" ]; then
+    bash "$SCRIPT_DIR/hooks/install-hooks.sh"
+else
+    echo -e "${YELLOW}  ⚠ hooks/install-hooks.sh not found — skipping${NC}"
+fi
+echo ""
+
+# ── Step 8: Shell alias ───────────────────────────────────────────────
+echo -e "${GREEN}[8/8] Setting up shell alias...${NC}"
+
+ALIAS_LINE='alias zd="zellij --layout dashboard"'
+ALIAS_COMMENT="# LINCE Dashboard alias"
+
+for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    if [ -f "$rc" ]; then
+        if grep -q "alias zd=" "$rc" 2>/dev/null; then
+            echo -e "${YELLOW}  Alias 'zd' already in $(basename $rc)${NC}"
+        else
+            echo "" >> "$rc"
+            echo "$ALIAS_COMMENT" >> "$rc"
+            echo "$ALIAS_LINE" >> "$rc"
+            echo -e "${GREEN}  ✓ Added 'zd' alias to $(basename $rc)${NC}"
+        fi
+    fi
+done
+echo ""
+
+# ── Summary ───────────────────────────────────────────────────────────
+echo -e "${BLUE}================================================${NC}"
+echo -e "${BLUE}   Installation Complete${NC}"
+echo -e "${BLUE}================================================${NC}"
+echo ""
+echo -e "${GREEN}Installed:${NC}"
+echo "  Plugin:  $WASM_DST"
+echo "  Layouts: $LAYOUT_DIR/dashboard.kdl"
+echo "  Config:  $CONFIG_DST"
+echo "  Hooks:   ~/.local/bin/claude-status-hook.sh"
+echo ""
+echo -e "${GREEN}Usage:${NC}"
+echo "  source ~/.bashrc   # reload aliases"
+echo "  zd                 # launch dashboard layout"
+echo ""
+echo -e "${GREEN}Keybindings:${NC}"
+echo "  n       Spawn new agent"
+echo "  k       Kill selected agent"
+echo "  f/Enter Focus (show) agent pane"
+echo "  h/Esc   Hide focused agent pane"
+echo "  j/Down  Select next agent"
+echo "  Up      Select previous agent"
+echo "  ]/[     Cycle focus between agents"
+echo "  i       Input mode (type to agent)"
+echo ""
