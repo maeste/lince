@@ -2,7 +2,7 @@ use crate::config::{run_typed_command, shell_escape};
 use crate::types::{SavedAgentInfo, SavedState};
 
 const STATE_FILE_NAME: &str = ".lince-dashboard";
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 
 pub const CMD_SAVE_STATE: &str = "save_state";
 pub const CMD_LOAD_STATE: &str = "load_state";
@@ -61,7 +61,13 @@ pub fn delete_state_file_async(launch_dir: &str) {
 }
 
 /// Parse loaded state from stdout bytes returned by `cat`.
+/// Supports both v1 (no agent_type field) and v2 (with agent_type) formats.
+/// v1 entries get `agent_type = "claude"` via serde default.
 pub fn parse_loaded_state(stdout: &[u8]) -> Result<SavedState, String> {
     let content = String::from_utf8_lossy(stdout);
-    serde_json::from_str(content.trim()).map_err(|e| format!("Parse error: {}", e))
+    let mut state: SavedState =
+        serde_json::from_str(content.trim()).map_err(|e| format!("Parse error: {}", e))?;
+    // Normalize version to current — v1 files are transparently upgraded
+    state.version = STATE_VERSION;
+    Ok(state)
 }

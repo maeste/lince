@@ -12,7 +12,7 @@ layout {
     tab name="work" {
         pane split_direction="horizontal" {
             pane size="50%" { // Top pane (half screen)
-	        command "claude-sandbox"
+	        command "agent-sandbox"
 		args "run" "-P" "mm"
 	    }		
             pane split_direction="vertical" {

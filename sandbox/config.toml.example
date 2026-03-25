@@ -1,5 +1,5 @@
-# claude-sandbox configuration
-# Docs: claude-sandbox --help
+# agent-sandbox configuration
+# Docs: agent-sandbox --help
 
 [sandbox]
 # Extra directories with read-write access (besides the current project)
@@ -24,16 +24,43 @@ home_ro_dirs = [".config/gcloud"]
 default_profile = ""
 
 [claude]
-# Arguments always passed to Claude
-default_args = ["--dangerously-skip-permissions"]
+# Legacy section — still works for backward compatibility.
+# Prefer [agents.claude] for new setups. If [agents.claude] is not
+# present in your config, default_args from this section are used.
 
 # Sandbox's Claude config directory
-config_dir = "~/.claude-sandbox/claude-config"
+config_dir = "~/.agent-sandbox/claude-config"
 
 # Use the real ~/.claude and ~/.claude.json directly (no isolated copy).
 # Skips the copy during init and mounts the real dirs in the sandbox.
 # Disables diff/merge commands (no separate copy to compare against).
 use_real_config = false
+
+# --- Agent configurations ---
+# Each [agents.<name>] section configures how to run an agent.
+# Defaults are loaded from agents-defaults.toml; values here override.
+# Run with: agent-sandbox run --agent <name>
+
+# [agents.claude]
+# command = "claude"
+# default_args = ["--dangerously-skip-permissions"]
+# env = {}
+# home_ro_dirs = []
+# home_rw_dirs = []
+# bwrap_conflict = false
+# disable_inner_sandbox_args = []
+
+# [agents.codex]
+# command = "codex"
+# default_args = ["--full-auto"]
+# home_ro_dirs = [".codex"]
+# bwrap_conflict = true
+# disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+
+# [agents.gemini]
+# command = "gemini"
+# default_args = []
+# home_ro_dirs = [".gemini"]
 
 [git]
 # Section name patterns to strip from .gitconfig (regex on section header)
@@ -67,7 +94,7 @@ passthrough = [
 [logging]
 # Enable transcript logging by default (toggle with --log / --no-log)
 enabled = false
-dir = "~/.claude-sandbox/logs"
+dir = "~/.agent-sandbox/logs"
 
 [security]
 # PID namespace: hide host processes from the sandbox
@@ -81,44 +108,55 @@ new_session = false
 block_git_push = true
 
 # --- Provider profiles ---
-# Uncomment and configure the profiles you need.
+# Profiles are namespaced by agent type: [<agent>.profiles.<name>]
+# Legacy [profiles.<name>] is still supported and maps to "claude".
+# The wizard only shows profiles matching the selected agent type.
 # API keys live here, NOT in your shell environment.
 
+# --- Claude profiles ---
+
+# [claude.profiles.vertex]
+# description = "Vertex AI"
+# [claude.profiles.vertex.env]
+# CLAUDE_CODE_USE_VERTEX = "1"
+# CLOUD_ML_REGION = "us-east5"
+# ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
+# env_unset = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]
+
+# [claude.profiles.anthropic]
+# description = "Direct Anthropic API"
+# [claude.profiles.anthropic.env]
+# ANTHROPIC_API_KEY = "sk-ant-..."
+# env_unset = ["CLAUDE_CODE_USE_VERTEX", "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_PROJECT_ID"]
+
+# [claude.profiles.zai]
+# description = "Zai GLM"
+# [claude.profiles.zai.env]
+# ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic"
+# ANTHROPIC_AUTH_TOKEN = "XXXX"
+
+# [claude.profiles.mm]
+# description = "Minimax Anthropic API"
+# [claude.profiles.mm.env]
+# ANTHROPIC_BASE_URL = "https://api.minimax.io/anthropic"
+# ANTHROPIC_AUTH_TOKEN = "XXXX"
+
+# --- Codex profiles ---
+
+# [codex.profiles.default]
+# description = "Default OpenAI key"
+# [codex.profiles.default.env]
+# OPENAI_API_KEY = "sk-..."
+
+# --- Gemini profiles ---
+
+# [gemini.profiles.default]
+# description = "Default Gemini key"
+# [gemini.profiles.default.env]
+# GEMINI_API_KEY = "..."
+
+# --- Legacy format (still works, mapped to claude) ---
 # [profiles.vertex]
 # description = "Vertex AI"
 # [profiles.vertex.env]
 # CLAUDE_CODE_USE_VERTEX = "1"
-# CLOUD_ML_REGION = "us-east5"
-# ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
-
-# [profiles.anthropic]
-# description = "Direct Anthropic API"
-# [profiles.anthropic.env]
-# ANTHROPIC_API_KEY = "sk-ant-..."
-#[profiles.vertx]
-#description = "Vertex AI via rh project"
-#[profiles.vertex.env]
-#CLAUDE_CODE_USE_VERTEX = "1"
-#CLOUD_ML_REGION= "us-east5"
-#ANTHROPIC_VERTEX_PROJECT_ID = "XXXX"
-
-#[profiles.zai]
-#description = "Zai GLM"
-#[profiles.zai.env]
-#ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
-#ANTHROPIC_AUTH_TOKEN="XXXX"  # Replace with your actual Z.ai API key
-
-# Check the current model names (and corresponding rate limits) at https://z.ai/manage-apikey/rate-limits
-#ANTHROPIC_DEFAULT_HAIKU_MODEL="GLM-4.7-FlashX"
-#ANTHROPIC_DEFAULT_SONNET_MODEL="GLM-4.7"
-#ANTHROPIC_DEFAULT_OPUS_MODEL="glm-5"
-
-#[profiles.mm]
-#description = "Minimax Anthropic API"
-#[profiles.mm.env]
-#ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
-#ANTHROPIC_AUTH_TOKEN="XXXX"  # Replace with yours
-
-#ANTHROPIC_DEFAULT_HAIKU_MODEL="MiniMax-M2.5"
-#ANTHROPIC_DEFAULT_SONNET_MODEL="MiniMax-M2.5"
-#ANTHROPIC_DEFAULT_OPUS_MODEL="MiniMax-M2.5"

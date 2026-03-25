@@ -35,15 +35,17 @@ The primary way to use LINCE is the **TUI Dashboard** — a Zellij WASM plugin t
 
 What the dashboard gives you:
 
-- **Multi-agent**: Spawn up to 8 Claude Code instances in parallel, each in its own sandboxed pane
+- **Multi-agent**: Spawn up to 8 AI coding agents in parallel (Claude Code, Codex, Gemini, OpenCode, Aider, and any custom agent), each in its own sandboxed pane
 - **Real-time status**: See at a glance which agents are running, waiting for input, or idle — color-coded with token usage
 - **Pane control**: Show/hide agent panes with a keystroke (`f` to focus, `h` to hide)
 - **Voice relay**: VoxCode transcriptions are piped directly to the focused agent
 - **Session persistence**: Save/restore your agent constellation across sessions (`Q` to save & quit)
 - **Swimlane grouping**: Agents auto-grouped by project directory when working across repos
-- **Sandbox isolation**: Every agent runs inside [claude-sandbox](sandbox/) — full autonomy, zero host risk
+- **Sandbox isolation**: Every agent runs inside [agent-sandbox](sandbox/) — full autonomy, zero host risk
 
 ## Quick Start
+
+For a detailed step-by-step guide with scenarios (Mini/Full/Custom), troubleshooting, and quick reference, see [QUICKSTART.md](QUICKSTART.md).
 
 ### Prerequisites
 
@@ -82,6 +84,12 @@ zd    # launch the dashboard
 
 ```bash
 cd voxcode
+./install.sh
+```
+
+Or use `uv sync` if you prefer running from source:
+```bash
+cd voxcode
 uv sync
 uv run voxcode --list-devices    # find your microphone
 uv run voxcode --audio-device <number>  # test transcription
@@ -96,6 +104,15 @@ zd
 ```
 
 Press `n` to spawn an agent (quick), or `N` for the full wizard (name, sandbox profile, project directory). Press `?` for the full keybindings overlay.
+
+### Alternative: Use the Quickstart Installer
+
+For an interactive installer that handles all modules with dependency resolution:
+```bash
+./quickstart.sh
+```
+
+See [QUICKSTART.md](QUICKSTART.md) for more options (--mini, --full, --yes flags).
 
 ### The Workflow in Practice
 
@@ -121,11 +138,11 @@ Dashboard:       Status updates in real-time (Running → INPUT → Idle)
 
 ### [lince-dashboard/](lince-dashboard/)
 
-The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that manages multiple Claude Code instances. Spawn agents, monitor status, show/hide panes, relay voice input, persist sessions. This is the primary interface for LINCE. See [lince-dashboard/README.md](lince-dashboard/README.md).
+The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that manages multiple AI coding agents (Claude Code, Codex, Gemini, OpenCode, and any custom agent). Spawn agents, monitor status, show/hide panes, relay voice input, persist sessions. Agent types are fully config-driven — add new agents via TOML or use the `/lince-setup` skill. See [lince-dashboard/README.md](lince-dashboard/README.md).
 
 ### [sandbox/](sandbox/)
 
-Bubblewrap-based sandbox for running Claude Code with `--dangerously-skip-permissions` safely. Restricts filesystem access, blocks git push, isolates environment variables, and hides host processes — with near-zero overhead. Used by the dashboard to spawn every agent.
+Bubblewrap-based sandbox for running AI coding agents safely. Restricts filesystem access, blocks git push, isolates environment variables, and hides host processes — with near-zero overhead. Supports any agent via `--agent` flag (`agent-sandbox run -a codex`, `-a gemini`, etc.). Used by the dashboard to spawn every agent.
 
 ### [voxcode/](voxcode/)
 
@@ -139,6 +156,14 @@ Text-to-Speech with local GPU/CPU engines. The output counterpart to VoxCode —
 voxtts --pane --play           # read pane content through speakers
 voxtts notes.md -o notes.mp3  # convert markdown to audio file
 ```
+
+### `/lince-setup` skill (bundled with lince-dashboard)
+
+An [agentskills.io](https://agentskills.io)-compliant skill that lets any AI coding agent register itself with the lince ecosystem. The agent knows its own requirements (binary, config dirs, API keys, sandbox behavior); the skill knows the lince config format. Together they generate correct TOML configuration for both agent-sandbox and lince-dashboard — no manual config writing needed.
+
+Run the target agent outside the dashboard and invoke `/lince-setup`. The agent introspects itself, the skill generates config, and the new agent type appears in the dashboard wizard on next launch. Works with any agent that supports the agentskills.io standard; for others, paste `SKILL.md` as a prompt.
+
+Installed automatically by `lince-dashboard/install.sh` to `~/.claude/skills/lince-setup/`.
 
 ### [agent-ready-skill/](agent-ready-skill/)
 

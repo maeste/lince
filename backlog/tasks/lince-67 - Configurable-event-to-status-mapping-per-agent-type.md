@@ -1,9 +1,10 @@
 ---
 id: LINCE-67
 title: Configurable event-to-status mapping per agent type
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-20 17:43'
+updated_date: '2026-03-25 07:04'
 labels:
   - dashboard
   - status
@@ -28,8 +29,8 @@ Add optional `event_map: HashMap<String, String>` to `AgentTypeConfig`. `StatusM
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AgentTypeConfig has optional event_map field (HashMap<String, String>)
-- [ ] #2 to_agent_status() uses event_map when available, falls back to current defaults
-- [ ] #3 Default Claude mappings preserved when no custom map set
-- [ ] #4 Custom agent can map arbitrary event strings to AgentStatus variants
+- [x] #1 AgentTypeConfig has optional event_map field (HashMap<String, String>)
+- [x] #2 to_agent_status() uses event_map when available, falls back to current defaults
+- [x] #3 Default Claude mappings preserved when no custom map set
+- [x] #4 Custom agent can map arbitrary event strings to AgentStatus variants
 <!-- AC:END -->

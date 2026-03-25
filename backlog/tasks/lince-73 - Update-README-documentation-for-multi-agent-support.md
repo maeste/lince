@@ -1,17 +1,14 @@
 ---
 id: LINCE-73
 title: Update README documentation for multi-agent support
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-20 17:44'
+updated_date: '2026-03-25 07:06'
 labels:
   - documentation
 milestone: m-12
-dependencies:
-  - LINCE-68
-  - LINCE-69
-  - LINCE-70
-  - LINCE-71
+dependencies: []
 references:
   - lince-dashboard/README.md
 priority: low
@@ -29,9 +26,9 @@ Update lince-dashboard/README.md and sandbox README with multi-agent configurati
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 README documents all supported agent types with config examples
-- [ ] #2 Explains bwrap conflict handling per agent
-- [ ] #3 Includes security warning for unsandboxed mode
-- [ ] #4 Explains hook/wrapper system for status reporting
-- [ ] #5 Shows example config.toml with agent type sections
+- [x] #1 README documents all supported agent types with config examples
+- [x] #2 Explains bwrap conflict handling per agent
+- [x] #3 Includes security warning for unsandboxed mode
+- [x] #4 Explains hook/wrapper system for status reporting
+- [x] #5 Shows example config.toml with agent type sections
 <!-- AC:END -->

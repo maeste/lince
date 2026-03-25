@@ -1,9 +1,10 @@
 ---
 id: LINCE-63
 title: Add agent type selection step to New Agent wizard
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-20 17:42'
+updated_date: '2026-03-25 06:56'
 labels:
   - dashboard
   - wizard
@@ -22,19 +23,24 @@ priority: medium
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-The wizard currently has steps: Name → Profile → ProjectDir → Confirm. Add a new first step "AgentType" showing configured agent types. Non-Claude types skip the Profile step (profiles are sandbox-specific). Quick-create (`n` key) defaults to "claude".
+Add agent type selection step to the New Agent wizard. The wizard lists all available agent configs — both built-in presets from `agents-defaults.toml` and user-defined entries from `config.toml`.
 
-**Why**: Users need a way to select which agent type to spawn. The wizard is the primary UI for creating agents with custom settings.
+**Why**: Users need to choose which agent to spawn. Listing config keys (not enum variants) means user-defined agents appear automatically with no code changes.
 
-**Key files**: `plugin/src/types.rs` (WizardState, WizardStep), `plugin/src/main.rs` (wizard event handling), `plugin/src/dashboard.rs` (wizard rendering)
+**Implementation scope**:
+- Wizard step reads available keys from `DashboardConfig.agent_types`
+- Each entry shows `display_name` and `short_label` from config
+- Selected agent type stored in spawn request and passed to `spawn_inner()`
+- Default selection: first entry or `"claude"` if available
+
+**Key file**: `plugin/src/ui.rs` or wizard module
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 WizardStep::AgentType variant exists as first step
-- [ ] #2 Wizard shows list of configured agent types when N is pressed
-- [ ] #3 Non-Claude types skip the Profile step
-- [ ] #4 Quick-create (n key) defaults to Claude sandboxed agent type
-- [ ] #5 Wizard confirm screen displays the selected agent type
-- [ ] #6 Selected agent type passed through to spawn_wizard_agent()
+- [x] #1 Wizard lists all agent types from config (built-in + user-defined)
+- [x] #2 Each entry shows display_name from AgentTypeConfig
+- [x] #3 Selected agent type passed to spawn_inner()
+- [x] #4 User-defined agents in TOML appear in wizard without code changes
+- [x] #5 Default selection is 'claude' if available
 <!-- AC:END -->

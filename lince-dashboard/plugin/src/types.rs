@@ -58,16 +58,42 @@ pub struct StatusMessage {
     #[serde(default)]
     #[allow(dead_code)] // deserialized from hook JSON, reserved for subagent type display
     pub subagent_type: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Map a canonical status string to AgentStatus.
+/// Used for event_map values and as the first pass for raw event matching.
+fn canonical_status(s: &str) -> Option<AgentStatus> {
+    match s {
+        "stopped" => Some(AgentStatus::Stopped),
+        "running" | "start" => Some(AgentStatus::Running),
+        "idle" | "waiting_for_input" => Some(AgentStatus::WaitingForInput),
+        "permission" | "permission_required" => Some(AgentStatus::PermissionRequired),
+        _ => None,
+    }
 }
 
 impl StatusMessage {
     /// Map the event string to an AgentStatus.
-    pub fn to_agent_status(&self) -> AgentStatus {
+    /// Priority: custom event_map → canonical names → Claude-specific aliases → Running.
+    pub fn to_agent_status(&self, event_map: Option<&std::collections::HashMap<String, String>>) -> AgentStatus {
+        // 1. Custom event_map lookup
+        if let Some(map) = event_map {
+            if let Some(mapped) = map.get(&self.event) {
+                return canonical_status(mapped).unwrap_or(AgentStatus::Running);
+            }
+        }
+        // 2. Canonical status names
+        if let Some(status) = canonical_status(&self.event) {
+            return status;
+        }
+        // 3. Claude Code-specific aliases
         match self.event.as_str() {
-            "stopped" | "Stop" => AgentStatus::Stopped,
-            "running" | "PreToolUse" | "start" => AgentStatus::Running,
-            "idle" | "idle_prompt" => AgentStatus::WaitingForInput,
-            "permission" | "permission_prompt" => AgentStatus::PermissionRequired,
+            "Stop" => AgentStatus::Stopped,
+            "PreToolUse" => AgentStatus::Running,
+            "idle_prompt" => AgentStatus::WaitingForInput,
+            "permission_prompt" => AgentStatus::PermissionRequired,
             _ => AgentStatus::Running,
         }
     }
@@ -85,6 +111,7 @@ pub struct NamePromptState {
 /// Which step the wizard is currently on.
 #[derive(Debug, Clone)]
 pub enum WizardStep {
+    AgentType,
     Name,
     Profile,
     ProjectDir,
@@ -95,7 +122,13 @@ pub enum WizardStep {
 #[derive(Debug, Clone)]
 pub struct WizardState {
     pub step: WizardStep,
+    /// Available agent type keys (from config.agent_types).
+    pub available_agent_types: Vec<(String, String)>,  // (key, display_name)
+    /// Currently selected agent type index.
+    pub agent_type_index: usize,
     pub name: String,
+    /// Auto-generated default name shown when the user leaves name empty (e.g. "claude-3").
+    pub default_name: String,
     /// Available sandbox profiles (from config).
     pub available_profiles: Vec<String>,
     /// Currently selected profile index in `available_profiles`.
@@ -108,6 +141,19 @@ pub struct WizardState {
 }
 
 impl WizardState {
+    /// Whether there are multiple agent types to choose from.
+    pub fn has_agent_types(&self) -> bool {
+        self.available_agent_types.len() > 1
+    }
+
+    /// Return the selected agent type key, or the default as fallback.
+    pub fn selected_agent_type(&self) -> &str {
+        self.available_agent_types
+            .get(self.agent_type_index)
+            .map(|(key, _)| key.as_str())
+            .unwrap_or(crate::config::DEFAULT_AGENT_TYPE)
+    }
+
     /// Whether there are selectable profiles.
     pub fn has_profiles(&self) -> bool {
         !self.available_profiles.is_empty()
@@ -129,6 +175,7 @@ impl WizardState {
 pub struct AgentInfo {
     pub id: String,
     pub name: String,
+    pub agent_type: String,
     pub profile: Option<String>,
     pub project_dir: String,
     pub status: AgentStatus,
@@ -140,6 +187,9 @@ pub struct AgentInfo {
     pub last_error: Option<String>,
     pub group: Option<String>,
     pub running_subagents: u32,
+    pub model: Option<String>,
+    /// Last event string read by poll_status_files(), used for change detection.
+    pub last_polled_event: Option<String>,
 }
 
 impl AgentInfo {
@@ -164,6 +214,9 @@ impl AgentInfo {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SavedAgentInfo {
     pub name: String,
+    /// Agent type key referencing AgentTypeConfig in config. Defaults to DEFAULT_AGENT_TYPE for v1 compat.
+    #[serde(default = "default_agent_type")]
+    pub agent_type: String,
     pub profile: Option<String>,
     pub project_dir: String,
     pub group: Option<String>,
@@ -171,10 +224,15 @@ pub struct SavedAgentInfo {
     pub tokens_out: u64,
 }
 
+fn default_agent_type() -> String {
+    crate::config::DEFAULT_AGENT_TYPE.to_string()
+}
+
 impl From<&AgentInfo> for SavedAgentInfo {
     fn from(a: &AgentInfo) -> Self {
         Self {
             name: a.name.clone(),
+            agent_type: a.agent_type.clone(),
             profile: a.profile.clone(),
             project_dir: a.project_dir.clone(),
             group: a.group.clone(),

@@ -1,4 +1,4 @@
-// Multi-pane agent tab layout: claude-sandbox + backlog board + shell.
+// Multi-pane agent tab layout: agent-sandbox + backlog board + shell.
 //
 // NOTE: The lince-dashboard plugin constructs this layout string dynamically
 // at runtime via new_tab_with_layout(). This file serves as the canonical
@@ -13,7 +13,7 @@
 //
 // Structure:
 //   ┌───────────────────────────────────┐
-//   │ claude-sandbox (50%)              │
+//   │ agent-sandbox (50%)              │
 //   ├─────────────────┬─────────────────┤
 //   │ backlog (50%)   │ shell (50%)     │
 //   └─────────────────┴─────────────────┘
@@ -32,7 +32,7 @@ layout {
     tab name="agent-{id}" {
         pane split_direction="horizontal" {
             pane size="50%" {
-                command "claude-sandbox"
+                command "agent-sandbox"
                 args "run" "-P" "{PROFILE}" "-p" "{PROJECT_DIR}"
             }
             pane split_direction="vertical" {

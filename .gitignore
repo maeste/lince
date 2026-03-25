@@ -4,7 +4,7 @@ __pycache__/
 *.egg-info/
 uv.lock
 .claude/
-.claude-sandbox/
+.agent-sandbox/
 .serena
 
 # Rust build artifacts

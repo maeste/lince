@@ -1,9 +1,10 @@
 ---
 id: LINCE-61
 title: Make status pipe name configurable per agent type
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-20 17:42'
+updated_date: '2026-03-25 06:56'
 labels:
   - dashboard
   - status
@@ -28,8 +29,8 @@ Currently `main.rs` `pipe()` method only listens on `"claude-status"`. Accept me
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Dashboard accepts status messages on both 'claude-status' and 'lince-status' pipe names
-- [ ] #2 Per-agent-type pipe name is configurable in AgentTypeConfig
-- [ ] #3 Existing Claude hooks continue to work without modification
-- [ ] #4 New agents can send status via 'lince-status' pipe
+- [x] #1 Dashboard accepts status messages on both 'claude-status' and 'lince-status' pipe names
+- [x] #2 Per-agent-type pipe name is configurable in AgentTypeConfig
+- [x] #3 Existing Claude hooks continue to work without modification
+- [x] #4 New agents can send status via 'lince-status' pipe
 <!-- AC:END -->

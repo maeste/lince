@@ -1,9 +1,10 @@
 ---
 id: LINCE-72
 title: Update install/update/uninstall scripts for multi-agent support
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-20 17:44'
+updated_date: '2026-03-25 07:06'
 labels:
   - install
   - scripts
@@ -30,9 +31,9 @@ Update install.sh, update.sh, and uninstall.sh to handle new artifacts: `lince-a
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 install.sh installs lince-agent-wrapper to PATH-accessible location
-- [ ] #2 update.sh updates wrapper script
-- [ ] #3 uninstall.sh removes wrapper script
-- [ ] #4 config.toml.example includes agent type configuration examples
-- [ ] #5 Scripts remain idempotent and safe to run multiple times
+- [x] #1 install.sh installs lince-agent-wrapper to PATH-accessible location
+- [x] #2 update.sh updates wrapper script
+- [x] #3 uninstall.sh removes wrapper script
+- [x] #4 config.toml.example includes agent type configuration examples
+- [x] #5 Scripts remain idempotent and safe to run multiple times
 <!-- AC:END -->

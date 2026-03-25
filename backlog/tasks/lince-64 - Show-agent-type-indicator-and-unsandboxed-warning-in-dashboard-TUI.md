@@ -1,9 +1,10 @@
 ---
 id: LINCE-64
 title: Show agent type indicator and unsandboxed warning in dashboard TUI
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-20 17:43'
+updated_date: '2026-03-25 06:56'
 labels:
   - dashboard
   - TUI
@@ -20,18 +21,24 @@ priority: medium
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Add visual indicators for agent type in the dashboard. Agent table gets a 3-char type column (CC=Claude, CX=Codex, GM=Gemini, OC=OpenCode). Unsandboxed agents show a bold red "!" warning. Detail panel shows full type name + sandbox status. Colors sourced from AgentTypeConfig.
+Show agent type indicator in dashboard TUI using `display_name`, `short_label`, and `color` from `AgentTypeConfig`. Show red warning for agents with `sandboxed: false`.
 
-**Why**: Users managing multiple agent types need to quickly identify each agent's type and sandbox status, especially the security-critical unsandboxed warning.
+**Why**: Users need to visually distinguish agent types and be aware of unsandboxed agents. All rendering driven by config fields — no per-agent code branches.
+
+**Implementation scope**:
+- Agent table shows `short_label` column with configured `color`
+- Detail panel shows `display_name`
+- Agents with `sandboxed: false` get red warning indicator in both table and detail
+- No hardcoded per-agent rendering logic
 
 **Key file**: `plugin/src/dashboard.rs`
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Agent table has 3-char type column showing short_label from AgentTypeConfig
-- [ ] #2 Unsandboxed agents show red warning indicator (bold red '!' or similar)
-- [ ] #3 Detail panel shows 'Type: X (sandboxed)' or 'Type: X (UNSANDBOXED)' with red for unsandboxed
-- [ ] #4 Colors sourced from AgentTypeConfig.color
-- [ ] #5 Rendering degrades gracefully on narrow terminals (type column can be hidden)
+- [x] #1 Agent table shows short_label column with per-agent color from config
+- [x] #2 Detail panel shows display_name from config
+- [x] #3 Agents with sandboxed=false show red warning indicator
+- [x] #4 Rendering is purely config-driven — no per-agent code branches
+- [x] #5 User-defined agents render correctly using their config values
 <!-- AC:END -->

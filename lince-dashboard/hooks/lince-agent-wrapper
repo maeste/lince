@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# lince-agent-wrapper — Generic wrapper that reports Started/Stopped lifecycle
+# status for any agent that lacks native hooks (Codex, Gemini, OpenCode, etc.).
+#
+# Usage:
+#   lince-agent-wrapper <AGENT_ID> <PIPE_NAME> <command> [args...]
+#
+# Example:
+#   lince-agent-wrapper agent-5 lince-status codex --full-auto
+#
+# On startup:  sends {"agent_id":"<AGENT_ID>","event":"start"} via zellij pipe
+# On exit:     sends {"agent_id":"<AGENT_ID>","event":"stopped"} via zellij pipe
+#
+# If zellij is not available, the agent command still runs normally.
+# Status is also written to /tmp/lince-dashboard/ as a file-based fallback.
+
+set -uo pipefail
+
+# --- Argument validation ---------------------------------------------------
+
+if [ $# -lt 3 ]; then
+    echo "Usage: lince-agent-wrapper <AGENT_ID> <PIPE_NAME> <command> [args...]" >&2
+    exit 1
+fi
+
+AGENT_ID="$1"
+PIPE_NAME="$2"
+shift 2
+
+STATUS_DIR="${LINCE_STATUS_DIR:-/tmp/lince-dashboard}"
+LOG_FILE="/tmp/lince-dashboard/wrapper-debug.log"
+
+# --- Helpers ----------------------------------------------------------------
+
+# Detect zellij availability once
+HAS_ZELLIJ=false
+if [ -n "${ZELLIJ:-}" ] && command -v zellij >/dev/null 2>&1; then
+    HAS_ZELLIJ=true
+fi
+
+send_event() {
+    local event="$1"
+    local timestamp
+    timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    local payload="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${event}\",\"timestamp\":\"${timestamp}\"}"
+
+    # Log
+    mkdir -p /tmp/lince-dashboard 2>/dev/null || true
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [${AGENT_ID}] event=${event} payload=${payload}" \
+        >> "$LOG_FILE" 2>/dev/null || true
+
+    # Primary: zellij pipe
+    if $HAS_ZELLIJ; then
+        echo "$payload" | timeout 2 zellij pipe --name "$PIPE_NAME" 2>/dev/null || true
+    fi
+
+    # Fallback: status file
+    mkdir -p "${STATUS_DIR}" 2>/dev/null || true
+    echo "$event" > "${STATUS_DIR}/${AGENT_ID}.state" 2>/dev/null || true
+}
+
+# --- Trap: send stopped on any exit ----------------------------------------
+
+cleanup() {
+    send_event "stopped"
+}
+trap cleanup EXIT
+
+# --- Main -------------------------------------------------------------------
+
+send_event "start"
+
+# Run the agent command, preserving stdin/stdout/stderr
+"$@"

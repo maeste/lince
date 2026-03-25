@@ -7,11 +7,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-INSTALL_DST="$HOME/.local/bin/claude-sandbox"
-CONFIG_DIR="$HOME/.claude-sandbox"
+INSTALL_DST="$HOME/.local/bin/agent-sandbox"
+CONFIG_DIR="$HOME/.agent-sandbox"
 
 echo -e "${BLUE}================================================${NC}"
-echo -e "${BLUE}   claude-sandbox — Uninstaller${NC}"
+echo -e "${BLUE}   agent-sandbox — Uninstaller${NC}"
 echo -e "${BLUE}================================================${NC}"
 echo ""
 
@@ -26,17 +26,27 @@ if [ -f "$INSTALL_DST" ]; then
     echo -e "${YELLOW}Found: $INSTALL_DST${NC}"
     if confirm "  Remove command?"; then
         rm -f "$INSTALL_DST" "${INSTALL_DST}.bak."*
+        rm -f "$HOME/.local/bin/agents-defaults.toml"
         echo -e "${GREEN}  ✓ Removed${NC}"
     fi
 else
     echo "  Command not found — skipping"
+fi
+
+# ── Old claude-sandbox binary ─────────────────────────────────────────
+if [ -f "$HOME/.local/bin/claude-sandbox" ]; then
+    echo -e "${YELLOW}Found old binary: $HOME/.local/bin/claude-sandbox${NC}"
+    if confirm "  Remove old claude-sandbox binary?"; then
+        rm -f "$HOME/.local/bin/claude-sandbox"
+        echo -e "${GREEN}  ✓ Removed${NC}"
+    fi
 fi
 echo ""
 
 # ── Config directory ───────────────────────────────────────────────────
 if [ -d "$CONFIG_DIR" ]; then
     echo -e "${YELLOW}Found: $CONFIG_DIR${NC}"
-    echo -e "${RED}  WARNING: This contains your config, claude config copy, and logs.${NC}"
+    echo -e "${RED}  WARNING: This contains your config and logs.${NC}"
     if confirm "  Remove entire config directory?"; then
         rm -rf "$CONFIG_DIR"
         echo -e "${GREEN}  ✓ Removed${NC}"

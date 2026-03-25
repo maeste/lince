@@ -8,13 +8,13 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SANDBOX_CMD="$SCRIPT_DIR/claude-sandbox"
-INSTALL_DST="$HOME/.local/bin/claude-sandbox"
-CONFIG_DIR="$HOME/.claude-sandbox"
+SANDBOX_CMD="$SCRIPT_DIR/agent-sandbox"
+INSTALL_DST="$HOME/.local/bin/agent-sandbox"
+CONFIG_DIR="$HOME/.agent-sandbox"
 CONFIG_DST="$CONFIG_DIR/config.toml"
 
 echo -e "${BLUE}================================================${NC}"
-echo -e "${BLUE}   claude-sandbox — Installer${NC}"
+echo -e "${BLUE}   agent-sandbox — Installer${NC}"
 echo -e "${BLUE}================================================${NC}"
 echo ""
 
@@ -51,7 +51,7 @@ echo -e "${GREEN}  ✓ bwrap $(bwrap --version 2>/dev/null | awk '{print $2}')${
 echo ""
 
 # ── Step 2: Install command ────────────────────────────────────────────
-echo -e "${GREEN}[2/4] Installing claude-sandbox command...${NC}"
+echo -e "${GREEN}[2/4] Installing agent-sandbox command...${NC}"
 
 mkdir -p "$HOME/.local/bin"
 if [ -f "$INSTALL_DST" ]; then
@@ -61,6 +61,15 @@ fi
 cp "$SANDBOX_CMD" "$INSTALL_DST"
 chmod +x "$INSTALL_DST"
 echo -e "${GREEN}  ✓ Installed: $INSTALL_DST${NC}"
+
+# Install agents-defaults.toml in both search locations
+DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
+if [ -f "$DEFAULTS_SRC" ]; then
+    cp "$DEFAULTS_SRC" "$HOME/.agent-sandbox/agents-defaults.toml"
+    echo -e "${GREEN}  ✓ Installed: ~/.agent-sandbox/agents-defaults.toml${NC}"
+    cp "$DEFAULTS_SRC" "$HOME/.local/bin/agents-defaults.toml"
+    echo -e "${GREEN}  ✓ Installed: ~/.local/bin/agents-defaults.toml${NC}"
+fi
 echo ""
 
 # ── Step 3: Initialize config ──────────────────────────────────────────
@@ -68,10 +77,21 @@ echo -e "${GREEN}[3/4] Setting up configuration...${NC}"
 
 if [ -f "$CONFIG_DST" ]; then
     echo -e "${YELLOW}  Config already exists: $CONFIG_DST${NC}"
-    echo "  Run 'claude-sandbox init --force' to reinitialize."
+    echo "  Run 'agent-sandbox init --force' to reinitialize."
 else
     "$INSTALL_DST" init
     echo -e "${GREEN}  ✓ Initialized $CONFIG_DIR${NC}"
+fi
+
+# Migration from old claude-sandbox name
+if [ -f "$HOME/.local/bin/claude-sandbox" ]; then
+    echo -e "${YELLOW}  Removing old claude-sandbox binary...${NC}"
+    rm -f "$HOME/.local/bin/claude-sandbox"
+fi
+if [ -d "$HOME/.claude-sandbox" ] && [ ! -d "$HOME/.agent-sandbox" ]; then
+    echo -e "${YELLOW}  Migrating ~/.claude-sandbox/ → ~/.agent-sandbox/...${NC}"
+    cp -r "$HOME/.claude-sandbox" "$HOME/.agent-sandbox"
+    echo -e "${GREEN}  ✓ Config migrated. You can remove ~/.claude-sandbox/ when ready.${NC}"
 fi
 echo ""
 
@@ -79,9 +99,9 @@ echo ""
 echo -e "${GREEN}[4/4] Verifying installation...${NC}"
 
 if "$INSTALL_DST" --help >/dev/null 2>&1; then
-    echo -e "${GREEN}  ✓ claude-sandbox works${NC}"
+    echo -e "${GREEN}  ✓ agent-sandbox works${NC}"
 else
-    echo -e "${RED}  ✗ claude-sandbox --help failed${NC}"
+    echo -e "${RED}  ✗ agent-sandbox --help failed${NC}"
     exit 1
 fi
 echo ""
@@ -94,9 +114,9 @@ echo "Command:  $INSTALL_DST"
 echo "Config:   $CONFIG_DST"
 echo ""
 echo "Usage:"
-echo "  claude-sandbox run              # run with defaults"
-echo "  claude-sandbox run -P vertex    # run with a profile"
-echo "  claude-sandbox status           # show sandbox status"
+echo "  agent-sandbox run              # run with defaults"
+echo "  agent-sandbox run -P vertex    # run with a profile"
+echo "  agent-sandbox status           # show sandbox status"
 echo ""
 echo "Edit $CONFIG_DST to configure profiles, API keys, and env passthrough."
 echo ""

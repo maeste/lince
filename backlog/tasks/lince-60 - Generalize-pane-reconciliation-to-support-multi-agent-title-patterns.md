@@ -1,9 +1,10 @@
 ---
 id: LINCE-60
 title: Generalize pane reconciliation to support multi-agent title patterns
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-20 17:42'
+updated_date: '2026-03-24 20:49'
 labels:
   - dashboard
   - pane-manager
@@ -29,7 +30,7 @@ priority: high
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Pane matching uses per-agent-type pattern from AgentTypeConfig.pane_title_pattern
-- [ ] #2 Claude agents still match 'claude-sandbox'
-- [ ] #3 Different agent types starting simultaneously do not cross-match panes
+- [x] #1 Pane matching uses per-agent-type pattern from AgentTypeConfig.pane_title_pattern
+- [x] #2 Claude agents still match 'claude-sandbox'
+- [x] #3 Different agent types starting simultaneously do not cross-match panes
 <!-- AC:END -->

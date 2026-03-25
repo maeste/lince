@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""claude-sandbox - Secure bubblewrap sandbox for running Claude Code.
+"""agent-sandbox - Secure bubblewrap sandbox for AI coding agents.
 
-Isolates Claude Code so it can only write to the current project directory
-and its own sandboxed config. Protects the host from filesystem damage,
-credential theft, and process interference.
+Isolates AI coding agents (Claude, Codex, Gemini, etc.) so they can only
+write to the current project directory and their own sandboxed config.
+Protects the host from filesystem damage, credential theft, and process
+interference.
 """
 
 import argparse
+import io
 import os
 import re
 import shlex
@@ -28,7 +30,151 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-SANDBOX_DIR = Path.home() / ".claude-sandbox"
+SANDBOX_DIR = Path.home() / ".agent-sandbox"
+_OLD_SANDBOX_DIR = Path.home() / ".claude-sandbox"
+
+_DEFAULT_CONFIG = """\
+# agent-sandbox configuration
+# Docs: agent-sandbox --help
+
+[sandbox]
+# Extra directories with read-write access (besides the current project)
+extra_rw = []
+
+# Directories with read-only access
+ro_dirs = ["~/project"]
+
+# Persist build tool caches between sessions
+persist_toolchains = true
+
+# Auto-detect PATH entries under $HOME and expose read-only
+auto_expose_path = true
+
+# Extra home subdirectories to expose read-only (relative to $HOME)
+# .config/gcloud is needed for Vertex AI / Google Cloud authentication
+home_ro_dirs = [".config/gcloud"]
+
+# Default provider profile (used when -P is not specified).
+# Set to a profile name defined in [profiles.*] below.
+# Leave empty to run without a profile.
+default_profile = ""
+
+[claude]
+# Legacy section — still works for backward compatibility.
+# Prefer [agents.claude] for new setups. If [agents.claude] is not
+# present in your config, default_args from this section are used.
+
+# Sandbox's Claude config directory
+config_dir = "~/.agent-sandbox/claude-config"
+
+# Use the real ~/.claude and ~/.claude.json directly (no isolated copy).
+# Skips the copy during init and mounts the real dirs in the sandbox.
+# Disables diff/merge commands (no separate copy to compare against).
+use_real_config = false
+
+[git]
+# Section name patterns to strip from .gitconfig (regex on section header)
+strip_sections = ['credential', 'url ".*"']
+
+# Values to force in the sanitized gitconfig (dot-notation keys)
+[git.overrides]
+"push.default" = "nothing"
+
+[env]
+# Environment variables passed through FROM THE HOST SHELL.
+# API keys and provider settings go in [profiles.*] sections below.
+passthrough = [
+    "TERM",
+    "COLORTERM",
+    "TERM_PROGRAM",
+    "LANG",
+    "LC_ALL",
+    "EDITOR",
+    "VISUAL",
+    # Required for lince-dashboard agent status hooks
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
+    "LINCE_AGENT_ID",
+]
+
+# Additional environment variables to set inside the sandbox
+[env.extra]
+# CUSTOM_VAR = "value"
+
+[logging]
+# Enable transcript logging by default (toggle with --log / --no-log)
+enabled = false
+dir = "~/.agent-sandbox/logs"
+
+[security]
+# PID namespace: hide host processes from the sandbox
+unshare_pid = true
+
+# New terminal session: prevents terminal escape attacks.
+# May interfere with Ctrl+C propagation. Disable if you have issues.
+new_session = false
+
+# Block git push via a wrapper script
+block_git_push = true
+
+# --- Provider profiles ---
+# Profiles are namespaced by agent type: [<agent>.profiles.<name>]
+# Legacy [profiles.<name>] is still supported and maps to "claude".
+# API keys live here, NOT in your shell environment.
+
+# --- Claude profiles ---
+
+# [claude.profiles.vertex]
+# description = "Vertex AI"
+# [claude.profiles.vertex.env]
+# CLAUDE_CODE_USE_VERTEX = "1"
+# CLOUD_ML_REGION = "us-east5"
+# ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
+# env_unset = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]
+
+# [claude.profiles.anthropic]
+# description = "Direct Anthropic API"
+# [claude.profiles.anthropic.env]
+# ANTHROPIC_API_KEY = "sk-ant-..."
+# env_unset = ["CLAUDE_CODE_USE_VERTEX", "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_PROJECT_ID"]
+
+# --- Codex profiles ---
+
+# [codex.profiles.default]
+# description = "Default OpenAI key"
+# [codex.profiles.default.env]
+# OPENAI_API_KEY = "sk-..."
+
+# --- Legacy format (still works, mapped to claude) ---
+# [profiles.vertex]
+# description = "Vertex AI"
+# [profiles.vertex.env]
+# CLAUDE_CODE_USE_VERTEX = "1"
+"""
+
+def _check_migration():
+    """Warn if old ~/.claude-sandbox/ exists but ~/.agent-sandbox/ does not."""
+    if not SANDBOX_DIR.exists() and _OLD_SANDBOX_DIR.exists():
+        print(f"\033[33m⚠ Found old config at ~/.claude-sandbox/ but no ~/.agent-sandbox/\033[0m")
+        print(f"\033[33m  Please migrate: cp -r ~/.claude-sandbox ~/.agent-sandbox\033[0m")
+        print()
+
+# Hardcoded fallback so `agent-sandbox run` works even without agents-defaults.toml.
+HARDCODED_CLAUDE_DEFAULTS: dict = {
+    "command": "claude",
+    "default_args": ["--dangerously-skip-permissions"],
+    "env": {},
+    "home_ro_dirs": [],
+    "home_rw_dirs": [],
+    "bwrap_conflict": False,
+    "disable_inner_sandbox_args": [],
+}
+
+# Keys that every agent config must have (used for validation/defaults).
+AGENT_CONFIG_KEYS: tuple[str, ...] = (
+    "command", "default_args", "env", "home_ro_dirs", "home_rw_dirs",
+    "bwrap_conflict", "disable_inner_sandbox_args",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -39,13 +185,13 @@ def find_config() -> Path:
     """Find config.toml: current directory first, then home.
 
     Search order:
-      1. ./.claude-sandbox/config.toml  (project-local)
-      2. ~/.claude-sandbox/config.toml  (global)
+      1. ./.agent-sandbox/config.toml  (project-local)
+      2. ~/.agent-sandbox/config.toml  (global)
 
     Returns the first existing path, or exits with a clear error.
     """
     candidates = [
-        Path.cwd() / ".claude-sandbox" / "config.toml",
+        Path.cwd() / ".agent-sandbox" / "config.toml",
         SANDBOX_DIR / "config.toml",
     ]
     for p in candidates:
@@ -57,11 +203,11 @@ def find_config() -> Path:
     for p in candidates:
         print(f"  {p}", file=sys.stderr)
     print(f"\nCreate a config.toml in one of these locations:", file=sys.stderr)
-    print(f"  .claude-sandbox/config.toml   (project-local, this directory)",
+    print(f"  .agent-sandbox/config.toml   (project-local, this directory)",
           file=sys.stderr)
-    print(f"  ~/.claude-sandbox/config.toml (global, shared across projects)",
+    print(f"  ~/.agent-sandbox/config.toml (global, shared across projects)",
           file=sys.stderr)
-    print(f"\nOr run 'claude-sandbox init' to set up ~/.claude-sandbox/.",
+    print(f"\nRun 'agent-sandbox init' to create a default config.",
           file=sys.stderr)
     sys.exit(1)
 
@@ -71,6 +217,115 @@ def load_config() -> tuple[dict, Path]:
     config_path = find_config()
     with open(config_path, "rb") as fh:
         return tomllib.load(fh), config_path
+
+
+def find_agents_defaults() -> dict[str, dict]:
+    """Locate and load agents-defaults.toml, returning a dict of agent configs.
+
+    Search order:
+      1. ./.agent-sandbox/agents-defaults.toml  (project-local)
+      2. ~/.agent-sandbox/agents-defaults.toml   (global)
+      3. <script-dir>/agents-defaults.toml        (development / installed alongside script)
+
+    Returns an empty dict if no file is found (caller falls back to hardcoded defaults).
+    """
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        Path.cwd() / ".agent-sandbox" / "agents-defaults.toml",
+        SANDBOX_DIR / "agents-defaults.toml",
+        script_dir / "agents-defaults.toml",
+    ]
+    for p in candidates:
+        if p.is_file():
+            with open(p, "rb") as fh:
+                data = tomllib.load(fh)
+            return data.get("agents", {})
+    return {}
+
+
+def resolve_profiles(config: dict, agent_name: str = "claude") -> dict:
+    """Resolve profiles for a given agent, merging legacy and namespaced formats.
+
+    Merge order (later wins):
+      1. Legacy ``[profiles.*]`` — only included when agent_name is "claude"
+      2. Namespaced ``[<agent_name>.profiles.*]``
+
+    Returns a flat dict of profile_name → profile_config.
+    """
+    merged: dict = {}
+    # Legacy [profiles.*] → attributed to "claude"
+    if agent_name == "claude":
+        merged.update(config.get("profiles", {}))
+    # Namespaced [<agent>.profiles.*]
+    agent_section = config.get(agent_name, {})
+    if isinstance(agent_section, dict):
+        namespaced = agent_section.get("profiles", {})
+        if isinstance(namespaced, dict):
+            merged.update(namespaced)
+    return merged
+
+
+def resolve_agent_config(config: dict, agent_name: str) -> dict:
+    """Build a fully resolved agent configuration.
+
+    Merge order (later wins):
+      1. Per-key defaults (empty strings / lists / dicts / False)
+      2. agents-defaults.toml  [agents.<name>]
+      3. User config.toml      [agents.<name>]
+      4. Legacy [claude] section (only when agent_name == "claude" and
+         [agents.claude] is absent from user config)
+
+    Returns a dict with all AGENT_CONFIG_KEYS guaranteed present.
+    """
+    # --- Layer 0: structural defaults for every key --------------------------
+    base: dict = {
+        "command": agent_name,
+        "default_args": [],
+        "env": {},
+        "home_ro_dirs": [],
+        "home_rw_dirs": [],
+        "bwrap_conflict": False,
+        "disable_inner_sandbox_args": [],
+    }
+
+    # --- Layer 1: shipped defaults from agents-defaults.toml -----------------
+    shipped_agents = find_agents_defaults()
+    shipped = shipped_agents.get(agent_name, {})
+
+    # Special case: if no agents-defaults.toml found and agent is "claude",
+    # use hardcoded fallback so existing setups keep working.
+    if not shipped_agents and agent_name == "claude":
+        shipped = dict(HARDCODED_CLAUDE_DEFAULTS)
+
+    # --- Layer 2: user config [agents.<name>] --------------------------------
+    user_agents = config.get("agents", {})
+    user_agent = user_agents.get(agent_name, {})
+
+    # --- Layer 3: backward compat — legacy [claude] section ------------------
+    legacy: dict = {}
+    if agent_name == "claude" and agent_name not in user_agents:
+        claude_section = config.get("claude", {})
+        if claude_section:
+            # Map known [claude] keys to agent config keys.
+            if "default_args" in claude_section:
+                legacy["default_args"] = list(claude_section["default_args"])
+            # config_dir and use_real_config are sandbox-level concerns,
+            # not agent-level — they stay in [claude] and are read elsewhere.
+
+    # --- Merge layers --------------------------------------------------------
+    result = dict(base)
+    for layer in (shipped, legacy, user_agent):
+        for key in AGENT_CONFIG_KEYS:
+            if key not in layer:
+                continue
+            val = layer[key]
+            if isinstance(val, dict):
+                # Merge dicts (env vars)
+                result[key] = {**result.get(key, {}), **val}
+            else:
+                result[key] = val
+
+    return result
 
 
 def expand(p: str) -> Path:
@@ -138,7 +393,7 @@ def sanitize_gitconfig(source: Path, dest: Path,
 
     if overrides:
         out.append("")
-        out.append("# claude-sandbox overrides")
+        out.append("# agent-sandbox overrides")
         for key, val in overrides.items():
             section, _, name = key.rpartition(".")
             if section and name:
@@ -154,7 +409,7 @@ def sanitize_gitconfig(source: Path, dest: Path,
 
 GIT_WRAPPER = """\
 #!/bin/bash
-# claude-sandbox: blocks git push
+# agent-sandbox: blocks git push
 case "$1" in
     push)
         printf '\\033[31mgit push is blocked inside the sandbox.\\033[0m\\n' >&2
@@ -182,23 +437,27 @@ def ensure_git_wrapper() -> Path:
 # ---------------------------------------------------------------------------
 
 def build_bwrap_cmd(config: dict, project_dir: Path,
-                    claude_args: list[str],
+                    agent_extra_args: list[str],
                     log_file: Path | None = None,
                     profile: str | None = None,
                     safe_mode: bool = False,
                     extra_rw_cli: list[str] | None = None,
-                    extra_ro_cli: list[str] | None = None) -> list[str]:
+                    extra_ro_cli: list[str] | None = None,
+                    agent_config: dict | None = None,
+                    agent_id: str | None = None,
+                    agent_name: str = "claude") -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
     claude_conf = config.get("claude", {})
     env_conf = config.get("env", {})
     sec = config.get("security", {})
+    agent_cfg = agent_config or resolve_agent_config(config, agent_name)
 
     # Resolve profile
     prof: dict = {}
     if profile:
-        profiles = config.get("profiles", {})
+        profiles = resolve_profiles(config, agent_name)
         if profile not in profiles:
             avail = ", ".join(sorted(profiles)) if profiles else "(none defined)"
             print(f"Error: unknown profile '{profile}'.", file=sys.stderr)
@@ -263,6 +522,16 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
         if full.exists():
             cmd += ["--ro-bind", str(full), str(full)]
 
+    # --- 5b. Agent-specific home dirs ----------------------------------------
+    for d in agent_cfg.get("home_ro_dirs", []):
+        full = home_p / d
+        if full.exists():
+            cmd += ["--ro-bind", str(full), str(full)]
+    for d in agent_cfg.get("home_rw_dirs", []):
+        full = home_p / d
+        full.mkdir(parents=True, exist_ok=True)
+        cmd += ["--bind", str(full), str(full)]
+
     # --- 6. Project directory (read-write) — AFTER ro mounts so it wins ------
     project = str(project_dir.resolve())
     cmd += ["--bind", project, project]
@@ -279,7 +548,7 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     else:
         # Mount from sandbox copy
         cc_dir = str(expand(claude_conf.get("config_dir",
-                                            "~/.claude-sandbox/claude-config")))
+                                            "~/.agent-sandbox/claude-config")))
         cmd += ["--bind", cc_dir, f"{home}/.claude"]
         # Claude runtime state file (~/.claude.json)
         claude_json = SANDBOX_DIR / "claude.json"
@@ -406,16 +675,33 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     for var, val in prof.get("env", {}).items():
         cmd += ["--setenv", var, str(val)]
 
+    # Agent-specific env vars
+    for var, val in agent_cfg.get("env", {}).items():
+        cmd += ["--setenv", var, str(val)]
+
+    # Lince agent ID (from --id flag)
+    if agent_id:
+        cmd += ["--setenv", "LINCE_AGENT_ID", agent_id]
+
     # --- 13. Separator -------------------------------------------------------
     cmd += ["--"]
 
     # --- 14. Command to execute ----------------------------------------------
-    # Profile can override default_args (e.g. different model per provider)
-    args_source = list(prof.get("default_args", claude_conf.get("default_args", [])))
+    # Profile can override default_args; fall back to agent config defaults.
+    args_source = list(prof.get("default_args", agent_cfg.get("default_args", [])))
     if safe_mode:
         args_source = [a for a in args_source
                        if a != "--dangerously-skip-permissions"]
-    claude_cmd = ["claude"] + args_source + list(claude_args)
+
+    # When the agent uses bwrap internally and we are already inside bwrap,
+    # append args to disable the agent's inner sandbox to avoid nesting.
+    if agent_cfg.get("bwrap_conflict", False):
+        disable_args = agent_cfg.get("disable_inner_sandbox_args", [])
+        for da in disable_args:
+            if da not in args_source:
+                args_source.append(da)
+
+    agent_cmd = [agent_cfg["command"]] + args_source + list(agent_extra_args)
 
     if log_file:
         # Use `script` to record the full terminal session.
@@ -423,15 +709,15 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
         script_bin = shutil.which("script")
         if script_bin:
             cmd += [script_bin, "-q", "-e", "-c",
-                    " ".join(shlex.quote(c) for c in claude_cmd),
+                    " ".join(shlex.quote(c) for c in agent_cmd),
                     str(log_file)]
         else:
             # Fallback: wrap with bash and tee
             cmd += ["bash", "-c",
-                    " ".join(shlex.quote(c) for c in claude_cmd)
+                    " ".join(shlex.quote(c) for c in agent_cmd)
                     + " 2>&1 | tee " + shlex.quote(str(log_file))]
     else:
-        cmd += claude_cmd
+        cmd += agent_cmd
 
     return cmd
 
@@ -441,13 +727,18 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
 # ---------------------------------------------------------------------------
 
 def cmd_init(args) -> None:
-    print("Initializing claude-sandbox...\n")
+    print("Initializing agent-sandbox...\n")
 
     # Determine use_real_config: --real-config flag or existing config setting
     use_real_config = getattr(args, "real_config", False)
     if not use_real_config:
         try:
-            config_path = find_config()
+            old_stderr = sys.stderr
+            sys.stderr = io.StringIO()
+            try:
+                config_path = find_config()
+            finally:
+                sys.stderr = old_stderr
             with open(config_path, "rb") as fh:
                 existing_config = tomllib.load(fh)
             use_real_config = existing_config.get("claude", {}).get(
@@ -517,7 +808,12 @@ def cmd_init(args) -> None:
     if not git_src.exists():
         git_src = Path.home() / ".config" / "git" / "config"
     try:
-        config_path = find_config()
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            config_path = find_config()
+        finally:
+            sys.stderr = old_stderr
         with open(config_path, "rb") as fh:
             config = tomllib.load(fh)
     except SystemExit:
@@ -531,6 +827,13 @@ def cmd_init(args) -> None:
     )
     print(f"  gitconfig     {SANDBOX_DIR / 'gitconfig'}")
 
+    # Copy agents-defaults.toml into SANDBOX_DIR so it is found at search path #2
+    agents_defaults_src = Path(__file__).resolve().parent / "agents-defaults.toml"
+    agents_defaults_dst = SANDBOX_DIR / "agents-defaults.toml"
+    if agents_defaults_src.is_file():
+        shutil.copy2(agents_defaults_src, agents_defaults_dst)
+        print(f"  agents-defaults {agents_defaults_dst}")
+
     # Git-push wrapper
     ensure_git_wrapper()
     print(f"  git wrapper   {SANDBOX_DIR / 'bin' / 'git'}")
@@ -542,19 +845,29 @@ def cmd_init(args) -> None:
         for d in home_dirs:
             print(f"    ro  {d}")
 
-    # Point user to config
+    # Create default config.toml if none exists
+    config_created = False
     try:
-        cp = find_config()
+        old_stderr = sys.stderr
+        sys.stderr = io.StringIO()
+        try:
+            cp = find_config()
+        finally:
+            sys.stderr = old_stderr
         print(f"\nUsing config:\n  {cp}\n")
     except SystemExit:
-        print(f"\nNo config.toml found. Create one at:")
-        print(f"  {SANDBOX_DIR / 'config.toml'}  (global)")
-        print(f"  .claude-sandbox/config.toml     (project-local)\n")
+        default_cfg = SANDBOX_DIR / "config.toml"
+        default_cfg.write_text(_DEFAULT_CONFIG)
+        print(f"\n  config.toml   created {default_cfg}")
+        config_created = True
 
-    print("Run Claude in sandbox:\n  claude-sandbox run\n")
+    if config_created:
+        print(f"\nEdit {SANDBOX_DIR / 'config.toml'} to configure profiles and API keys.\n")
+
+    print("Run Claude in sandbox:\n  agent-sandbox run\n")
 
 
-def cmd_run(args, claude_extra: list[str]) -> None:
+def cmd_run(args, agent_extra: list[str]) -> None:
     check_bwrap()
     config, config_path = load_config()
 
@@ -562,6 +875,10 @@ def cmd_run(args, claude_extra: list[str]) -> None:
     if not project_dir.is_dir():
         print(f"Error: not a directory: {project_dir}", file=sys.stderr)
         sys.exit(1)
+
+    # Resolve agent configuration
+    agent_name = args.agent
+    agent_cfg = resolve_agent_config(config, agent_name)
 
     # Ensure git wrapper exists
     if config.get("security", {}).get("block_git_push", True):
@@ -572,33 +889,43 @@ def cmd_run(args, claude_extra: list[str]) -> None:
     do_log = args.log if args.log is not None else log_conf.get("enabled", False)
     log_file = None
     if do_log:
-        log_dir = expand(log_conf.get("dir", "~/.claude-sandbox/logs"))
+        log_dir = expand(log_conf.get("dir", "~/.agent-sandbox/logs"))
         log_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         log_file = log_dir / f"{ts}_{project_dir.name}.log"
 
     # Resolve profile: explicit -P flag > default_profile from config
     profile = args.profile
+    from_default = False
     if profile is None:
         profile = config.get("sandbox", {}).get("default_profile", "") or None
+        from_default = True
     prof_desc = None
     if profile:
-        profiles = config.get("profiles", {})
+        profiles = resolve_profiles(config, agent_name)
         if profile not in profiles:
-            avail = ", ".join(sorted(profiles)) if profiles else "(none defined)"
-            print(f"Error: unknown profile '{profile}'.", file=sys.stderr)
-            print(f"Available profiles: {avail}", file=sys.stderr)
-            sys.exit(1)
+            if from_default:
+                # default_profile doesn't exist for this agent type — silently skip
+                profile = None
+            else:
+                # Explicit -P flag: hard error
+                avail = ", ".join(sorted(profiles)) if profiles else "(none defined)"
+                print(f"Error: unknown profile '{profile}'.", file=sys.stderr)
+                print(f"Available profiles: {avail}", file=sys.stderr)
+                sys.exit(1)
         prof_desc = profiles[profile].get("description", "")
 
     # Build command
-    cmd = build_bwrap_cmd(config, project_dir, claude_extra, log_file,
+    cmd = build_bwrap_cmd(config, project_dir, agent_extra, log_file,
                           profile=profile, safe_mode=args.safe,
-                          extra_rw_cli=args.rw, extra_ro_cli=args.ro)
+                          extra_rw_cli=args.rw, extra_ro_cli=args.ro,
+                          agent_config=agent_cfg, agent_id=args.id,
+                          agent_name=agent_name)
 
     if args.dry_run:
         print("# bwrap command that would be executed:\n")
         print(f"# config: {config_path}")
+        print(f"# agent: {agent_name} ({agent_cfg['command']})")
         if profile:
             print(f"# profile: {profile}")
         _pretty_print_cmd(cmd)
@@ -607,24 +934,27 @@ def cmd_run(args, claude_extra: list[str]) -> None:
     # Print banner
     sec = config.get("security", {})
     use_real = config.get("claude", {}).get("use_real_config", False)
-    print("claude-sandbox")
+    print("agent-sandbox")
     print(f"  config      {config_path}")
+    print(f"  agent       {agent_name} ({agent_cfg['command']})")
     if profile:
         desc = f" ({prof_desc})" if prof_desc else ""
         print(f"  profile     {profile}{desc}")
     if use_real:
-        print(f"  claude-cfg  real ~/.claude (use_real_config)")
+        print(f"  agent-cfg   real ~/.claude (use_real_config)")
     else:
         cc_dir = expand(config.get("claude", {}).get("config_dir",
-                        "~/.claude-sandbox/claude-config"))
-        print(f"  claude-cfg  {cc_dir} (isolated copy)")
+                        "~/.agent-sandbox/claude-config"))
+        print(f"  agent-cfg   {cc_dir} (isolated copy)")
     print(f"  project     {project_dir}")
     print(f"  filesystem  read-only root, writable project dir")
     print(f"  network     enabled")
     print(f"  pid isolat. {'on' if sec.get('unshare_pid', True) else 'off'}")
     print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")
     print(f"  env vars    clearenv + whitelist")
-    print(f"  permissions {'ask (safe mode)' if args.safe else 'skip (--dangerously-skip-permissions)'}")
+    if agent_cfg.get("bwrap_conflict"):
+        print(f"  bwrap fix   inner sandbox disabled via {agent_cfg.get('disable_inner_sandbox_args', [])}")
+    print(f"  permissions {'ask (safe mode)' if args.safe else 'per agent defaults'}")
     if args.rw:
         print(f"  extra rw    {', '.join(args.rw)}")
     if args.ro:
@@ -657,7 +987,7 @@ def cmd_diff(args) -> None:
     if not real.exists():
         print("No ~/.claude found."); return
     if not sand.exists():
-        print("No sandbox config. Run 'claude-sandbox init'."); return
+        print("No sandbox config. Run 'agent-sandbox init'."); return
 
     has_diff = _show_diff(real, sand, "real", "sandbox")
     if not has_diff:
@@ -676,7 +1006,7 @@ def cmd_merge(args) -> None:
     real = Path.home() / ".claude"
     sand = SANDBOX_DIR / "claude-config"
     if not sand.exists():
-        print("No sandbox config. Run 'claude-sandbox init'."); return
+        print("No sandbox config. Run 'agent-sandbox init'."); return
 
     # Collect changes
     changes = _collect_changes(real, sand)
@@ -710,7 +1040,7 @@ def cmd_merge(args) -> None:
 
 
 def cmd_status(args) -> None:
-    print("claude-sandbox status\n")
+    print("agent-sandbox status\n")
 
     config_path = None
     try:
@@ -721,7 +1051,7 @@ def cmd_status(args) -> None:
     if config_path is None:
         print("  config          NOT FOUND")
         if not SANDBOX_DIR.exists():
-            print("\n  NOT INITIALIZED  —  run 'claude-sandbox init'")
+            print("\n  NOT INITIALIZED  —  run 'agent-sandbox init'")
         return
 
     print(f"  config          {config_path}")
@@ -786,19 +1116,30 @@ def cmd_status(args) -> None:
     home_dirs = detect_home_path_dirs()
     print(f"  home PATH dirs  {len(home_dirs)} detected")
 
-    # Profiles
-    profiles = config_data.get("profiles", {})
+    # Profiles — collect from all agent types (legacy + namespaced)
     default_prof = config_data.get("sandbox", {}).get("default_profile", "") or None
-    if profiles:
-        parts = []
-        for name, pconf in sorted(profiles.items()):
-            desc = pconf.get("description", "")
-            marker = " *" if name == default_prof else ""
-            label = f"{name}{marker} ({desc})" if desc else f"{name}{marker}"
-            parts.append(label)
-        print(f"  profiles        {', '.join(parts)}")
-        if default_prof:
-            print(f"  default profile {default_prof}")
+    # Discover which agent names have namespaced profiles
+    agent_names_with_profiles: set[str] = set()
+    for key, val in config_data.items():
+        if key == "profiles":
+            agent_names_with_profiles.add("claude")  # legacy → claude
+        elif isinstance(val, dict) and isinstance(val.get("profiles"), dict):
+            agent_names_with_profiles.add(key)
+    if not agent_names_with_profiles:
+        agent_names_with_profiles.add("claude")
+    for aname in sorted(agent_names_with_profiles):
+        profiles = resolve_profiles(config_data, aname)
+        if profiles:
+            parts = []
+            for name, pconf in sorted(profiles.items()):
+                desc = pconf.get("description", "") if isinstance(pconf, dict) else ""
+                marker = " *" if name == default_prof else ""
+                label = f"{name}{marker} ({desc})" if desc else f"{name}{marker}"
+                parts.append(label)
+            prefix = f"  profiles [{aname}]"
+            print(f"{prefix:<22}{', '.join(parts)}")
+    if default_prof:
+        print(f"  default profile {default_prof}")
 
     # Config diff summary (only meaningful in isolated-copy mode)
     if not use_real:
@@ -808,7 +1149,7 @@ def cmd_status(args) -> None:
             changes = _collect_changes(real, sand)
             if changes:
                 print(f"\n  config changes  {len(changes)} file(s) differ")
-                print("  run 'claude-sandbox diff' or 'claude-sandbox merge'")
+                print("  run 'agent-sandbox diff' or 'agent-sandbox merge'")
             else:
                 print(f"\n  config changes  in sync")
 
@@ -902,9 +1243,10 @@ def _pretty_print_cmd(cmd: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    _check_migration()
     parser = argparse.ArgumentParser(
-        prog="claude-sandbox",
-        description="Secure bubblewrap sandbox for Claude Code.",
+        prog="agent-sandbox",
+        description="Secure bubblewrap sandbox for AI coding agents.",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -916,9 +1258,12 @@ def main() -> None:
                         help="Use real ~/.claude directly (set use_real_config=true)")
 
     # run
-    p_run = sub.add_parser("run", help="Run Claude inside the sandbox")
+    p_run = sub.add_parser("run", help="Run an agent inside the sandbox")
     p_run.add_argument("-p", "--project", default=".",
                        help="Project directory (default: cwd)")
+    p_run.add_argument("-a", "--agent", default="claude",
+                       help="Agent to run (default: claude). "
+                            "Looks up [agents.<name>] in config.")
     p_run.add_argument("-P", "--profile", default=None,
                        help="Provider profile name (defined in config.toml)")
     p_run.add_argument("--log", action="store_true", default=None,
@@ -933,6 +1278,8 @@ def main() -> None:
                        metavar="DIR", help="Extra read-write directory for this run (repeatable)")
     p_run.add_argument("--ro", action="append", default=[],
                        metavar="DIR", help="Extra read-only directory for this run (repeatable)")
+    p_run.add_argument("--id", default=None, metavar="ID",
+                       help="Agent ID (sets LINCE_AGENT_ID env var inside sandbox)")
 
     # diff
     sub.add_parser("diff",
@@ -945,15 +1292,15 @@ def main() -> None:
     # status
     sub.add_parser("status", help="Show sandbox status")
 
-    # ---- Split argv on '--' so extra args go to Claude ----------------------
+    # ---- Split argv on '--' so extra args go to the agent -------------------
     argv = sys.argv[1:]
     if "--" in argv:
         sep = argv.index("--")
         our_argv = argv[:sep]
-        claude_extra = argv[sep + 1:]
+        agent_extra = argv[sep + 1:]
     else:
         our_argv = argv
-        claude_extra = []
+        agent_extra = []
 
     args, unknown = parser.parse_known_args(our_argv)
 
@@ -962,14 +1309,14 @@ def main() -> None:
         sys.exit(0)
 
     if args.command == "run":
-        # Unknown options pass through to Claude CLI
-        claude_extra = unknown + claude_extra
+        # Unknown options pass through to the agent CLI
+        agent_extra = unknown + agent_extra
     elif unknown:
         parser.error(f"unrecognized arguments: {' '.join(unknown)}")
 
     dispatch = {
         "init": lambda: cmd_init(args),
-        "run": lambda: cmd_run(args, claude_extra),
+        "run": lambda: cmd_run(args, agent_extra),
         "diff": lambda: cmd_diff(args),
         "merge": lambda: cmd_merge(args),
         "status": lambda: cmd_status(args),
