@@ -271,22 +271,19 @@ fn render_agent_table(
     let col_type: usize = 5;  // 3 chars label + "!" marker + space
     let col_name: usize = 20;
     let col_profile: usize = 12;
-    let col_model: usize = 18;
     let col_status: usize = 12;
 
     // Show optional columns only when terminal is wide enough
     let base_width: usize = 1 + col_idx + 1 + col_type + 1 + col_name + 1 + col_status;
     let show_profile = cols >= base_width + 1 + col_profile;
-    let show_model = cols >= base_width + 1 + col_profile + 1 + col_model;
 
     let hdr_profile = if show_profile { format!("{} ", pad_left("Profile", col_profile)) } else { String::new() };
-    let hdr_model = if show_model { format!("{} ", pad_left("Model", col_model)) } else { String::new() };
     let hdr = format!(
-        " {} {} {} {} {}{}",
+        " {} {} {} {} {}",
         pad_left("#", col_idx), pad_left("Agent", col_type),
         pad_left("Name", col_name),
         pad_left("Status", col_status),
-        hdr_profile, hdr_model,
+        hdr_profile,
     );
     println!("{}{}{}", BOLD, truncate(&hdr, cols), RESET);
 
@@ -376,16 +373,10 @@ fn render_agent_table(
                     format!(" {}??? {}", RESET, RESET)
                 };
 
-                // Build optional profile/model column strings
+                // Build optional profile column string
                 let profile_col = if show_profile {
                     let p = agent.profile.as_deref().unwrap_or("-");
                     format!("{} ", pad_left(p, col_profile))
-                } else {
-                    String::new()
-                };
-                let model_col = if show_model {
-                    let m = agent.model.as_deref().unwrap_or("-");
-                    format!("{} ", pad_left(m, col_model))
                 } else {
                     String::new()
                 };
@@ -397,7 +388,7 @@ fn render_agent_table(
                         pad_left(&agent.name, col_name),
                     );
                     let status_str = pad_left(status_label, col_status);
-                    let trailing = format!(" {}{}", profile_col, model_col);
+                    let trailing = format!(" {}", profile_col);
                     let main_visible = strip_ansi_len(&main_part);
                     let suffix_visible_len = strip_ansi_len(&subagent_suffix);
                     let trailing_visible = strip_ansi_len(&trailing);
@@ -428,11 +419,11 @@ fn render_agent_table(
                     };
 
                     let line = format!(
-                        "{}{}{} {} {}{}{}{}{} {}{}",
+                        "{}{}{} {} {}{}{}{}{} {}",
                         prefix, pad_left(&idx_str, col_idx), type_col, name_field,
                         status_color, if needs_attention { BOLD } else { "" },
                         pad_left(status_label, col_status), subagent_suffix, RESET,
-                        profile_col, model_col,
+                        profile_col,
                     );
                     println!("{}", truncate(&line, cols));
                 }
@@ -454,35 +445,35 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
 
     let mut row = 1;
 
-    // Agent name, type, and status
+    // Agent name, type, status, and sandbox backend
     if row < max_rows {
-        let (type_display, type_color, unsandboxed_warn) =
+        let (type_display, type_color, sandbox_info) =
             if let Some(cfg) = agent_types.get(&agent.agent_type) {
+                let sandbox_str = if !cfg.sandboxed {
+                    " \x1b[1;31m[UNSANDBOXED]\x1b[0m".to_string()
+                } else {
+                    let backend_name = cfg.sandbox_backend.display_name();
+                    format!(" \x1b[2m[{}]\x1b[0m", backend_name)
+                };
                 (
                     cfg.display_name.as_str(),
                     color_name_to_ansi(&cfg.color),
-                    if !cfg.sandboxed { " \x1b[1;31m[UNSANDBOXED]\x1b[0m" } else { "" },
+                    sandbox_str,
                 )
             } else {
-                (agent.agent_type.as_str(), RESET, "")
+                (agent.agent_type.as_str(), RESET, String::new())
             };
         println!(
             " {}Agent:{} {}  {}{}{}{} {}{}{}",
             CYAN, RESET, agent.name,
-            type_color, type_display, RESET, unsandboxed_warn,
+            type_color, type_display, RESET, sandbox_info,
             agent.status.color(), agent.status.label(), RESET,
         );
         row += 1;
     }
     if row < max_rows {
-        let model_str = agent.model.as_deref().unwrap_or("");
-        let model_display = if model_str.is_empty() {
-            String::new()
-        } else {
-            format!("  {}Model:{} {}", CYAN, RESET, model_str)
-        };
         let profile = agent.profile.as_deref().unwrap_or("(default)");
-        println!(" {}Profile:{} {}{}", CYAN, RESET, profile, model_display);
+        println!(" {}Profile:{} {}", CYAN, RESET, profile);
         row += 1;
     }
     if row < max_rows {
@@ -655,12 +646,18 @@ pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize, agent_types
         WizardStep::AgentType => {
             for (i, (key, display_name)) in wizard.available_agent_types.iter().enumerate() {
                 let is_selected = i == wizard.agent_type_index;
-                let sandboxed = agent_types.get(key.as_str()).map_or(true, |c| c.sandboxed);
-                let label = if sandboxed {
-                    format!("{}", display_name)
+                let cfg = agent_types.get(key.as_str());
+                let sandboxed = cfg.map_or(true, |c| c.sandboxed);
+                let backend_suffix = if let Some(c) = cfg {
+                    if c.sandboxed {
+                        format!(" [{}]", c.sandbox_backend.display_name())
+                    } else {
+                        " (non-sandboxed)".to_string()
+                    }
                 } else {
-                    format!("{} (non-sandboxed)", display_name)
+                    String::new()
                 };
+                let label = format!("{}{}", display_name, backend_suffix);
                 if is_selected {
                     // Green background for sandboxed, red for non-sandboxed
                     let bg = if sandboxed { "\x1b[42m" } else { "\x1b[41m" }; // bg green / bg red

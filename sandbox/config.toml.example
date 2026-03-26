@@ -96,6 +96,22 @@ passthrough = [
 enabled = false
 dir = "~/.agent-sandbox/logs"
 
+[snapshot]
+# Auto-snapshot the project directory before each sandbox run
+auto_project = false
+
+# Auto-snapshot the agent config directory before each sandbox run
+auto_config = true
+
+# Maximum number of project snapshots to keep (oldest pruned first)
+max_project_snapshots = 3
+
+# Maximum number of config snapshots to keep (oldest pruned first)
+max_config_snapshots = 5
+
+# Directories to exclude from project snapshots
+project_exclude = [".git", "node_modules", "target", "__pycache__", ".venv", "build", "dist"]
+
 [security]
 # PID namespace: hide host processes from the sandbox
 unshare_pid = true
@@ -106,6 +122,16 @@ new_session = false
 
 # Block git push via a wrapper script
 block_git_push = true
+
+# Credential proxy: intercept API calls and inject credentials so that
+# API keys never enter the sandbox environment.  The proxy runs on the
+# host and forwards requests to the real API with the correct headers.
+# Requires API keys to be configured in a [*.profiles.*.env] section.
+credential_proxy = false
+
+# [credential_proxy]
+# # Extra hosts to block (cloud metadata endpoints are always blocked).
+# blocked_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]
 
 # --- Provider profiles ---
 # Profiles are namespaced by agent type: [<agent>.profiles.<name>]

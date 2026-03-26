@@ -42,7 +42,7 @@ fi
 echo ""
 
 # ── Step 2: Ensure env passthrough ─────────────────────────────────────
-echo -e "${GREEN}[2/2] Checking env passthrough...${NC}"
+echo -e "${GREEN}[2/3] Checking env passthrough...${NC}"
 
 # Required vars for lince-dashboard integration and terminal tools
 REQUIRED_VARS=("ZELLIJ" "ZELLIJ_SESSION_NAME" "LINCE_AGENT_ID")
@@ -102,6 +102,27 @@ with open(config_path, "w") as f:
 PYEOF
 
     echo -e "${GREEN}  ✓ Passthrough updated${NC}"
+fi
+echo ""
+
+# ── Step 3: nono profile sync ─────────────────────────────────────────
+echo -e "${GREEN}[3/3] Checking nono integration...${NC}"
+
+if command -v nono >/dev/null 2>&1; then
+    echo "  nono detected — regenerating lince profiles..."
+    if "$INSTALL_DST" nono-sync 2>/dev/null; then
+        echo -e "${GREEN}  ✓ nono profiles updated${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ nono-sync failed (run manually: agent-sandbox nono-sync)${NC}"
+    fi
+    # macOS: check for nono updates
+    if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+        if brew outdated nono 2>/dev/null | grep -q nono; then
+            echo -e "${YELLOW}  ⚠ nono update available: brew upgrade nono${NC}"
+        fi
+    fi
+else
+    echo -e "${YELLOW}  nono not installed — skipping profile sync${NC}"
 fi
 echo ""
 

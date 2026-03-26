@@ -190,6 +190,39 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 echo ""
 
+# ── Sandbox backend check ─────────────────────────────────────────────
+echo -e "${GREEN}[post] Checking sandbox backend...${NC}"
+
+OS_NAME="$(uname -s)"
+HAS_SANDBOX=false
+HAS_NONO=false
+command -v agent-sandbox >/dev/null 2>&1 && HAS_SANDBOX=true
+command -v nono >/dev/null 2>&1 && HAS_NONO=true
+
+if [ "$OS_NAME" = "Darwin" ]; then
+    if [ "$HAS_NONO" = true ]; then
+        echo -e "${GREEN}  ✓ macOS: nono detected as sandbox backend${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ macOS: no sandbox backend found.${NC}"
+        echo -e "${YELLOW}    agent-sandbox is Linux-only. Install nono:${NC}"
+        echo "    brew install nono"
+        echo "    See: https://github.com/always-further/nono"
+    fi
+else
+    if [ "$HAS_SANDBOX" = true ]; then
+        echo -e "${GREEN}  ✓ agent-sandbox detected${NC}"
+    fi
+    if [ "$HAS_NONO" = true ]; then
+        echo -e "${GREEN}  ✓ nono detected (alternative backend)${NC}"
+    fi
+    if [ "$HAS_SANDBOX" = false ] && [ "$HAS_NONO" = false ]; then
+        echo -e "${YELLOW}  ⚠ No sandbox backend found. Install one:${NC}"
+        echo "    agent-sandbox: cd ../sandbox && ./install.sh"
+        echo "    nono:          cargo install nono-cli"
+    fi
+fi
+echo ""
+
 # ── Summary ───────────────────────────────────────────────────────────
 echo -e "${BLUE}================================================${NC}"
 echo -e "${BLUE}   Installation Complete${NC}"
@@ -204,6 +237,16 @@ echo "            ~/.local/bin/codex-status-hook.sh"
 echo "  Wrapper:  ~/.local/bin/lince-agent-wrapper"
 echo "  Defaults: ~/.config/lince-dashboard/agents-defaults.toml"
 echo "  Skill:    ~/.claude/skills/lince-setup/"
+echo ""
+echo -e "${GREEN}Sandbox backend:${NC}"
+if [ "$OS_NAME" = "Darwin" ]; then
+    echo "  macOS — nono required (agent-sandbox is Linux-only)"
+    [ "$HAS_NONO" = true ] && echo "  ✓ nono installed" || echo "  ✗ Install: brew install nono"
+else
+    echo "  Linux — agent-sandbox (recommended) or nono"
+    [ "$HAS_SANDBOX" = true ] && echo "  ✓ agent-sandbox installed"
+    [ "$HAS_NONO" = true ] && echo "  ✓ nono installed (alternative)"
+fi
 echo ""
 echo -e "${GREEN}Usage:${NC}"
 echo "  source ~/.bashrc   # reload aliases"

@@ -11,7 +11,7 @@ use crate::types::{AgentInfo, AgentStatus};
 
 /// Variant suffixes stripped by `agent_type_base_name()`.
 /// Add new suffixes here when new sandbox variants are introduced.
-const AGENT_TYPE_SUFFIXES: &[&str] = &["-unsandboxed", "-bwrap"];
+const AGENT_TYPE_SUFFIXES: &[&str] = &["-unsandboxed", "-bwrap", "-nono"];
 
 /// Extract base agent type name, stripping sandbox variant suffixes.
 /// e.g. "claude-unsandboxed" → "claude", "codex-bwrap" → "codex", "gemini" → "gemini".

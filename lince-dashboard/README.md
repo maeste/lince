@@ -18,14 +18,16 @@ Multi-agent TUI dashboard for managing AI coding agents in [Zellij](https://zell
 └───────────────────────────────────────────────────────┘
 ```
 
-Sandboxed agents run inside the existing [agent-sandbox](../sandbox/) — the dashboard manages pane lifecycle and status, not isolation.
+Sandboxed agents run inside [agent-sandbox](../sandbox/) (bubblewrap, Linux) or [nono](https://github.com/always-further/nono) (Landlock/Seatbelt, Linux + macOS) — the dashboard manages pane lifecycle and status, not isolation. The sandbox backend is auto-detected or configurable per-agent.
 
 ## Prerequisites
 
 - **Zellij** >= 0.40 (0.43.x recommended)
 - **Rust** with `wasm32-wasip1` target (`rustup target add wasm32-wasip1`)
 - **At least one supported AI coding agent** (Claude Code, Codex, Gemini, OpenCode, Aider, Amp)
-- **[agent-sandbox](../sandbox/)** installed and configured (for sandboxed agents)
+- **A sandbox backend** (at least one):
+  - **Linux**: [agent-sandbox](../sandbox/) (recommended) or [nono](https://github.com/always-further/nono)
+  - **macOS**: [nono](https://github.com/always-further/nono) (required — agent-sandbox is Linux-only)
 - **VoxCode** (optional, for voice relay)
 
 ## Installation
@@ -63,6 +65,10 @@ Edit `~/.config/lince-dashboard/config.toml`:
 
 # Default working directory for new agents
 # default_project_dir = ""
+
+# Sandbox backend: "auto" (default), "agent-sandbox", or "nono"
+# auto: prefers agent-sandbox on Linux, uses nono on macOS
+sandbox_backend = "auto"
 
 # Path to agent-sandbox command
 sandbox_command = "agent-sandbox"
@@ -441,6 +447,55 @@ lince-dashboard/
 | `pipe()` method | Receive status + voice messages |
 | `run_command()` | Detect launch directory (pwd) |
 | `quit_zellij()` | Save state and exit session |
+
+## Sandbox Backends (experimental)
+
+> **Status: experimental** — nono backend support is new and has not been extensively validated. See [../sandbox/to-be-validated.md](../sandbox/to-be-validated.md) for testing instructions.
+
+The dashboard supports two sandbox backends for agent isolation:
+
+| Backend | Platform | Config value | How agents are launched |
+|---------|----------|-------------|------------------------|
+| **agent-sandbox** (bubblewrap) | Linux only | `"agent-sandbox"` | `agent-sandbox run -a <agent> -p <dir>` |
+| **nono** (Landlock/Seatbelt) | Linux + macOS | `"nono"` | `nono run --profile lince-<agent> -- <cmd>` |
+
+### Backend selection
+
+```toml
+[dashboard]
+sandbox_backend = "auto"    # default: agent-sandbox on Linux, nono on macOS
+```
+
+Individual agent types can override the global setting:
+
+```toml
+[agents.claude]
+sandbox_backend = "nono"    # this agent always uses nono
+```
+
+The dashboard auto-detects which backends are available at startup and shows the active backend for each agent in the UI table.
+
+### macOS setup
+
+agent-sandbox requires bubblewrap (Linux-only). On macOS, install nono:
+
+```bash
+brew install nono
+cd ../sandbox && agent-sandbox nono-sync   # generate profiles
+```
+
+The dashboard will auto-detect nono and use it for all agents.
+
+### Feature differences by backend
+
+| Feature | agent-sandbox | nono |
+|---------|--------------|------|
+| Config diff/merge | `agent-sandbox diff` | N/A |
+| Rollback | `agent-sandbox snapshot-restore` | `nono undo` |
+| Learn mode | `agent-sandbox learn` | `nono learn` |
+| Status reporting | Same (hooks via Zellij pipe) | Same |
+
+Features not available with the active backend are hidden in the UI.
 
 ## Sandbox Integration
 

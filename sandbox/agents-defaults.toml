@@ -12,6 +12,19 @@
 #   home_rw_dirs          (list[string]) — home subdirs to bind read-write
 #   bwrap_conflict        (bool)         — agent uses bwrap internally
 #   disable_inner_sandbox_args (list[string]) — args to disable agent's own sandbox
+#
+# Credential Proxy Integration:
+#   When [security].credential_proxy = true, the sandbox automatically maps
+#   known API key env vars to proxy rules.  The following env vars are
+#   recognised and proxied (API key is stripped from the sandbox env):
+#
+#     ANTHROPIC_API_KEY  -> api.anthropic.com        (x-api-key header)
+#     OPENAI_API_KEY     -> api.openai.com           (Authorization: Bearer header)
+#     GOOGLE_API_KEY     -> googleapis.com            (x-goog-api-key header)
+#     GEMINI_API_KEY     -> googleapis.com            (x-goog-api-key header)
+#
+#   The agent's *_BASE_URL env var is rewritten to point to the local proxy
+#   so the SDK sends requests through the proxy for credential injection.
 
 [agents.claude]
 command = "claude"

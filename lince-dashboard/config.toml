@@ -34,6 +34,13 @@ status_file_dir = "/tmp/lince-dashboard"
 # Maximum concurrent agents
 max_agents = 8
 
+# Sandbox backend preference: "auto" | "agent-sandbox" | "nono"
+# - "auto" (default): on macOS, uses nono; on Linux, prefers agent-sandbox, falls back to nono
+# - "agent-sandbox": use bubblewrap-based sandbox (Linux only)
+# - "nono": use Landlock/Seatbelt sandbox (Linux + macOS)
+# Individual agent types can override this in agents-defaults.toml or [agents.<name>].
+sandbox_backend = "auto"
+
 # Default agent type for new agents (matches a key in agents-defaults.toml)
 # default_agent_type = "claude"
 

@@ -8,16 +8,30 @@ interference.
 """
 
 import argparse
+import atexit
+import fnmatch
+import hashlib
 import io
+import json
+import logging
 import os
 import re
 import shlex
 import shutil
+import signal
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 from datetime import datetime
 from difflib import unified_diff
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from socketserver import ThreadingTCPServer
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 try:
     import tomllib
@@ -31,7 +45,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 SANDBOX_DIR = Path.home() / ".agent-sandbox"
+SNAPSHOT_DIR = SANDBOX_DIR / "snapshots"
 _OLD_SANDBOX_DIR = Path.home() / ".claude-sandbox"
+
+DEFAULT_PROJECT_EXCLUDES = [
+    ".git", "node_modules", "target", "__pycache__", ".venv",
+    "build", "dist",
+]
 
 _DEFAULT_CONFIG = """\
 # agent-sandbox configuration
@@ -58,6 +78,10 @@ home_ro_dirs = [".config/gcloud"]
 # Set to a profile name defined in [profiles.*] below.
 # Leave empty to run without a profile.
 default_profile = ""
+
+# Sandbox backend: "agent-sandbox" (bubblewrap), "nono" (Landlock/Seatbelt), or "auto"
+# auto: prefers agent-sandbox on Linux, uses nono on macOS or when bwrap is unavailable
+backend = "auto"
 
 [claude]
 # Legacy section — still works for backward compatibility.
@@ -106,6 +130,17 @@ passthrough = [
 enabled = false
 dir = "~/.agent-sandbox/logs"
 
+[snapshot]
+# Auto-snapshot the project directory before each sandbox run
+auto_project = false
+# Auto-snapshot the agent config directory before each sandbox run
+auto_config = true
+# Maximum number of snapshots to keep (oldest pruned first)
+max_project_snapshots = 3
+max_config_snapshots = 5
+# Directories to exclude from project snapshots
+project_exclude = [".git", "node_modules", "target", "__pycache__", ".venv", "build", "dist"]
+
 [security]
 # PID namespace: hide host processes from the sandbox
 unshare_pid = true
@@ -116,6 +151,16 @@ new_session = false
 
 # Block git push via a wrapper script
 block_git_push = true
+
+# Credential proxy: intercept API calls and inject credentials so that
+# API keys never enter the sandbox environment.  The proxy runs on the
+# host and forwards requests to the real API with the correct headers.
+# Requires API keys to be configured in a [*.profiles.*.env] section.
+credential_proxy = false
+
+# [credential_proxy]
+# # Extra hosts to block (cloud metadata endpoints are always blocked)
+# blocked_hosts = ["169.254.169.254", "metadata.google.internal"]
 
 # --- Provider profiles ---
 # Profiles are namespaced by agent type: [<agent>.profiles.<name>]
@@ -176,6 +221,405 @@ AGENT_CONFIG_KEYS: tuple[str, ...] = (
     "bwrap_conflict", "disable_inner_sandbox_args",
 )
 
+# nono built-in profile names — agents that have a matching nono profile
+# can use "extends" to inherit nono's defaults.
+NONO_BUILTIN_PROFILES: dict[str, str] = {
+    "claude": "claude-code",
+    "codex": "codex",
+    "opencode": "opencode",
+}
+
+NONO_PROFILE_DIR = Path.home() / ".config" / "nono" / "profiles"
+
+# ---------------------------------------------------------------------------
+# Credential proxy rules — maps env vars to API domain/header pairs
+# ---------------------------------------------------------------------------
+
+CREDENTIAL_PROXY_RULES: dict[str, dict[str, str]] = {
+    "ANTHROPIC_API_KEY": {
+        "domain": "api.anthropic.com",
+        "header_name": "x-api-key",
+        "header_prefix": "",
+        "env_var": "ANTHROPIC_API_KEY",
+        "base_url_env": "ANTHROPIC_BASE_URL",
+    },
+    "OPENAI_API_KEY": {
+        "domain": "api.openai.com",
+        "header_name": "Authorization",
+        "header_prefix": "Bearer ",
+        "env_var": "OPENAI_API_KEY",
+        "base_url_env": "OPENAI_BASE_URL",
+    },
+    "GOOGLE_API_KEY": {
+        "domain": "generativelanguage.googleapis.com",
+        "header_name": "x-goog-api-key",
+        "header_prefix": "",
+        "env_var": "GOOGLE_API_KEY",
+        "base_url_env": "GOOGLE_BASE_URL",
+    },
+    "GEMINI_API_KEY": {
+        "domain": "generativelanguage.googleapis.com",
+        "header_name": "x-goog-api-key",
+        "header_prefix": "",
+        "env_var": "GEMINI_API_KEY",
+        "base_url_env": "GEMINI_BASE_URL",
+    },
+}
+
+# Metadata endpoints to block (cloud provider instance metadata services).
+DEFAULT_BLOCKED_HOSTS: set[str] = {
+    "169.254.169.254",
+    "metadata.google.internal",
+    "metadata.azure.internal",
+    "100.100.100.200",  # Alibaba Cloud
+}
+
+_proxy_logger = logging.getLogger("agent-sandbox.proxy")
+
+# Headers to strip when forwarding through the credential proxy.
+_PROXY_SKIP_HEADERS = frozenset({
+    "host", "transfer-encoding", "connection", "proxy-connection",
+})
+
+
+# ---------------------------------------------------------------------------
+# Credential Proxy
+# ---------------------------------------------------------------------------
+
+class _ProxyRequestHandler(BaseHTTPRequestHandler):
+    """HTTP handler for the credential-injecting reverse proxy.
+
+    Handles two modes:
+
+    - Reverse proxy: requests to ``/`` are forwarded to a configured upstream
+      API domain with credential headers injected.  The client sets
+      ``*_BASE_URL=http://127.0.0.1:PORT`` so its SDK sends plain HTTP to us.
+    - CONNECT tunneling: for general HTTPS traffic (package managers, git).
+      Passes through without credential injection.
+
+    Blocked hosts (cloud metadata endpoints) are rejected outright.
+    """
+
+    # Set by CredentialProxy before the server starts serving.
+    credential_rules: list[dict] = []
+    blocked_hosts: set[str] = set()
+    request_count: int = 0
+    _count_lock: threading.Lock = threading.Lock()
+
+    # Silence default stderr logging — we use the logging module instead.
+    def log_message(self, fmt, *log_args):
+        _proxy_logger.debug("proxy: %s", fmt % log_args)
+
+    # --- Metadata / blocked host guard ------------------------------------
+
+    def _is_blocked(self, host: str) -> bool:
+        """Return True if *host* is in the blocked set."""
+        bare = host.split(":")[0]
+        return bare in self.blocked_hosts
+
+    def _find_rule_for_host(self, host: str) -> dict | None:
+        """Return the credential rule matching *host*, or None."""
+        bare = host.split(":")[0]
+        for rule in self.credential_rules:
+            if rule["domain"] == bare:
+                return rule
+        return None
+
+    # --- Request counting -------------------------------------------------
+
+    @classmethod
+    def _bump_count(cls):
+        with cls._count_lock:
+            cls.request_count += 1
+
+    # --- CONNECT handling (tunnel pass-through) ---------------------------
+
+    def do_CONNECT(self):  # noqa: N802
+        host = self.path
+        if self._is_blocked(host):
+            self.send_error(403, f"Blocked host: {host}")
+            _proxy_logger.info("BLOCKED CONNECT to %s", host)
+            return
+
+        self._bump_count()
+        _proxy_logger.debug("CONNECT tunnel to %s", host)
+
+        # Parse host:port.
+        if ":" in host:
+            hostname, port_s = host.rsplit(":", 1)
+            port = int(port_s)
+        else:
+            hostname, port = host, 443
+
+        try:
+            upstream = socket.create_connection((hostname, port), timeout=30)
+        except OSError as exc:
+            self.send_error(502, f"Cannot connect to {host}: {exc}")
+            return
+
+        self.send_response(200, "Connection Established")
+        self.end_headers()
+
+        # Bi-directional tunnel.
+        def _forward(src, dst):
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            finally:
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+        client_conn = self.connection
+        t1 = threading.Thread(
+            target=_forward, args=(client_conn, upstream), daemon=True
+        )
+        t2 = threading.Thread(
+            target=_forward, args=(upstream, client_conn), daemon=True
+        )
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        upstream.close()
+
+    # --- Generic forwarding for all HTTP methods --------------------------
+
+    def _handle_forward(self, method: str):
+        """Forward request to the appropriate upstream API with credentials."""
+        host_header = self.headers.get("Host", "")
+        if self._is_blocked(host_header):
+            self.send_error(403, f"Blocked host: {host_header}")
+            _proxy_logger.info("BLOCKED %s to %s", method, host_header)
+            return
+
+        rule = self._find_rule_for_host(host_header)
+
+        # When the client SDK hits http://127.0.0.1:PORT/v1/messages the
+        # Host header is 127.0.0.1:PORT — no domain match.  Fall back to
+        # matching by path prefix or the single configured rule.
+        if rule is None and len(self.credential_rules) == 1:
+            rule = self.credential_rules[0]
+        if rule is None:
+            for candidate in self.credential_rules:
+                base_path = candidate.get("base_path", "/")
+                if self.path.startswith(base_path):
+                    rule = candidate
+                    break
+        if rule is None:
+            self.send_error(502, "No credential rule matches this request")
+            return
+
+        self._bump_count()
+
+        upstream_url = f"https://{rule['domain']}{self.path}"
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = (
+            self.rfile.read(content_length) if content_length > 0 else None
+        )
+
+        req = Request(upstream_url, data=body, method=method)
+        for hdr, val in self.headers.items():
+            if hdr.lower() not in _PROXY_SKIP_HEADERS:
+                req.add_header(hdr, val)
+
+        # Inject credential header.
+        prefix = rule.get("header_prefix", "")
+        req.add_unredirected_header(
+            rule["header_name"], f"{prefix}{rule['header_value']}"
+        )
+
+        try:
+            resp = urlopen(req, timeout=120)  # noqa: S310
+            self.send_response(resp.status)
+            for hdr, val in resp.getheaders():
+                if hdr.lower() not in _PROXY_SKIP_HEADERS:
+                    self.send_header(hdr, val)
+            self.end_headers()
+            # Stream response in chunks to avoid buffering large bodies.
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except URLError as exc:
+            status = getattr(exc, "code", 502)
+            err_body = b""
+            if hasattr(exc, "read"):
+                try:
+                    err_body = exc.read()
+                except (OSError, AttributeError):
+                    pass
+            _proxy_logger.warning(
+                "Upstream error %s %s: %s", method, upstream_url, exc
+            )
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err_body)))
+            self.end_headers()
+            self.wfile.write(err_body)
+        except OSError as exc:
+            _proxy_logger.error("Proxy forwarding error: %s", exc)
+            self.send_error(502, f"Proxy error: {exc}")
+
+    def do_GET(self):  # noqa: N802
+        self._handle_forward("GET")
+
+    def do_POST(self):  # noqa: N802
+        self._handle_forward("POST")
+
+    def do_PUT(self):  # noqa: N802
+        self._handle_forward("PUT")
+
+    def do_PATCH(self):  # noqa: N802
+        self._handle_forward("PATCH")
+
+    def do_DELETE(self):  # noqa: N802
+        self._handle_forward("DELETE")
+
+    def do_HEAD(self):  # noqa: N802
+        self._handle_forward("HEAD")
+
+    def do_OPTIONS(self):  # noqa: N802
+        self._handle_forward("OPTIONS")
+
+
+class CredentialProxy:
+    """Localhost HTTP proxy that injects credentials into API requests.
+
+    Runs on ``127.0.0.1`` with a kernel-assigned ephemeral port.  Two modes:
+
+    - **Reverse proxy** for configured API domains: the sandboxed agent's
+      ``*_BASE_URL`` env var points to ``http://127.0.0.1:<port>`` so its
+      HTTP SDK sends plain-text requests to the proxy.  The proxy adds the
+      secret header and forwards over HTTPS to the real API.
+
+    - **CONNECT tunnel** for everything else: package managers, git, etc.
+      can use ``HTTP_PROXY`` to route through the proxy for general
+      connectivity without credential injection.
+
+    Cloud metadata endpoints are blocked to prevent credential theft via
+    SSRF-like attacks from AI agents.
+    """
+
+    def __init__(
+        self,
+        credential_rules: list[dict],
+        blocked_hosts: set[str] | None = None,
+    ):
+        self._rules = credential_rules
+        self._blocked = blocked_hosts or set(DEFAULT_BLOCKED_HOSTS)
+        self._server: ThreadingTCPServer | None = None
+        self._thread: threading.Thread | None = None
+        self._port: int = 0
+        self._start_time: float = 0.0
+        self._pid_file = SANDBOX_DIR / "proxy.pid"
+
+    def start(self) -> int:
+        """Start the proxy server.  Returns the assigned port number."""
+        _ProxyRequestHandler.credential_rules = list(self._rules)
+        _ProxyRequestHandler.blocked_hosts = set(self._blocked)
+        _ProxyRequestHandler.request_count = 0
+
+        ThreadingTCPServer.allow_reuse_address = True
+        ThreadingTCPServer.daemon_threads = True
+
+        self._server = ThreadingTCPServer(
+            ("127.0.0.1", 0), _ProxyRequestHandler
+        )
+        self._port = self._server.server_address[1]
+        self._start_time = time.monotonic()
+
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, daemon=True
+        )
+        self._thread.start()
+
+        # Write PID file so proxy-status can find us.
+        self._pid_file.parent.mkdir(parents=True, exist_ok=True)
+        proxy_info = {
+            "pid": os.getpid(),
+            "port": self._port,
+            "start_time": time.time(),
+            "rules": [
+                {"domain": r["domain"], "header_name": r["header_name"]}
+                for r in self._rules
+            ],
+        }
+        self._pid_file.write_text(
+            json.dumps(proxy_info, indent=2) + "\n"
+        )
+
+        atexit.register(self.stop)
+
+        _proxy_logger.info(
+            "Credential proxy started on 127.0.0.1:%d (%d rules)",
+            self._port,
+            len(self._rules),
+        )
+        return self._port
+
+    def stop(self):
+        """Shut down the proxy server and clean up the PID file."""
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+            _proxy_logger.info("Credential proxy stopped")
+        if self._pid_file.exists():
+            try:
+                self._pid_file.unlink()
+            except OSError:
+                pass
+
+    def is_alive(self) -> bool:
+        """Return True if the proxy server thread is running."""
+        return self._thread is not None and self._thread.is_alive()
+
+    def get_port(self) -> int:
+        """Return the port the proxy is listening on."""
+        return self._port
+
+    def get_request_count(self) -> int:
+        """Return the number of requests handled so far."""
+        return _ProxyRequestHandler.request_count
+
+    def uptime_seconds(self) -> float:
+        """Return how long the proxy has been running."""
+        if self._start_time:
+            return time.monotonic() - self._start_time
+        return 0.0
+
+
+def _collect_proxy_rules(env_vars: dict[str, str]) -> list[dict]:
+    """Build credential proxy rules from resolved environment variables.
+
+    Scans *env_vars* for keys matching ``CREDENTIAL_PROXY_RULES`` and
+    returns a list of rule dicts ready for ``CredentialProxy``.
+    """
+    rules: list[dict] = []
+    seen_domains: set[str] = set()
+    for env_key, rule_tpl in CREDENTIAL_PROXY_RULES.items():
+        value = env_vars.get(env_key)
+        if value and rule_tpl["domain"] not in seen_domains:
+            rules.append({
+                "domain": rule_tpl["domain"],
+                "header_name": rule_tpl["header_name"],
+                "header_prefix": rule_tpl.get("header_prefix", ""),
+                "header_value": value,
+                "env_var": env_key,
+                "base_url_env": rule_tpl["base_url_env"],
+            })
+            seen_domains.add(rule_tpl["domain"])
+    return rules
+
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -219,8 +663,11 @@ def load_config() -> tuple[dict, Path]:
         return tomllib.load(fh), config_path
 
 
+_agents_defaults_cache: dict[str, dict] | None = None
+
+
 def find_agents_defaults() -> dict[str, dict]:
-    """Locate and load agents-defaults.toml, returning a dict of agent configs.
+    """Locate and load agents-defaults.toml (cached after first call).
 
     Search order:
       1. ./.agent-sandbox/agents-defaults.toml  (project-local)
@@ -229,6 +676,9 @@ def find_agents_defaults() -> dict[str, dict]:
 
     Returns an empty dict if no file is found (caller falls back to hardcoded defaults).
     """
+    global _agents_defaults_cache
+    if _agents_defaults_cache is not None:
+        return _agents_defaults_cache
     script_dir = Path(__file__).resolve().parent
     candidates = [
         Path.cwd() / ".agent-sandbox" / "agents-defaults.toml",
@@ -239,8 +689,10 @@ def find_agents_defaults() -> dict[str, dict]:
         if p.is_file():
             with open(p, "rb") as fh:
                 data = tomllib.load(fh)
-            return data.get("agents", {})
-    return {}
+            _agents_defaults_cache = data.get("agents", {})
+            return _agents_defaults_cache
+    _agents_defaults_cache = {}
+    return _agents_defaults_cache
 
 
 def resolve_profiles(config: dict, agent_name: str = "claude") -> dict:
@@ -341,6 +793,302 @@ def check_bwrap() -> None:
         sys.exit(1)
 
 
+def detect_backends() -> dict[str, str]:
+    """Detect available sandbox backends.
+
+    Returns dict of {name: path_to_binary}.
+    """
+    backends: dict[str, str] = {}
+    bwrap_path = shutil.which("bwrap")
+    if bwrap_path:
+        backends["agent-sandbox"] = bwrap_path
+    nono_path = shutil.which("nono")
+    if nono_path:
+        backends["nono"] = nono_path
+    return backends
+
+
+def resolve_backend(config: dict) -> str:
+    """Determine which sandbox backend to use.
+
+    Returns "agent-sandbox" or "nono".  Exits with error if neither is available.
+
+    NOTE: Keep auto-detection priority in sync with
+    lince-dashboard/plugin/src/sandbox_backend.rs DetectedBackends::resolve().
+    """
+    backend_setting = config.get("sandbox", {}).get("backend", "auto")
+    backends = detect_backends()
+
+    if backend_setting == "auto":
+        is_linux = sys.platform.startswith("linux")
+        if is_linux and "agent-sandbox" in backends:
+            return "agent-sandbox"
+        if "nono" in backends:
+            return "nono"
+        if is_linux:
+            print("Error: no sandbox backend found.", file=sys.stderr)
+            print("Install bubblewrap: sudo dnf install bubblewrap", file=sys.stderr)
+            print("Or install nono: https://github.com/always-further/nono", file=sys.stderr)
+        else:
+            print("Error: no sandbox backend found.", file=sys.stderr)
+            print(
+                "agent-sandbox requires Linux (bubblewrap). On macOS, install nono:",
+                file=sys.stderr,
+            )
+            print("  brew install nono", file=sys.stderr)
+            print("  https://github.com/always-further/nono", file=sys.stderr)
+        sys.exit(1)
+    elif backend_setting == "agent-sandbox":
+        if "agent-sandbox" not in backends:
+            print("Error: backend 'agent-sandbox' selected but bwrap not found.", file=sys.stderr)
+            print("Install with:  sudo dnf install bubblewrap", file=sys.stderr)
+            sys.exit(1)
+        return "agent-sandbox"
+    elif backend_setting == "nono":
+        if "nono" not in backends:
+            print("Error: backend 'nono' selected but nono not found.", file=sys.stderr)
+            print("Install from: https://github.com/always-further/nono", file=sys.stderr)
+            sys.exit(1)
+        return "nono"
+    else:
+        print(f"Error: unknown backend '{backend_setting}'.", file=sys.stderr)
+        print("Valid options: auto, agent-sandbox, nono", file=sys.stderr)
+        sys.exit(1)
+
+
+def build_nono_cmd(
+    agent_name: str,
+    project_dir: Path,
+    agent_config: dict,
+    agent_extra_args: list[str],
+    safe_mode: bool = False,
+) -> list[str]:
+    """Build nono run command for the given agent."""
+    profile_name = f"lince-{agent_name}"
+    cmd = ["nono", "run", "--profile", profile_name]
+    cmd.extend(["--workdir", str(project_dir)])
+    cmd.append("--")
+    cmd.append(agent_config.get("command", agent_name))
+
+    default_args = list(agent_config.get("default_args", []))
+    if safe_mode:
+        # Remove --dangerously-skip-permissions if present
+        default_args = [a for a in default_args if a != "--dangerously-skip-permissions"]
+    cmd.extend(default_args)
+    cmd.extend(agent_extra_args)
+    return cmd
+
+
+def generate_nono_profile(
+    agent_name: str,
+    agent_config: dict,
+    config: dict,
+    profile_name: str | None = None,
+) -> tuple[dict, list[str]]:
+    """Generate a nono profile dict from lince agent configuration.
+
+    Returns (profile_dict, warnings_list).
+    """
+    warnings: list[str] = []
+
+    # Determine if nono has a built-in profile to extend
+    nono_base = NONO_BUILTIN_PROFILES.get(agent_name)
+    profile: dict = {}
+    if nono_base:
+        profile["extends"] = nono_base
+    profile["description"] = "Generated by lince agent-sandbox (nono-sync)"
+
+    # --- Filesystem ---
+    sandbox_conf = config.get("sandbox", {})
+    read_paths: list[str] = []
+    write_paths: list[str] = ["$WORKDIR"]
+
+    # ro_dirs from [sandbox]
+    for d in sandbox_conf.get("ro_dirs", []):
+        ep = str(expand(d))
+        if ep not in read_paths:
+            read_paths.append(ep)
+
+    # home_ro_dirs from [sandbox]
+    home = Path.home()
+    for d in sandbox_conf.get("home_ro_dirs", []):
+        full = str(home / d)
+        if full not in read_paths:
+            read_paths.append(full)
+
+    # Agent-specific ro dirs
+    for d in agent_config.get("home_ro_dirs", []):
+        full = str(home / d)
+        if full not in read_paths:
+            read_paths.append(full)
+
+    # Agent-specific rw dirs
+    for d in agent_config.get("home_rw_dirs", []):
+        full = str(home / d)
+        if full not in write_paths:
+            write_paths.append(full)
+
+    # extra_rw from [sandbox]
+    for d in sandbox_conf.get("extra_rw", []):
+        ep = str(expand(d))
+        if ep not in write_paths:
+            write_paths.append(ep)
+
+    filesystem: dict = {}
+    if read_paths:
+        filesystem["read"] = read_paths
+    if write_paths:
+        filesystem["write"] = write_paths
+    if filesystem:
+        profile["filesystem"] = filesystem
+
+    # --- Environment passthrough ---
+    env_conf = config.get("env", {})
+    passthrough = list(env_conf.get("passthrough", []))
+    if passthrough:
+        profile["environment"] = {"passthrough": passthrough}
+
+    # --- Secrets / env mappings ---
+    # Collect env vars from agent config, profile env, and [env.extra]
+    env_mappings: list[dict[str, str]] = []
+    all_env: dict[str, str] = {}
+
+    # [env.extra]
+    for var, val in env_conf.get("extra", {}).items():
+        all_env[var] = str(val)
+
+    # Profile env (if a profile is selected)
+    if profile_name:
+        profiles = resolve_profiles(config, agent_name)
+        prof_data = profiles.get(profile_name, {})
+        if isinstance(prof_data, dict):
+            for var, val in prof_data.get("env", {}).items():
+                all_env[var] = str(val)
+
+    # Agent-level env
+    for var, val in agent_config.get("env", {}).items():
+        all_env[var] = str(val)
+
+    for var in sorted(all_env):
+        # Map env vars that look like API keys to nono keystore entries
+        if "KEY" in var or "TOKEN" in var or "SECRET" in var:
+            keystore_name = f"nono/{var.lower().replace('_', '-')}"
+            env_mappings.append({"env_var": var, "keystore": keystore_name})
+        else:
+            # Non-secret env vars go into passthrough
+            existing_pt = profile.get("environment", {}).get("passthrough", [])
+            if var not in existing_pt:
+                if "environment" not in profile:
+                    profile["environment"] = {"passthrough": []}
+                if "passthrough" not in profile["environment"]:
+                    profile["environment"]["passthrough"] = []
+                profile["environment"]["passthrough"].append(var)
+
+    if env_mappings:
+        profile["secrets"] = {"env_mappings": env_mappings}
+
+    # --- Security ---
+    sec = config.get("security", {})
+    security: dict = {}
+    allowed_commands = ["git", "python3", "node", "cargo", "npm", "go", "make"]
+    if sec.get("block_git_push", True):
+        # Note: nono handles git push blocking via allowed_commands config
+        security["allowed_commands"] = allowed_commands
+    else:
+        security["allowed_commands"] = allowed_commands + ["git push"]
+    security["signal_mode"] = "process_group"
+    profile["security"] = security
+
+    # --- Network ---
+    profile["network"] = {"network_profile": "allow_all"}
+
+    # --- Warnings for untranslatable features ---
+    if agent_config.get("bwrap_conflict"):
+        warnings.append(
+            f"[{agent_name}] bwrap_conflict=true has no nono equivalent "
+            f"(nono handles nested sandboxes differently)"
+        )
+
+    if agent_config.get("disable_inner_sandbox_args"):
+        warnings.append(
+            f"[{agent_name}] disable_inner_sandbox_args has no nono equivalent"
+        )
+
+    snap_conf = config.get("snapshot", {})
+    if snap_conf.get("auto_project") or snap_conf.get("auto_config"):
+        warnings.append(
+            "[snapshot] settings not applicable to nono "
+            "(nono has built-in rollback via 'nono undo')"
+        )
+
+    return profile, warnings
+
+
+def cmd_nono_sync(args) -> None:
+    """Generate nono JSON profiles from lince agent configuration."""
+    config, config_path = load_config()
+    dry_run = args.dry_run
+
+    # Determine which agents to sync
+    if args.agent:
+        agent_names = [args.agent]
+    else:
+        # Collect all known agent names from defaults + user config
+        shipped = find_agents_defaults()
+        user_agents = config.get("agents", {})
+        all_names: set[str] = set(shipped.keys()) | set(user_agents.keys())
+        if not all_names:
+            all_names = {"claude"}
+        agent_names = sorted(all_names)
+
+    if not dry_run:
+        NONO_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"nono-sync: generating profiles from {config_path}")
+    if dry_run:
+        print("  (dry-run mode — no files will be written)\n")
+    else:
+        print(f"  output: {NONO_PROFILE_DIR}/\n")
+
+    # Resolve the profile name if any
+    profile_name = getattr(args, "profile", None)
+    if profile_name is None:
+        profile_name = config.get("sandbox", {}).get("default_profile", "") or None
+
+    all_warnings: list[str] = []
+
+    for agent_name in agent_names:
+        agent_cfg = resolve_agent_config(config, agent_name)
+        profile, warnings = generate_nono_profile(
+            agent_name, agent_cfg, config, profile_name=profile_name,
+        )
+        all_warnings.extend(warnings)
+
+        profile_json = json.dumps(profile, indent=2) + "\n"
+        out_file = NONO_PROFILE_DIR / f"lince-{agent_name}.json"
+
+        print(f"  {agent_name}:")
+        if dry_run:
+            print(profile_json)
+        else:
+            out_file.write_text(profile_json)
+            print(f"    -> {out_file}")
+
+    # Print warnings
+    if all_warnings:
+        # Deduplicate warnings
+        seen: set[str] = set()
+        print()
+        for w in all_warnings:
+            if w not in seen:
+                seen.add(w)
+                print(f"\033[33m\u26a0 {w}\033[0m")
+
+    if not dry_run:
+        print(f"\nDone. {len(agent_names)} profile(s) written to {NONO_PROFILE_DIR}/")
+        print("Run agents with nono:  nono run --profile lince-<agent> -- <command>")
+
+
 def human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024:
@@ -349,8 +1097,14 @@ def human_size(n: int) -> str:
     return f"{n:.1f} TB"
 
 
+_home_path_dirs_cache: list[Path] | None = None
+
+
 def detect_home_path_dirs() -> list[Path]:
-    """Return top-level $HOME sub-directories found in $PATH."""
+    """Return top-level $HOME sub-directories found in $PATH (cached)."""
+    global _home_path_dirs_cache
+    if _home_path_dirs_cache is not None:
+        return _home_path_dirs_cache
     home = Path.home()
     seen: set[Path] = set()
     result: list[Path] = []
@@ -364,7 +1118,8 @@ def detect_home_path_dirs() -> list[Path]:
         if top not in seen and top.exists():
             seen.add(top)
             result.append(top)
-    return sorted(result)
+    _home_path_dirs_cache = sorted(result)
+    return _home_path_dirs_cache
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +1182,11 @@ def ensure_git_wrapper() -> Path:
     bin_dir = SANDBOX_DIR / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     wrapper = bin_dir / "git"
+    try:
+        if wrapper.exists() and wrapper.read_text() == GIT_WRAPPER:
+            return bin_dir
+    except OSError:
+        pass
     wrapper.write_text(GIT_WRAPPER)
     wrapper.chmod(0o755)
     return bin_dir
@@ -445,7 +1205,8 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                     extra_ro_cli: list[str] | None = None,
                     agent_config: dict | None = None,
                     agent_id: str | None = None,
-                    agent_name: str = "claude") -> list[str]:
+                    agent_name: str = "claude",
+                    proxy_env: dict[str, str] | None = None) -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
@@ -683,6 +1444,13 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     if agent_id:
         cmd += ["--setenv", "LINCE_AGENT_ID", agent_id]
 
+    # --- 12b. Credential proxy env overrides --------------------------------
+    # proxy_env contains base URL rewrites, HTTP_PROXY settings, and
+    # env var removals (set to empty string to effectively hide API keys).
+    if proxy_env:
+        for var, val in proxy_env.items():
+            cmd += ["--setenv", var, val]
+
     # --- 13. Separator -------------------------------------------------------
     cmd += ["--"]
 
@@ -868,8 +1636,8 @@ def cmd_init(args) -> None:
 
 
 def cmd_run(args, agent_extra: list[str]) -> None:
-    check_bwrap()
     config, config_path = load_config()
+    backend = resolve_backend(config)
 
     project_dir = Path(args.project).resolve()
     if not project_dir.is_dir():
@@ -880,8 +1648,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     agent_name = args.agent
     agent_cfg = resolve_agent_config(config, agent_name)
 
-    # Ensure git wrapper exists
-    if config.get("security", {}).get("block_git_push", True):
+    # Ensure git wrapper exists (only needed for bwrap backend)
+    if backend == "agent-sandbox" and config.get("security", {}).get("block_git_push", True):
         ensure_git_wrapper()
 
     # Logging
@@ -915,12 +1683,110 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                 sys.exit(1)
         prof_desc = profiles[profile].get("description", "")
 
+    sec = config.get("security", {})
+
+    # --- nono backend path (simpler — nono handles isolation itself) -------
+    if backend == "nono":
+        # Ensure nono profile exists
+        nono_profile_file = NONO_PROFILE_DIR / f"lince-{agent_name}.json"
+        if not nono_profile_file.exists():
+            print(f"nono profile not found: {nono_profile_file}", file=sys.stderr)
+            print("Run 'agent-sandbox nono-sync' to generate profiles.", file=sys.stderr)
+            sys.exit(1)
+
+        cmd = build_nono_cmd(
+            agent_name, project_dir, agent_cfg, agent_extra,
+            safe_mode=args.safe,
+        )
+
+        if args.dry_run:
+            print("# nono command that would be executed:\n")
+            print(f"# config: {config_path}")
+            print(f"# agent: {agent_name} ({agent_cfg['command']})")
+            print(f"# profile: lince-{agent_name}")
+            if profile:
+                print(f"# provider: {profile}")
+            _pretty_print_cmd(cmd)
+            return
+
+        # Print banner
+        print("agent-sandbox (nono backend)")
+        print(f"  config      {config_path}")
+        print(f"  backend     nono ({shutil.which('nono')})")
+        print(f"  agent       {agent_name} ({agent_cfg['command']})")
+        print(f"  nono prof   lince-{agent_name}")
+        if profile:
+            desc = f" ({prof_desc})" if prof_desc else ""
+            print(f"  profile     {profile}{desc}")
+        print(f"  project     {project_dir}")
+        print(f"  isolation   Landlock LSM / Seatbelt")
+        print(f"  network     enabled")
+        print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")
+        print(
+            f"  permissions "
+            f"{'ask (safe mode)' if args.safe else 'per agent defaults'}"
+        )
+        print()
+
+        try:
+            result = subprocess.run(cmd, cwd=str(project_dir))
+            sys.exit(result.returncode)
+        except KeyboardInterrupt:
+            print("\nSandbox terminated.")
+        except FileNotFoundError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # --- agent-sandbox (bwrap) backend path --------------------------------
+
+    # --- Credential proxy setup -------------------------------------------
+    proxy_enabled = sec.get("credential_proxy", False)
+    proxy: CredentialProxy | None = None
+    proxy_env: dict[str, str] = {}
+
+    if proxy_enabled:
+        # Collect all env vars that will be visible inside the sandbox so
+        # we can scan for API keys.  Merge order matches build_bwrap_cmd.
+        collected_env: dict[str, str] = {}
+        env_conf = config.get("env", {})
+        for var, val in env_conf.get("extra", {}).items():
+            collected_env[var] = str(val)
+        if profile:
+            all_profiles = resolve_profiles(config, agent_name)
+            prof_data = all_profiles.get(profile, {})
+            for var, val in prof_data.get("env", {}).items():
+                collected_env[var] = str(val)
+        for var, val in agent_cfg.get("env", {}).items():
+            collected_env[var] = str(val)
+
+        rules = _collect_proxy_rules(collected_env)
+        if rules:
+            proxy_conf = config.get("credential_proxy", {})
+            blocked = set(
+                proxy_conf.get("blocked_hosts", DEFAULT_BLOCKED_HOSTS)
+            )
+            proxy = CredentialProxy(rules, blocked_hosts=blocked)
+            port = proxy.start()
+
+            # Build env overrides: remove API keys, rewrite base URLs,
+            # set HTTP_PROXY for general CONNECT tunneling.
+            proxy_base = f"http://127.0.0.1:{port}"
+            for rule in rules:
+                # Hide the API key from the sandbox env.
+                proxy_env[rule["env_var"]] = ""
+                # Rewrite the base URL so the SDK talks to our proxy.
+                proxy_env[rule["base_url_env"]] = proxy_base
+            proxy_env["HTTP_PROXY"] = proxy_base
+            proxy_env["http_proxy"] = proxy_base
+
     # Build command
     cmd = build_bwrap_cmd(config, project_dir, agent_extra, log_file,
                           profile=profile, safe_mode=args.safe,
                           extra_rw_cli=args.rw, extra_ro_cli=args.ro,
                           agent_config=agent_cfg, agent_id=args.id,
-                          agent_name=agent_name)
+                          agent_name=agent_name,
+                          proxy_env=proxy_env if proxy_env else None)
 
     if args.dry_run:
         print("# bwrap command that would be executed:\n")
@@ -928,14 +1794,18 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         print(f"# agent: {agent_name} ({agent_cfg['command']})")
         if profile:
             print(f"# profile: {profile}")
+        if proxy:
+            print(f"# credential proxy: 127.0.0.1:{proxy.get_port()}")
         _pretty_print_cmd(cmd)
+        if proxy:
+            proxy.stop()
         return
 
     # Print banner
-    sec = config.get("security", {})
     use_real = config.get("claude", {}).get("use_real_config", False)
     print("agent-sandbox")
     print(f"  config      {config_path}")
+    print(f"  backend     agent-sandbox (bubblewrap)")
     print(f"  agent       {agent_name} ({agent_cfg['command']})")
     if profile:
         desc = f" ({prof_desc})" if prof_desc else ""
@@ -952,8 +1822,17 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     print(f"  pid isolat. {'on' if sec.get('unshare_pid', True) else 'off'}")
     print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")
     print(f"  env vars    clearenv + whitelist")
+    if proxy:
+        domains = [r["domain"] for r in proxy._rules]
+        print(f"  cred proxy  127.0.0.1:{proxy.get_port()} -> {', '.join(domains)}")
+    else:
+        cred_label = "disabled" if not proxy_enabled else "no matching keys"
+        print(f"  cred proxy  {cred_label}")
     if agent_cfg.get("bwrap_conflict"):
-        print(f"  bwrap fix   inner sandbox disabled via {agent_cfg.get('disable_inner_sandbox_args', [])}")
+        print(
+            f"  bwrap fix   inner sandbox disabled via "
+            f"{agent_cfg.get('disable_inner_sandbox_args', [])}"
+        )
     print(f"  permissions {'ask (safe mode)' if args.safe else 'per agent defaults'}")
     if args.rw:
         print(f"  extra rw    {', '.join(args.rw)}")
@@ -961,16 +1840,29 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         print(f"  extra ro    {', '.join(args.ro)}")
     if log_file:
         print(f"  logging     {log_file}")
+
+    # Auto-snapshot before launch
+    _auto_snapshot(config, project_dir, agent_name)
+
     print()
 
     try:
         result = subprocess.run(cmd, cwd=str(project_dir))
+        snap_conf = _get_snapshot_config(config)
+        if snap_conf["auto_config"] or snap_conf["auto_project"]:
+            print(
+                "\nTip: run 'agent-sandbox snapshot-diff' to see "
+                "what changed since the pre-run snapshot.",
+            )
         sys.exit(result.returncode)
     except KeyboardInterrupt:
         print("\nSandbox terminated.")
     except FileNotFoundError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        if proxy:
+            proxy.stop()
 
 
 def cmd_diff(args) -> None:
@@ -989,7 +1881,8 @@ def cmd_diff(args) -> None:
     if not sand.exists():
         print("No sandbox config. Run 'agent-sandbox init'."); return
 
-    has_diff = _show_diff(real, sand, "real", "sandbox")
+    diff_results = compute_dir_diff(real, sand)
+    has_diff = print_dir_diff(diff_results, source_label="real", target_label="sandbox")
     if not has_diff:
         print("No differences.")
 
@@ -1008,35 +1901,15 @@ def cmd_merge(args) -> None:
     if not sand.exists():
         print("No sandbox config. Run 'agent-sandbox init'."); return
 
-    # Collect changes
-    changes = _collect_changes(real, sand)
-    if not changes:
+    diff_results = compute_dir_diff(real, sand)
+    changed = [r for r in diff_results if r[1] != "unchanged"]
+    if not changed:
         print("No changes to merge."); return
 
-    print(f"Found {len(changes)} changed file(s):\n")
-    merged = 0
-    for kind, rel in changes:
-        label = "NEW" if kind == "new" else "MOD"
-        print(f"  [{label}] {rel}")
-        while True:
-            try:
-                ch = input("    apply? (y)es / (n)o / (d)iff / (q)uit: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print(f"\nAborted. Applied {merged} file(s)."); return
-            if ch == "d":
-                _print_file_diff(real / rel, sand / rel, f"real/{rel}", f"sandbox/{rel}")
-            elif ch == "y":
-                dest = real / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(sand / rel, dest)
-                print("    applied.")
-                merged += 1
-                break
-            elif ch == "n":
-                break
-            elif ch == "q":
-                print(f"\nAborted. Applied {merged} file(s)."); return
-    print(f"\nMerge complete: {merged}/{len(changes)} file(s) applied.")
+    decisions = interactive_review(diff_results, real, sand, action_verb="apply")
+    applied = apply_diff_actions(decisions, real, sand)
+    total = sum(1 for _, d in decisions if d == "accept")
+    print(f"\nMerge complete: {applied}/{len(changed)} file(s) applied.")
 
 
 def cmd_status(args) -> None:
@@ -1103,14 +1976,43 @@ def cmd_status(args) -> None:
         if logs:
             print(f"  latest log      {logs[0].name}")
 
+    # Sandbox backends
+    backends = detect_backends()
+    backend_setting = config_data.get("sandbox", {}).get("backend", "auto")
+    active_backend = "unknown"
+    try:
+        active_backend = resolve_backend(config_data)
+    except SystemExit:
+        pass
+    print(f"  backend cfg     {backend_setting} (active: {active_backend})")
+
     # bwrap
-    bp = shutil.which("bwrap")
+    bp = backends.get("agent-sandbox")
     if bp:
         r = subprocess.run(["bwrap", "--version"], capture_output=True, text=True)
         v = r.stdout.strip() if r.returncode == 0 else "?"
         print(f"  bubblewrap      {bp}  ({v})")
     else:
         print(f"  bubblewrap      NOT INSTALLED")
+
+    # nono
+    nono_path = backends.get("nono")
+    if nono_path:
+        r = subprocess.run(["nono", "--version"], capture_output=True, text=True)
+        v = r.stdout.strip() if r.returncode == 0 else "?"
+        print(f"  nono            {nono_path}  ({v})")
+        # Check for generated profiles
+        if NONO_PROFILE_DIR.exists():
+            nono_profiles = sorted(NONO_PROFILE_DIR.glob("lince-*.json"))
+            if nono_profiles:
+                names = [p.stem.removeprefix("lince-") for p in nono_profiles]
+                print(f"  nono profiles   {', '.join(names)}")
+            else:
+                print(f"  nono profiles   (none — run 'agent-sandbox nono-sync')")
+        else:
+            print(f"  nono profiles   (none — run 'agent-sandbox nono-sync')")
+    else:
+        print(f"  nono            not installed")
 
     # Auto-detected PATH dirs
     home_dirs = detect_home_path_dirs()
@@ -1153,49 +2055,334 @@ def cmd_status(args) -> None:
             else:
                 print(f"\n  config changes  in sync")
 
+    # Snapshot status
+    snap_conf = _get_snapshot_config(config_data)
+    print()
+    auto_parts = []
+    if snap_conf["auto_config"]:
+        auto_parts.append("config")
+    if snap_conf["auto_project"]:
+        auto_parts.append("project")
+    auto_label = ", ".join(auto_parts) if auto_parts else "off"
+    print(f"  auto-snapshot   {auto_label}")
+
+    # Project snapshots for cwd
+    project_dir = Path.cwd().resolve()
+    proj_base = _get_project_snapshot_base(project_dir)
+    proj_snaps = list_snapshots(proj_base)
+    if proj_snaps:
+        total_sz = sum(sz for _, _, sz in proj_snaps)
+        print(
+            f"  project snaps   {len(proj_snaps)} "
+            f"({human_size(total_sz)}), "
+            f"latest: {proj_snaps[-1][0]}",
+        )
+    else:
+        print(f"  project snaps   (none)")
+
+    # Config snapshots for claude (default agent)
+    cfg_base = _get_config_snapshot_base("claude")
+    cfg_snaps = list_snapshots(cfg_base)
+    if cfg_snaps:
+        total_sz = sum(sz for _, _, sz in cfg_snaps)
+        print(
+            f"  config snaps    {len(cfg_snaps)} "
+            f"({human_size(total_sz)}), "
+            f"latest: {cfg_snaps[-1][0]}",
+        )
+    else:
+        print(f"  config snaps    (none)")
+
+
+def cmd_proxy_status(args) -> None:
+    """Show credential proxy status."""
+    pid_file = SANDBOX_DIR / "proxy.pid"
+
+    print("agent-sandbox proxy-status\n")
+
+    if not pid_file.exists():
+        print("  status        not running (no PID file)")
+        print(f"  pid file      {pid_file}")
+        return
+
+    try:
+        info = json.loads(pid_file.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  status        error reading PID file: {exc}")
+        return
+
+    pid = info.get("pid", 0)
+    port = info.get("port", 0)
+    start_ts = info.get("start_time", 0)
+    rules = info.get("rules", [])
+
+    # Check if process is still alive.
+    alive = False
+    if pid:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            alive = True  # Process exists but we lack permission.
+
+    if alive:
+        print(f"  status        running")
+    else:
+        print(f"  status        stale (process {pid} not found)")
+
+    print(f"  pid           {pid}")
+    print(f"  port          {port}")
+
+    if start_ts:
+        dt = datetime.fromtimestamp(start_ts)
+        elapsed = time.time() - start_ts
+        hours, remainder = divmod(int(elapsed), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        print(f"  started       {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  uptime        {hours}h {minutes}m {seconds}s")
+
+    if rules:
+        print(f"  rules         {len(rules)} configured:")
+        for r in rules:
+            domain = r.get("domain", "?")
+            header = r.get("header_name", "?")
+            print(f"                  {domain} ({header})")
+    else:
+        print(f"  rules         none configured")
+
+    if not alive:
+        print(f"\n  Note: PID file is stale.  Remove with:")
+        print(f"    rm {pid_file}")
+
 
 # ---------------------------------------------------------------------------
-# Diff / merge helpers
+# Reusable directory comparison engine
 # ---------------------------------------------------------------------------
+
+def _matches_any_exclude(rel_path: Path, excludes: list[str]) -> bool:
+    """Check if any component of rel_path matches an exclude pattern."""
+    for part in rel_path.parts:
+        for pattern in excludes:
+            if fnmatch.fnmatch(part, pattern):
+                return True
+    return False
+
+
+def compute_dir_diff(
+    source_dir: Path,
+    target_dir: Path,
+    exclude: list[str] | None = None,
+) -> list[tuple[Path, str, list[str]]]:
+    """Compare two directory trees.
+
+    Returns list of (rel_path, status, unified_diff_lines).
+    status: 'created', 'modified', 'deleted', 'unchanged'
+    exclude: list of glob patterns to skip (e.g., ['.git', 'node_modules'])
+
+    Semantics: source_dir is the baseline (old), target_dir is the current (new).
+    'created'  = exists only in target_dir
+    'deleted'  = exists only in source_dir
+    'modified' = exists in both but differs
+    """
+    excludes = exclude or []
+    source_files: set[Path] = set()
+    target_files: set[Path] = set()
+
+    if source_dir.exists():
+        for f in source_dir.rglob("*"):
+            if f.is_file():
+                rel = f.relative_to(source_dir)
+                if not _matches_any_exclude(rel, excludes):
+                    source_files.add(rel)
+
+    if target_dir.exists():
+        for f in target_dir.rglob("*"):
+            if f.is_file():
+                rel = f.relative_to(target_dir)
+                if not _matches_any_exclude(rel, excludes):
+                    target_files.add(rel)
+
+    results: list[tuple[Path, str, list[str]]] = []
+
+    for rel in sorted(source_files | target_files):
+        sf = source_dir / rel
+        tf = target_dir / rel
+
+        if rel in source_files and rel not in target_files:
+            results.append((rel, "deleted", []))
+            continue
+        if rel not in source_files and rel in target_files:
+            results.append((rel, "created", []))
+            continue
+
+        # Both exist -- compare contents
+        try:
+            s_bytes = sf.read_bytes()
+            t_bytes = tf.read_bytes()
+        except (PermissionError, OSError):
+            results.append((rel, "unchanged", []))
+            continue
+
+        if s_bytes == t_bytes:
+            results.append((rel, "unchanged", []))
+            continue
+
+        # Generate unified diff for text files
+        diff_lines: list[str] = []
+        try:
+            s_text = sf.read_text().splitlines(keepends=True)
+            t_text = tf.read_text().splitlines(keepends=True)
+            diff_lines = list(unified_diff(
+                s_text, t_text,
+                fromfile=f"source/{rel}",
+                tofile=f"target/{rel}",
+            ))
+        except (UnicodeDecodeError, PermissionError):
+            diff_lines = [f"  binary files differ: {rel}\n"]
+
+        results.append((rel, "modified", diff_lines))
+
+    return results
+
+
+def print_dir_diff(
+    diff_results: list[tuple[Path, str, list[str]]],
+    source_label: str = "source",
+    target_label: str = "target",
+) -> bool:
+    """Print a human-readable diff summary. Returns True if any differences found."""
+    has_diff = False
+    for rel, status, diff_lines in diff_results:
+        if status == "unchanged":
+            continue
+        has_diff = True
+        if status == "deleted":
+            print(f"--- only in {source_label}: {rel}")
+        elif status == "created":
+            print(f"+++ only in {target_label}: {rel}")
+        elif status == "modified":
+            if diff_lines:
+                for line in diff_lines:
+                    print(line, end="")
+                print()
+    return has_diff
+
+
+def interactive_review(
+    diff_results: list[tuple[Path, str, list[str]]],
+    source_dir: Path,
+    target_dir: Path,
+    action_verb: str = "apply",
+) -> list[tuple[Path, str]]:
+    """Present each changed file to user, collect per-file accept/reject.
+
+    Returns list of (rel_path, decision) where decision is 'accept' or 'reject'.
+    """
+    changed = [(rel, status, diff_lines)
+               for rel, status, diff_lines in diff_results
+               if status != "unchanged"]
+    if not changed:
+        return []
+
+    print(f"Found {len(changed)} changed file(s):\n")
+    decisions: list[tuple[Path, str]] = []
+
+    for rel, status, diff_lines in changed:
+        if status == "created":
+            label = "NEW"
+        elif status == "deleted":
+            label = "DEL"
+        else:
+            label = "MOD"
+        print(f"  [{label}] {rel}")
+
+        while True:
+            try:
+                ch = input(
+                    f"    {action_verb}? (y)es / (n)o / (d)iff / (q)uit: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                accepted = sum(1 for _, d in decisions if d == "accept")
+                print(f"\nAborted. Accepted {accepted} file(s).")
+                return decisions
+            if ch == "d":
+                if diff_lines:
+                    for line in diff_lines:
+                        print(line, end="")
+                    print()
+                else:
+                    _print_file_diff(
+                        source_dir / rel, target_dir / rel,
+                        f"source/{rel}", f"target/{rel}",
+                    )
+            elif ch == "y":
+                decisions.append((rel, "accept"))
+                break
+            elif ch == "n":
+                decisions.append((rel, "reject"))
+                break
+            elif ch == "q":
+                accepted = sum(1 for _, d in decisions if d == "accept")
+                print(f"\nAborted. Accepted {accepted} file(s).")
+                return decisions
+
+    return decisions
+
+
+def apply_diff_actions(
+    actions: list[tuple[Path, str]],
+    source_dir: Path,
+    target_dir: Path,
+) -> int:
+    """Apply accepted actions from an interactive_review result.
+
+    For merge (sandbox->real): source_dir=real, target_dir=sandbox
+      - 'created' in target: copy target->source
+      - 'modified': copy target->source
+      - 'deleted' from source: remove from source
+
+    For restore (snapshot->current): source_dir=snapshot, target_dir=current
+      - copy from source to target for accepted changes
+
+    Returns count of applied files.
+    """
+    applied = 0
+    for rel, decision in actions:
+        if decision != "accept":
+            continue
+        src_file = source_dir / rel
+        tgt_file = target_dir / rel
+
+        if tgt_file.exists():
+            src_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(tgt_file, src_file)
+        else:
+            if src_file.exists():
+                src_file.unlink()
+        applied += 1
+        print(f"    applied: {rel}")
+
+    return applied
+
+
+# Legacy helpers -- used by cmd_diff/cmd_merge and cmd_status
 
 def _collect_changes(real: Path, sand: Path) -> list[tuple[str, Path]]:
-    changes = []
-    sand_files = {f.relative_to(sand) for f in sand.rglob("*") if f.is_file()}
-    real_files = {f.relative_to(real) for f in real.rglob("*") if f.is_file()} \
-                 if real.exists() else set()
-    for rel in sorted(sand_files):
-        sf = sand / rel
-        rf = real / rel
-        if rel not in real_files:
+    """Collect changes between real and sandbox dirs (legacy wrapper)."""
+    diff_results = compute_dir_diff(real, sand)
+    changes: list[tuple[str, Path]] = []
+    for rel, status, _diff_lines in diff_results:
+        if status == "created":
             changes.append(("new", rel))
-        else:
-            try:
-                if sf.read_bytes() != rf.read_bytes():
-                    changes.append(("modified", rel))
-            except (PermissionError, OSError):
-                pass
+        elif status == "modified":
+            changes.append(("modified", rel))
     return changes
 
 
-def _show_diff(dir_a: Path, dir_b: Path, label_a: str, label_b: str) -> bool:
-    files_a = {f.relative_to(dir_a) for f in dir_a.rglob("*") if f.is_file()}
-    files_b = {f.relative_to(dir_b) for f in dir_b.rglob("*") if f.is_file()}
-    has = False
-    for rel in sorted(files_a | files_b):
-        fa, fb = dir_a / rel, dir_b / rel
-        if rel in files_a and rel not in files_b:
-            print(f"--- only in {label_a}: {rel}")
-            has = True
-        elif rel not in files_a and rel in files_b:
-            print(f"+++ only in {label_b}: {rel}")
-            has = True
-        else:
-            if _print_file_diff(fa, fb, f"{label_a}/{rel}", f"{label_b}/{rel}"):
-                has = True
-    return has
-
-
 def _print_file_diff(fa: Path, fb: Path, la: str, lb: str) -> bool:
+    """Print unified diff between two files. Returns True if differences found."""
     try:
         a = fa.read_text().splitlines(keepends=True) if fa.exists() else []
         b = fb.read_text().splitlines(keepends=True) if fb.exists() else []
@@ -1236,6 +2423,1515 @@ def _pretty_print_cmd(cmd: list[str]) -> None:
         else:
             print(f"  {shlex.quote(tok)} \\")
             i += 1
+
+
+
+
+# ---------------------------------------------------------------------------
+# Snapshot engine
+# ---------------------------------------------------------------------------
+
+
+def get_project_hash(project_dir: Path) -> str:
+    """Deterministic short hash of the project path for snapshot namespacing."""
+    canonical = str(project_dir.resolve())
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+def create_snapshot(
+    source_dir: Path,
+    snapshot_base_dir: Path,
+    exclude: list[str] | None = None,
+    link_dest: Path | None = None,
+) -> Path:
+    """Create an rsync --link-dest snapshot.
+
+    source_dir: directory to snapshot
+    snapshot_base_dir: e.g., ~/.agent-sandbox/snapshots/projects/<hash>/
+    exclude: list of dir names to exclude
+    link_dest: previous snapshot dir for hardlink dedup
+    Returns: path to created snapshot directory (named by ISO timestamp)
+    """
+    if shutil.which("rsync") is None:
+        print(
+            "Error: rsync not found. Install rsync to use snapshots.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    dest = snapshot_base_dir / timestamp
+    dest.mkdir(parents=True, exist_ok=True)
+
+    rsync_cmd: list[str] = ["rsync", "-a"]
+
+    if link_dest and link_dest.is_dir():
+        rsync_cmd.append(f"--link-dest={link_dest}")
+
+    for pattern in (exclude or []):
+        rsync_cmd.append(f"--exclude={pattern}")
+
+    # rsync needs trailing slash on source to copy contents
+    rsync_cmd.append(str(source_dir).rstrip("/") + "/")
+    rsync_cmd.append(str(dest) + "/")
+
+    result = subprocess.run(rsync_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(
+            f"Error: rsync failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        if dest.exists():
+            shutil.rmtree(dest)
+        sys.exit(1)
+
+    return dest
+
+
+def list_snapshots(
+    snapshot_base_dir: Path,
+) -> list[tuple[str, Path, int]]:
+    """List available snapshots sorted by timestamp.
+
+    Returns list of (timestamp_str, path, size_bytes).
+    """
+    if not snapshot_base_dir.exists():
+        return []
+
+    snapshots: list[tuple[str, Path, int]] = []
+    for entry in sorted(snapshot_base_dir.iterdir()):
+        if entry.is_dir() and len(entry.name) >= 15:
+            try:
+                datetime.strptime(entry.name[:15], "%Y%m%dT%H%M%S")
+            except ValueError:
+                continue
+            size = get_snapshot_size(entry)
+            snapshots.append((entry.name, entry, size))
+
+    return snapshots
+
+
+def prune_snapshots(snapshot_base_dir: Path, max_count: int) -> int:
+    """Remove oldest snapshots exceeding max_count. Returns number removed."""
+    snaps = list_snapshots(snapshot_base_dir)
+    if len(snaps) <= max_count:
+        return 0
+
+    removed = 0
+    to_remove = snaps[: len(snaps) - max_count]
+    for _ts, path, _sz in to_remove:
+        shutil.rmtree(path)
+        removed += 1
+
+    return removed
+
+
+def get_snapshot_size(snapshot_dir: Path) -> int:
+    """Get disk usage of a snapshot in bytes."""
+    total = 0
+    try:
+        for f in snapshot_dir.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _resolve_config_dir(config: dict, agent_name: str) -> Path | None:
+    """Resolve the agent config directory path from sandbox config."""
+    if agent_name == "claude":
+        claude_conf = config.get("claude", {})
+        if claude_conf.get("use_real_config", False):
+            return Path.home() / ".claude"
+        return expand(
+            claude_conf.get(
+                "config_dir", "~/.agent-sandbox/claude-config",
+            )
+        )
+
+    agent_cfg = resolve_agent_config(config, agent_name)
+    for d in (
+        agent_cfg.get("home_rw_dirs", [])
+        + agent_cfg.get("home_ro_dirs", [])
+    ):
+        full = Path.home() / d
+        if full.exists():
+            return full
+    return None
+
+
+def _get_snapshot_config(config: dict) -> dict:
+    """Read [snapshot] section from config with defaults."""
+    snap_conf = config.get("snapshot", {})
+    return {
+        "auto_project": snap_conf.get("auto_project", False),
+        "auto_config": snap_conf.get("auto_config", True),
+        "max_project_snapshots": snap_conf.get(
+            "max_project_snapshots", 3,
+        ),
+        "max_config_snapshots": snap_conf.get(
+            "max_config_snapshots", 5,
+        ),
+        "project_exclude": snap_conf.get(
+            "project_exclude", list(DEFAULT_PROJECT_EXCLUDES),
+        ),
+    }
+
+
+def _get_project_snapshot_base(project_dir: Path) -> Path:
+    """Return snapshot base dir for a project."""
+    phash = get_project_hash(project_dir)
+    return SNAPSHOT_DIR / "projects" / phash
+
+
+def _get_config_snapshot_base(agent_name: str) -> Path:
+    """Return snapshot base dir for an agent's config."""
+    return SNAPSHOT_DIR / "configs" / agent_name
+
+
+def _latest_snapshot(snapshot_base_dir: Path) -> Path | None:
+    """Return the path of the most recent snapshot, or None."""
+    snaps = list_snapshots(snapshot_base_dir)
+    if snaps:
+        return snaps[-1][1]
+    return None
+
+
+def _find_snapshot_by_timestamp(
+    snapshot_base_dir: Path,
+    timestamp: str,
+) -> Path | None:
+    """Find a snapshot matching a timestamp prefix."""
+    snaps = list_snapshots(snapshot_base_dir)
+    for ts, path, _sz in snaps:
+        if ts.startswith(timestamp) or ts == timestamp:
+            return path
+    return None
+
+
+def _auto_snapshot(config: dict, project_dir: Path, agent_name: str) -> None:
+    """Create auto-snapshots before sandbox launch (called from cmd_run)."""
+    snap_conf = _get_snapshot_config(config)
+
+    if snap_conf["auto_config"]:
+        config_dir = _resolve_config_dir(config, agent_name)
+        if config_dir and config_dir.exists():
+            base = _get_config_snapshot_base(agent_name)
+            link = _latest_snapshot(base)
+            try:
+                snap_path = create_snapshot(
+                    config_dir, base, link_dest=link,
+                )
+                prune_snapshots(base, snap_conf["max_config_snapshots"])
+                print(f"  auto-snap   config {snap_path.name}")
+            except SystemExit:
+                print(
+                    "  auto-snap   config FAILED (continuing)",
+                    file=sys.stderr,
+                )
+
+    if snap_conf["auto_project"]:
+        if project_dir.is_dir():
+            base = _get_project_snapshot_base(project_dir)
+            link = _latest_snapshot(base)
+            excludes = snap_conf["project_exclude"]
+            try:
+                snap_path = create_snapshot(
+                    project_dir, base,
+                    exclude=excludes, link_dest=link,
+                )
+                prune_snapshots(
+                    base, snap_conf["max_project_snapshots"],
+                )
+                print(f"  auto-snap   project {snap_path.name}")
+            except SystemExit:
+                print(
+                    "  auto-snap   project FAILED (continuing)",
+                    file=sys.stderr,
+                )
+
+
+# ---------------------------------------------------------------------------
+# Snapshot commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_snapshot(args) -> None:
+    """Create snapshots of project dir and/or agent config dir."""
+    config, _ = load_config()
+    agent_name = args.agent
+    snap_conf = _get_snapshot_config(config)
+    project_dir = Path(args.project).resolve()
+
+    do_project = not args.config_only
+    do_config = not args.project_only
+
+    if do_project:
+        if not project_dir.is_dir():
+            print(
+                f"Error: not a directory: {project_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        base = _get_project_snapshot_base(project_dir)
+        link = _latest_snapshot(base)
+        excludes = snap_conf["project_exclude"]
+        print(f"Creating project snapshot: {project_dir}")
+        snap_path = create_snapshot(
+            project_dir, base, exclude=excludes, link_dest=link,
+        )
+        sz = get_snapshot_size(snap_path)
+        print(f"  saved: {snap_path.name} ({human_size(sz)})")
+        removed = prune_snapshots(
+            base, snap_conf["max_project_snapshots"],
+        )
+        if removed:
+            print(f"  pruned {removed} old snapshot(s)")
+
+    if do_config:
+        config_dir = _resolve_config_dir(config, agent_name)
+        if config_dir is None:
+            print(
+                f"No config directory found for agent "
+                f"'{agent_name}'.",
+            )
+        elif not config_dir.exists():
+            print(f"Config directory does not exist: {config_dir}")
+        else:
+            base = _get_config_snapshot_base(agent_name)
+            link = _latest_snapshot(base)
+            print(f"Creating config snapshot: {config_dir}")
+            snap_path = create_snapshot(
+                config_dir, base, link_dest=link,
+            )
+            sz = get_snapshot_size(snap_path)
+            print(
+                f"  saved: {snap_path.name} ({human_size(sz)})",
+            )
+            removed = prune_snapshots(
+                base, snap_conf["max_config_snapshots"],
+            )
+            if removed:
+                print(f"  pruned {removed} old snapshot(s)")
+
+
+def cmd_snapshot_list(args) -> None:
+    """List snapshots with timestamps and disk usage."""
+    config, _ = load_config()
+    agent_name = args.agent
+    project_dir = Path(args.project).resolve()
+
+    project_only = getattr(args, "project_only", False)
+    config_only = getattr(args, "config", False)
+    show_project = not config_only
+    show_config = not project_only
+
+    if show_project:
+        base = _get_project_snapshot_base(project_dir)
+        snaps = list_snapshots(base)
+        print(f"Project snapshots ({project_dir}):")
+        if snaps:
+            phash = get_project_hash(project_dir)
+            print(f"  hash: {phash}")
+            for ts, _path, sz in snaps:
+                print(f"  {ts}  {human_size(sz)}")
+        else:
+            print("  (none)")
+        print()
+
+    if show_config:
+        config_dir = _resolve_config_dir(config, agent_name)
+        base = _get_config_snapshot_base(agent_name)
+        snaps = list_snapshots(base)
+        label = (
+            str(config_dir) if config_dir else "(not configured)"
+        )
+        print(
+            f"Config snapshots [{agent_name}] ({label}):",
+        )
+        if snaps:
+            for ts, _path, sz in snaps:
+                print(f"  {ts}  {human_size(sz)}")
+        else:
+            print("  (none)")
+
+
+def cmd_snapshot_diff(args) -> None:
+    """Compare snapshots against current state or each other."""
+    config, _ = load_config()
+    agent_name = args.agent
+    project_dir = Path(args.project).resolve()
+    snap_conf = _get_snapshot_config(config)
+    timestamps = args.timestamps
+
+    show_project = args.project_flag or (
+        not args.config and not args.project_flag
+    )
+    show_config = args.config or (
+        not args.config and not args.project_flag
+    )
+
+    if show_project:
+        base = _get_project_snapshot_base(project_dir)
+        _snapshot_diff_section(
+            "Project", base, project_dir, timestamps,
+            exclude=snap_conf["project_exclude"],
+        )
+
+    if show_config:
+        config_dir = _resolve_config_dir(config, agent_name)
+        if config_dir is None or not config_dir.exists():
+            print(
+                f"No config directory for agent '{agent_name}'.",
+            )
+            return
+        base = _get_config_snapshot_base(agent_name)
+        _snapshot_diff_section(
+            "Config", base, config_dir, timestamps,
+        )
+
+
+def _snapshot_diff_section(
+    label: str,
+    snapshot_base: Path,
+    current_dir: Path,
+    timestamps: list[str],
+    exclude: list[str] | None = None,
+) -> None:
+    """Show diff for a single section (project or config)."""
+    if not timestamps:
+        snap = _latest_snapshot(snapshot_base)
+        if snap is None:
+            print(f"{label}: no snapshots found.")
+            return
+        print(f"{label} diff: {snap.name} vs current\n")
+        diff_results = compute_dir_diff(
+            snap, current_dir, exclude=exclude,
+        )
+        has_diff = print_dir_diff(
+            diff_results,
+            source_label=f"snapshot:{snap.name}",
+            target_label="current",
+        )
+        if not has_diff:
+            print("  No differences.\n")
+
+    elif len(timestamps) == 1:
+        snap = _find_snapshot_by_timestamp(
+            snapshot_base, timestamps[0],
+        )
+        if snap is None:
+            print(
+                f"{label}: snapshot '{timestamps[0]}' not found.",
+            )
+            return
+        print(f"{label} diff: {snap.name} vs current\n")
+        diff_results = compute_dir_diff(
+            snap, current_dir, exclude=exclude,
+        )
+        has_diff = print_dir_diff(
+            diff_results,
+            source_label=f"snapshot:{snap.name}",
+            target_label="current",
+        )
+        if not has_diff:
+            print("  No differences.\n")
+
+    elif len(timestamps) >= 2:
+        snap_a = _find_snapshot_by_timestamp(
+            snapshot_base, timestamps[0],
+        )
+        snap_b = _find_snapshot_by_timestamp(
+            snapshot_base, timestamps[1],
+        )
+        if snap_a is None:
+            print(
+                f"{label}: snapshot '{timestamps[0]}' not found.",
+            )
+            return
+        if snap_b is None:
+            print(
+                f"{label}: snapshot '{timestamps[1]}' not found.",
+            )
+            return
+        print(
+            f"{label} diff: {snap_a.name} vs {snap_b.name}\n",
+        )
+        diff_results = compute_dir_diff(
+            snap_a, snap_b, exclude=exclude,
+        )
+        has_diff = print_dir_diff(
+            diff_results,
+            source_label=f"snapshot:{snap_a.name}",
+            target_label=f"snapshot:{snap_b.name}",
+        )
+        if not has_diff:
+            print("  No differences.\n")
+
+
+def cmd_snapshot_restore(args) -> None:
+    """Interactive restore from a snapshot."""
+    config, _ = load_config()
+    agent_name = args.agent
+    project_dir = Path(args.project).resolve()
+    snap_conf = _get_snapshot_config(config)
+    timestamp = args.timestamp
+
+    do_project = args.project_flag or (
+        not args.config and not args.project_flag
+    )
+    do_config = args.config or (
+        not args.config and not args.project_flag
+    )
+
+    if do_project:
+        base = _get_project_snapshot_base(project_dir)
+        _snapshot_restore_section(
+            "Project", base, project_dir, timestamp,
+            exclude=snap_conf["project_exclude"],
+        )
+
+    if do_config:
+        config_dir = _resolve_config_dir(config, agent_name)
+        if config_dir is None or not config_dir.exists():
+            print(
+                f"No config directory for agent '{agent_name}'.",
+            )
+            return
+
+        # Warn about unmerged sandbox changes
+        if agent_name == "claude":
+            cc = config.get("claude", {})
+            if not cc.get("use_real_config", False):
+                real = Path.home() / ".claude"
+                sand = SANDBOX_DIR / "claude-config"
+                if real.exists() and sand.exists():
+                    changes = _collect_changes(real, sand)
+                    if changes:
+                        print(
+                            f"\n  WARNING: {len(changes)}"
+                            " unmerged sandbox change(s).",
+                        )
+                        print(
+                            "  Run 'agent-sandbox merge'"
+                            " first to avoid losing"
+                            " changes.\n",
+                        )
+
+        base = _get_config_snapshot_base(agent_name)
+        _snapshot_restore_section(
+            "Config", base, config_dir, timestamp,
+        )
+
+
+def _snapshot_restore_section(
+    label: str,
+    snapshot_base: Path,
+    current_dir: Path,
+    timestamp: str | None,
+    exclude: list[str] | None = None,
+) -> None:
+    """Interactive restore for a single section."""
+    if timestamp:
+        snap = _find_snapshot_by_timestamp(
+            snapshot_base, timestamp,
+        )
+        if snap is None:
+            print(f"{label}: snapshot '{timestamp}' not found.")
+            return
+    else:
+        snap = _latest_snapshot(snapshot_base)
+        if snap is None:
+            print(f"{label}: no snapshots found.")
+            return
+
+    print(f"\n{label} restore from: {snap.name}")
+    print(f"  snapshot: {snap}")
+    print(f"  target:   {current_dir}\n")
+
+    diff_results = compute_dir_diff(
+        snap, current_dir, exclude=exclude,
+    )
+    changed = [r for r in diff_results if r[1] != "unchanged"]
+    if not changed:
+        print(f"  {label}: no differences to restore.")
+        return
+
+    # Flip semantics for restore display:
+    # compute_dir_diff(snapshot, current) gives:
+    #   'deleted'  = in snapshot only -> add to current
+    #   'created'  = in current only  -> remove from current
+    #   'modified' = differs -> overwrite current w/ snapshot
+    restore_results: list[tuple[Path, str, list[str]]] = []
+    for rel, status, diff_lines in diff_results:
+        if status == "unchanged":
+            continue
+        if status == "deleted":
+            restore_results.append((rel, "created", diff_lines))
+        elif status == "created":
+            restore_results.append((rel, "deleted", diff_lines))
+        else:
+            restore_results.append((rel, status, diff_lines))
+
+    decisions = interactive_review(
+        restore_results, current_dir, snap,
+        action_verb="restore",
+    )
+
+    applied = 0
+    for rel, decision in decisions:
+        if decision != "accept":
+            continue
+        snap_file = snap / rel
+        cur_file = current_dir / rel
+
+        if snap_file.exists():
+            cur_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(snap_file, cur_file)
+        else:
+            if cur_file.exists():
+                cur_file.unlink()
+        applied += 1
+        print(f"    restored: {rel}")
+
+    print(f"\n{label} restore: {applied} file(s) restored.")
+
+
+def cmd_snapshot_prune(args) -> None:
+    """Remove old snapshots beyond the configured max count."""
+    config, _ = load_config()
+    agent_name = args.agent
+    project_dir = Path(args.project).resolve()
+    snap_conf = _get_snapshot_config(config)
+
+    do_project = args.project_flag or args.all_types
+    do_config = args.config or args.all_types
+
+    if not do_project and not do_config:
+        do_project = True
+        do_config = True
+
+    if do_project:
+        base = _get_project_snapshot_base(project_dir)
+        max_count = snap_conf["max_project_snapshots"]
+        removed = prune_snapshots(base, max_count)
+        print(
+            f"Project snapshots: removed {removed}, "
+            f"max={max_count}",
+        )
+
+    if do_config:
+        base = _get_config_snapshot_base(agent_name)
+        max_count = snap_conf["max_config_snapshots"]
+        removed = prune_snapshots(base, max_count)
+        print(
+            f"Config snapshots [{agent_name}]: "
+            f"removed {removed}, max={max_count}",
+        )
+
+# ---------------------------------------------------------------------------
+# Learn mode — strace-based sandbox profile generator
+# ---------------------------------------------------------------------------
+
+# Regex patterns for strace output parsing
+_RE_OPENAT = re.compile(
+    r'openat2?\(.*?,\s*"([^"]+)",\s*([^)]+)\)\s*=\s*(-?\d+)'
+)
+_RE_CONNECT_V4 = re.compile(
+    r'connect\(\d+,\s*\{sa_family=AF_INET,\s*sin_port=htons\((\d+)\),'
+    r'\s*sin_addr=inet_addr\("([^"]+)"\)'
+)
+_RE_CONNECT_V6 = re.compile(
+    r'connect\(\d+,\s*\{sa_family=AF_INET6,\s*sin6_port=htons\((\d+)\),'
+    r'\s*sin6_addr=inet6_addr\("([^"]+)"\)'
+)
+_RE_EXECVE = re.compile(
+    r'execve\("([^"]+)",\s*\[([^\]]*)\]'
+)
+
+# Paths that are noise and should be ignored
+_NOISE_PREFIXES = (
+    "/proc/", "/sys/", "/dev/",
+)
+_NOISE_EXACT = frozenset({
+    "/etc/ld.so.cache", "/etc/ld.so.preload",
+})
+
+
+class StraceParser:
+    """Parse strace output into categorized filesystem and network access lists."""
+
+    def __init__(self, trace_file: str, home_dir: str | None = None,
+                 project_dir: str | None = None):
+        self.trace_file = trace_file
+        self.reads: set[str] = set()
+        self.writes: set[str] = set()
+        self.network: list[tuple[str, int, str]] = []  # (host_or_ip, port, proto)
+        self.executables: set[str] = set()
+        self.home_dir = home_dir or str(Path.home())
+        self.project_dir = project_dir or os.getcwd()
+        self._dns_cache: dict[str, str] = {}
+
+    def parse(self) -> None:
+        """Parse the strace trace file line by line."""
+        with open(self.trace_file, "r", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                # Strip leading PID tag from multi-process traces
+                # e.g. "[pid 12345] openat(...) = 3"
+                if line.startswith("[pid"):
+                    bracket_end = line.find("]")
+                    if bracket_end != -1:
+                        line = line[bracket_end + 1:].strip()
+
+                self._parse_openat(line)
+                self._parse_connect(line)
+                self._parse_execve(line)
+
+    def _parse_openat(self, line: str) -> None:
+        """Parse openat/openat2 calls to extract file access."""
+        m = _RE_OPENAT.search(line)
+        if not m:
+            return
+        path = m.group(1)
+        flags = m.group(2)
+        retval = int(m.group(3))
+
+        # Skip failed calls (fd == -1)
+        if retval < 0:
+            return
+
+        path = self._normalize_path(path)
+        if not path or self._is_noise(path):
+            return
+
+        if any(f in flags for f in ("O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC")):
+            self.writes.add(path)
+        else:
+            self.reads.add(path)
+
+    def _parse_connect(self, line: str) -> None:
+        """Parse connect() calls to extract network connections."""
+        for pattern, proto in [
+            (_RE_CONNECT_V4, "tcp4"), (_RE_CONNECT_V6, "tcp6"),
+        ]:
+            m = pattern.search(line)
+            if m:
+                port = int(m.group(1))
+                ip = m.group(2)
+                if port == 0 or ip in ("0.0.0.0", "127.0.0.1", "::1", "::"):
+                    return
+                hostname = self._resolve_ip(ip)
+                self.network.append((hostname, port, proto))
+                return
+
+    def _parse_execve(self, line: str) -> None:
+        """Parse execve() calls to extract executed binaries."""
+        m = _RE_EXECVE.search(line)
+        if m:
+            exe_path = m.group(1)
+            if exe_path and not exe_path.startswith("/proc/"):
+                self.executables.add(exe_path)
+
+    def _normalize_path(self, path: str) -> str | None:
+        """Resolve symlinks, collapse /proc/self/, normalize the path."""
+        if not path or not path.startswith("/"):
+            return None
+        # /proc/self/fd/... are fd references, not real paths
+        if path.startswith("/proc/self/fd/"):
+            return None
+        if path.startswith("/proc/thread-self/"):
+            return None
+        if path.startswith("/proc/self/"):
+            return None
+        try:
+            resolved = str(Path(path).resolve())
+            return resolved
+        except (OSError, ValueError):
+            return path
+
+    def _is_noise(self, path: str) -> bool:
+        """Check if a path is uninteresting noise."""
+        if path in _NOISE_EXACT:
+            return True
+        for prefix in _NOISE_PREFIXES:
+            if path.startswith(prefix):
+                return True
+        return False
+
+    def _resolve_ip(self, ip: str) -> str:
+        """Reverse-resolve an IP to hostname, with caching."""
+        if ip in self._dns_cache:
+            return self._dns_cache[ip]
+        try:
+            hostname = socket.gethostbyaddr(ip)[0]
+        except (socket.herror, socket.gaierror, OSError):
+            hostname = ip
+        self._dns_cache[ip] = hostname
+        return hostname
+
+    def categorize(self) -> dict[str, dict[str, set[str]]]:
+        """Group accessed paths by category.
+
+        Returns a dict of category -> {reads: set, writes: set}.
+        Categories: project, home_config, system, toolchain, temp, unexpected.
+        """
+        categories: dict[str, dict[str, set[str]]] = {
+            "project": {"reads": set(), "writes": set()},
+            "home_config": {"reads": set(), "writes": set()},
+            "system": {"reads": set(), "writes": set()},
+            "toolchain": {"reads": set(), "writes": set()},
+            "temp": {"reads": set(), "writes": set()},
+            "unexpected": {"reads": set(), "writes": set()},
+        }
+
+        home = self.home_dir
+        project = self.project_dir
+
+        toolchain_prefixes = tuple(
+            os.path.join(home, d) for d in (
+                ".cargo", ".npm", ".cache", ".uv-cache", ".uv-tools",
+                ".go", ".rustup", ".nvm", ".pyenv", ".local/share/uv",
+            )
+        )
+        config_prefixes = tuple(
+            os.path.join(home, d) for d in (
+                ".claude", ".config", ".claude.json", ".gitconfig",
+                ".codex", ".gemini", ".aider", ".agent-sandbox",
+                ".local/share", ".ssh",
+            )
+        )
+        system_prefixes = (
+            "/usr/", "/etc/", "/lib/", "/lib64/",
+            "/bin/", "/sbin/", "/opt/", "/snap/",
+        )
+        temp_prefixes = ("/tmp/", "/var/tmp/")
+
+        for access_type, path_set in [
+            ("reads", self.reads), ("writes", self.writes),
+        ]:
+            for path in path_set:
+                cat = _classify_path(
+                    path, project, home, toolchain_prefixes,
+                    config_prefixes, system_prefixes, temp_prefixes,
+                )
+                categories[cat][access_type].add(path)
+
+        return categories
+
+
+def _classify_path(
+    path: str, project: str, home: str,
+    toolchain_prefixes: tuple[str, ...],
+    config_prefixes: tuple[str, ...],
+    system_prefixes: tuple[str, ...],
+    temp_prefixes: tuple[str, ...],
+) -> str:
+    """Classify a single path into a category name."""
+    if path.startswith(project + "/") or path == project:
+        return "project"
+    for prefix in temp_prefixes:
+        if path.startswith(prefix):
+            return "temp"
+    for prefix in toolchain_prefixes:
+        if path.startswith(prefix + "/") or path == prefix:
+            return "toolchain"
+    for prefix in config_prefixes:
+        if path.startswith(prefix + "/") or path == prefix:
+            return "home_config"
+    for prefix in system_prefixes:
+        if path.startswith(prefix):
+            return "system"
+    if path.startswith(home + "/") or path == home:
+        return "unexpected"
+    return "system"
+
+
+def _group_paths_by_directory(paths: set[str]) -> dict[str, int]:
+    """Group file paths by parent directory.
+
+    Returns dict of directory -> file count, collapsing children that share
+    a common ancestor already present in the result.
+    """
+    dir_counts: dict[str, int] = {}
+    for p in paths:
+        parent = str(Path(p).parent)
+        dir_counts[parent] = dir_counts.get(parent, 0) + 1
+
+    # Collapse: if a child dir's ancestor is already tracked, merge into it
+    collapsed: dict[str, int] = {}
+    for d, count in sorted(dir_counts.items()):
+        merged = False
+        for ancestor in collapsed:
+            if d.startswith(ancestor + "/") or d == ancestor:
+                collapsed[ancestor] += count
+                merged = True
+                break
+        if not merged:
+            collapsed[d] = count
+
+    return collapsed
+
+
+def _path_to_tilde(path: str, home: str) -> str:
+    """Replace home directory prefix with ~ for display."""
+    if path.startswith(home + "/"):
+        return "~" + path[len(home):]
+    if path == home:
+        return "~"
+    return path
+
+
+def _infer_path_comment(path: str) -> str:
+    """Generate a short comment describing what a directory is for."""
+    name = Path(path).name
+    comments: dict[str, str] = {
+        ".cargo": "Rust cargo cache",
+        ".npm": "npm package cache",
+        ".cache": "general cache directory",
+        ".uv-cache": "uv package cache",
+        ".uv-tools": "uv installed tools",
+        ".go": "Go module cache",
+        ".rustup": "Rust toolchain manager",
+        ".nvm": "Node version manager",
+        ".pyenv": "Python version manager",
+        ".config": "application configuration",
+        ".claude": "Claude Code configuration",
+        ".codex": "Codex configuration",
+        ".gemini": "Gemini configuration",
+        ".aider": "Aider configuration",
+        ".agent-sandbox": "agent-sandbox configuration",
+        ".local": "local data and binaries",
+        ".ssh": "SSH keys and config",
+        ".gitconfig": "Git configuration",
+        "ruff": "ruff linter configuration",
+        "uv": "uv package manager",
+    }
+    return comments.get(name, "")
+
+
+def generate_config_suggestions(
+    categories: dict[str, dict[str, set[str]]],
+    config: dict,
+    agent_name: str,
+    home_dir: str,
+) -> tuple[list[str], list[str], str]:
+    """Compare observed access with current config.
+
+    Returns:
+        additions: human-readable config additions needed
+        removals: human-readable config entries that seem unnecessary
+        toml_fragment: TOML string with suggested configuration
+    """
+    sandbox_cfg = config.get("sandbox", {})
+    env_cfg = config.get("env", {})
+    agent_cfg = resolve_agent_config(config, agent_name)
+
+    current_extra_rw = {str(expand(d)) for d in sandbox_cfg.get("extra_rw", [])}
+    current_ro_dirs = {str(expand(d)) for d in sandbox_cfg.get("ro_dirs", [])}
+    current_home_ro = {
+        str(Path(home_dir) / d) for d in sandbox_cfg.get("home_ro_dirs", [])
+    }
+    current_agent_ro = {
+        str(Path(home_dir) / d) for d in agent_cfg.get("home_ro_dirs", [])
+    }
+    current_agent_rw = {
+        str(Path(home_dir) / d) for d in agent_cfg.get("home_rw_dirs", [])
+    }
+    current_passthrough = set(env_cfg.get("passthrough", []))
+
+    all_current_rw = current_extra_rw | current_agent_rw
+    all_current_ro = current_ro_dirs | current_home_ro | current_agent_ro
+
+    additions: list[str] = []
+    removals: list[str] = []
+    suggest_rw: list[str] = []
+    suggest_ro: list[str] = []
+
+    # Check writes outside project — these need writable mounts
+    for cat_name in ("home_config", "toolchain", "unexpected"):
+        write_paths = categories.get(cat_name, {}).get("writes", set())
+        if not write_paths:
+            continue
+        grouped = _group_paths_by_directory(write_paths)
+        for directory, count in sorted(grouped.items()):
+            already_covered = any(
+                directory.startswith(rw + "/") or directory == rw
+                for rw in all_current_rw
+            )
+            if not already_covered:
+                display = _path_to_tilde(directory, home_dir)
+                comment = _infer_path_comment(directory)
+                reason = (
+                    f"({comment})" if comment
+                    else f"({count} file(s) written)"
+                )
+                additions.append(
+                    f"Add writable:  {display:<30s} {reason}"
+                )
+                suggest_rw.append(directory)
+
+    # Check reads of home dirs not currently exposed
+    for cat_name in ("home_config", "toolchain"):
+        read_paths = categories.get(cat_name, {}).get("reads", set())
+        if not read_paths:
+            continue
+        grouped = _group_paths_by_directory(read_paths)
+        for directory, count in sorted(grouped.items()):
+            already_covered = any(
+                directory.startswith(kd + "/") or directory == kd
+                for kd in (all_current_rw | all_current_ro)
+            )
+            # Skip if already suggested as writable
+            if not already_covered:
+                already_covered = any(
+                    directory.startswith(sw + "/") or directory == sw
+                    for sw in suggest_rw
+                )
+            if not already_covered:
+                display = _path_to_tilde(directory, home_dir)
+                comment = _infer_path_comment(directory)
+                reason = (
+                    f"({comment})" if comment
+                    else f"({count} file(s) read)"
+                )
+                additions.append(
+                    f"Add read-only: {display:<30s} {reason}"
+                )
+                suggest_ro.append(directory)
+
+    # Build TOML fragment
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    toml_lines: list[str] = [
+        f"# Suggested config changes based on learn session",
+        f"# Generated by: agent-sandbox learn {agent_name} ({now})",
+        f"# Review and merge into your config.toml",
+        "",
+    ]
+
+    if suggest_rw:
+        toml_lines.append("[sandbox]")
+        toml_lines.append(
+            "# These directories were written to by the agent:"
+        )
+        toml_lines.append("extra_rw = [")
+        for d in sorted(suggest_rw):
+            display = _path_to_tilde(d, home_dir)
+            comment = _infer_path_comment(d)
+            if comment:
+                toml_lines.append(f'    "{display}",    # {comment}')
+            else:
+                toml_lines.append(f'    "{display}",')
+        toml_lines.append("]")
+        toml_lines.append("")
+
+    if suggest_ro:
+        if not suggest_rw:
+            toml_lines.append("[sandbox]")
+        toml_lines.append(
+            "# These directories were read by the agent:"
+        )
+        ro_home_entries: list[str] = []
+        for d in sorted(suggest_ro):
+            if d.startswith(home_dir + "/"):
+                rel = d[len(home_dir) + 1:]
+                comment = _infer_path_comment(d)
+                if comment:
+                    ro_home_entries.append(
+                        f'    "{rel}",    # {comment}'
+                    )
+                else:
+                    ro_home_entries.append(f'    "{rel}",')
+        if ro_home_entries:
+            toml_lines.append("home_ro_dirs = [")
+            toml_lines.extend(ro_home_entries)
+            toml_lines.append("]")
+            toml_lines.append("")
+
+    if current_passthrough:
+        toml_lines.append("[env]")
+        toml_lines.append(
+            "# Current passthrough env vars (review for necessity):"
+        )
+        toml_lines.append("passthrough = [")
+        for var in sorted(current_passthrough):
+            toml_lines.append(f'    "{var}",')
+        toml_lines.append("]")
+        toml_lines.append("")
+
+    return additions, removals, "\n".join(toml_lines)
+
+
+def _aggregate_network(
+    network: list[tuple[str, int, str]],
+) -> list[tuple[str, int, int]]:
+    """Aggregate network connections by (host, port), return sorted list."""
+    counts: dict[tuple[str, int], int] = {}
+    for host, port, _proto in network:
+        key = (host, port)
+        counts[key] = counts.get(key, 0) + 1
+    return [
+        (host, port, count)
+        for (host, port), count in sorted(counts.items())
+    ]
+
+
+def print_learn_report(
+    categories: dict[str, dict[str, set[str]]],
+    network: list[tuple[str, int, str]],
+    executables: set[str],
+    additions: list[str],
+    removals: list[str],
+    agent_name: str,
+    duration_secs: float,
+    trace_file: str,
+    toml_output: str | None = None,
+) -> None:
+    """Print a human-readable learn mode report to stdout."""
+    bar = "\u2550" * 51
+    thin = "\u2500" * 49
+
+    print(f"\n{bar}")
+    print(f" Learn Mode Report \u2014 agent: {agent_name}")
+    dur = f"{duration_secs:.0f}s"
+    print(f" Duration: {dur} | Trace file: {trace_file}")
+    print(f"{bar}")
+
+    # Filesystem access summary
+    print(f"\n \U0001f4c2 Filesystem Access")
+    print(f" {thin}")
+    cat_labels = [
+        ("project", "Project files"),
+        ("home_config", "Home config"),
+        ("system", "System paths"),
+        ("toolchain", "Toolchain caches"),
+        ("temp", "Temp files"),
+        ("unexpected", "Unexpected"),
+    ]
+    home_dir = str(Path.home())
+    for cat_key, cat_label in cat_labels:
+        cat = categories.get(
+            cat_key, {"reads": set(), "writes": set()}
+        )
+        nr = len(cat["reads"])
+        nw = len(cat["writes"])
+        all_paths = cat["reads"] | cat["writes"]
+        if all_paths:
+            dirs: set[str] = set()
+            for p in all_paths:
+                parts = Path(p).parts
+                depth = min(len(parts), 4)
+                dirs.add(str(Path(*parts[:depth])))
+            top_dirs = sorted(dirs)[:3]
+            display_dirs = [
+                _path_to_tilde(d, home_dir) for d in top_dirs
+            ]
+            ellipsis = "..." if len(dirs) > 3 else ""
+            suffix = f"  ({', '.join(display_dirs)}{ellipsis})"
+        else:
+            suffix = ""
+        print(
+            f" {cat_label:<20s} {nr:>4d} reads, "
+            f"{nw:>3d} writes{suffix}"
+        )
+
+    # Network connections
+    print(f"\n \U0001f310 Network Connections")
+    print(f" {thin}")
+    if network:
+        aggregated = _aggregate_network(network)
+        for host, port, count in aggregated:
+            s = "s" if count > 1 else ""
+            conn_str = f"({count} connection{s})"
+            print(f" {host}:{port:<6d}       {conn_str}")
+    else:
+        print(" (none detected)")
+
+    # Executables
+    print(f"\n \u2699\ufe0f  Executables")
+    print(f" {thin}")
+    if executables:
+        exe_list = sorted(executables)
+        line = " "
+        for i, exe in enumerate(exe_list):
+            if i > 0:
+                line += ", "
+            if len(line) + len(exe) > 100:
+                print(line)
+                line = " "
+            line += exe
+        if line.strip():
+            print(line)
+    else:
+        print(" (none detected)")
+
+    # Suggested config changes
+    print(f"\n \U0001f4cb Suggested Config Changes")
+    print(f" {thin}")
+    if additions or removals:
+        for addition in additions:
+            print(f" \u271a {addition}")
+        for removal in removals:
+            print(f" \u2296 {removal}")
+    else:
+        print(
+            " (no changes suggested \u2014 "
+            "current config covers observed access)"
+        )
+
+    if toml_output:
+        print(f"\n \U0001f4be TOML fragment saved to: {toml_output}")
+        print(f"    Review and merge into your config.toml")
+
+    print()
+
+
+def build_learn_bwrap_cmd(
+    config: dict,
+    project_dir: Path,
+    agent_config: dict,
+    agent_name: str = "claude",
+    profile: str | None = None,
+) -> list[str]:
+    """Build a permissive bwrap command for learn mode.
+
+    Similar to build_bwrap_cmd but with the home directory writable
+    so we can observe what the agent tries to access.
+    """
+    home = str(Path.home())
+    sandbox = config.get("sandbox", {})
+    env_conf = config.get("env", {})
+    sec = config.get("security", {})
+    agent_cfg = agent_config
+
+    # Resolve profile
+    prof: dict = {}
+    if profile:
+        profiles = resolve_profiles(config, agent_name)
+        if profile in profiles:
+            prof = profiles[profile]
+
+    cmd: list[str] = ["bwrap"]
+
+    # 1. Whole FS read-only
+    cmd += ["--ro-bind", "/", "/"]
+
+    # 2. Fresh tmpfs for temporary locations
+    cmd += ["--tmpfs", "/tmp"]
+    uid = os.getuid()
+    runtime_dir = os.environ.get(
+        "XDG_RUNTIME_DIR", f"/run/user/{uid}"
+    )
+    cmd += ["--tmpfs", f"/run/user/{uid}"]
+
+    # Re-expose Zellij socket dir
+    zellij_socket_dir = os.path.join(runtime_dir, "zellij")
+    if os.path.isdir(zellij_socket_dir):
+        dest = f"/run/user/{uid}/zellij"
+        cmd += ["--bind", zellij_socket_dir, dest]
+
+    # Lince status dir
+    lince_status_dir = "/tmp/lince-dashboard"
+    os.makedirs(lince_status_dir, exist_ok=True)
+    cmd += ["--bind", lince_status_dir, lince_status_dir]
+
+    # Wayland socket for clipboard
+    wayland_display = os.environ.get("WAYLAND_DISPLAY", "wayland-0")
+    wayland_socket = f"{runtime_dir}/{wayland_display}"
+    if os.path.exists(wayland_socket):
+        cmd += [
+            "--ro-bind", wayland_socket,
+            f"/run/user/{uid}/{wayland_display}",
+        ]
+    cmd += ["--tmpfs", "/var/tmp"]
+    cmd += ["--dev", "/dev"]
+    cmd += ["--proc", "/proc"]
+
+    # 3. HOME writable — key difference from normal run
+    cmd += ["--bind", home, home]
+
+    # 4. Project directory (read-write)
+    project = str(project_dir.resolve())
+    cmd += ["--bind", project, project]
+
+    # 5. Security options (keep PID isolation)
+    if sec.get("unshare_pid", True):
+        cmd += ["--unshare-pid"]
+    if sec.get("new_session", False):
+        cmd += ["--new-session"]
+    cmd += ["--die-with-parent"]
+
+    # 6. Environment: clearenv + explicit whitelist
+    cmd += ["--clearenv"]
+    cmd += ["--setenv", "HOME", home]
+    cmd += ["--setenv", "USER", os.environ.get("USER", "user")]
+    cmd += ["--setenv", "SHELL", "/bin/bash"]
+
+    # Build PATH
+    path_parts: list[str] = []
+    if sec.get("block_git_push", True):
+        path_parts.append(str(SANDBOX_DIR / "bin"))
+    path_parts += ["/usr/local/bin", "/usr/bin", "/bin"]
+    if sandbox.get("auto_expose_path", True):
+        for p in detect_home_path_dirs():
+            path_parts.append(str(p))
+            for sub in ("bin",):
+                sp = p / sub
+                if sp.is_dir() and str(sp) not in path_parts:
+                    path_parts.append(str(sp))
+    cmd += ["--setenv", "PATH", ":".join(dict.fromkeys(path_parts))]
+
+    # Toolchain env vars
+    cmd += ["--setenv", "CARGO_HOME", f"{home}/.cargo"]
+    cmd += ["--setenv", "NPM_CONFIG_CACHE", f"{home}/.npm"]
+    cmd += ["--setenv", "GOPATH", f"{home}/.go"]
+    cmd += ["--setenv", "GOMODCACHE", f"{home}/.go/pkg/mod"]
+    cmd += ["--setenv", "UV_CACHE_DIR", f"{home}/.uv-cache"]
+    cmd += ["--setenv", "UV_TOOL_DIR", f"{home}/.uv-tools"]
+
+    # Wayland env vars
+    for wl_var in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"):
+        val = os.environ.get(wl_var)
+        if val is not None:
+            cmd += ["--setenv", wl_var, val]
+
+    # User-whitelisted env vars
+    for var in env_conf.get("passthrough", []):
+        val = os.environ.get(var)
+        if val is not None:
+            cmd += ["--setenv", var, val]
+
+    # Extra env vars (from base config)
+    for var, val in env_conf.get("extra", {}).items():
+        cmd += ["--setenv", var, str(val)]
+
+    # Profile env vars
+    for var, val in prof.get("env", {}).items():
+        cmd += ["--setenv", var, str(val)]
+
+    # Agent-specific env vars
+    for var, val in agent_cfg.get("env", {}).items():
+        cmd += ["--setenv", var, str(val)]
+
+    # 7. Separator and command
+    cmd += ["--"]
+
+    args_source = list(
+        prof.get("default_args", agent_cfg.get("default_args", []))
+    )
+    if agent_cfg.get("bwrap_conflict", False):
+        disable_args = agent_cfg.get("disable_inner_sandbox_args", [])
+        for da in disable_args:
+            if da not in args_source:
+                args_source.append(da)
+    cmd += [agent_cfg["command"]] + args_source
+
+    return cmd
+
+
+def _apply_toml_suggestions(
+    config_path: Path, toml_fragment: str,
+) -> bool:
+    """Append TOML suggestions to an existing config file.
+
+    Adds a clearly marked section at the end. The user should review
+    and manually integrate the suggestions into the proper sections.
+    Returns True on success, False on failure.
+    """
+    try:
+        with open(config_path, "r") as fh:
+            existing = fh.read()
+
+        marker = (
+            "\n# --- Learn mode suggestions "
+            "(review and integrate above) ---\n"
+        )
+        # Remove any previous learn suggestions block
+        if marker in existing:
+            existing = existing[:existing.index(marker)]
+
+        with open(config_path, "w") as fh:
+            fh.write(existing.rstrip("\n") + "\n")
+            fh.write(marker)
+            fh.write(toml_fragment)
+            fh.write("\n")
+
+        return True
+    except OSError as exc:
+        print(
+            f"Error writing to {config_path}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+
+
+def cmd_learn(args) -> None:
+    """Run agent under strace to learn its access patterns."""
+    # 1. Validate strace is available
+    if shutil.which("strace") is None:
+        print("Error: strace not found.", file=sys.stderr)
+        print(
+            "Install with:  sudo dnf install strace  "
+            "(or apt install strace)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # 2. Validate bwrap
+    check_bwrap()
+
+    # 3. Load config
+    config, config_path = load_config()
+    project_dir = Path.cwd().resolve()
+
+    # 4. Resolve agent
+    agent_name = args.agent
+    agent_cfg = resolve_agent_config(config, agent_name)
+
+    # Ensure git wrapper exists
+    if config.get("security", {}).get("block_git_push", True):
+        ensure_git_wrapper()
+
+    # 5. Resolve profile
+    profile = args.profile
+    if profile is None:
+        dp = config.get("sandbox", {}).get("default_profile", "")
+        profile = dp or None
+
+    # 6. Build the permissive bwrap command
+    bwrap_cmd = build_learn_bwrap_cmd(
+        config, project_dir, agent_cfg,
+        agent_name=agent_name, profile=profile,
+    )
+
+    # 7. Create temp file for strace output
+    trace_fd, trace_file = tempfile.mkstemp(
+        prefix="agent-sandbox-learn-", suffix=".strace",
+    )
+    os.close(trace_fd)
+
+    # 8. Wrap with strace
+    strace_cmd = [
+        "strace",
+        "-f",
+        "-e", "trace=openat,openat2,connect,bind,execve",
+        "-o", trace_file,
+        "--",
+    ] + bwrap_cmd
+
+    # Print banner
+    print("agent-sandbox learn")
+    print(f"  config      {config_path}")
+    print(f"  agent       {agent_name} ({agent_cfg['command']})")
+    if profile:
+        print(f"  profile     {profile}")
+    print(f"  project     {project_dir}")
+    print(f"  trace file  {trace_file}")
+    print(
+        f"  mode        permissive sandbox "
+        f"(home writable for observation)"
+    )
+    if args.duration:
+        print(f"  duration    {args.duration}s (auto-terminate)")
+    print()
+    print(
+        "Starting agent under strace... "
+        "(use the agent normally, then exit)"
+    )
+    print()
+
+    # 9. Run the wrapped command
+    start_time = time.monotonic()
+    proc = None
+    try:
+        proc = subprocess.Popen(strace_cmd, cwd=str(project_dir))
+
+        if args.duration:
+            try:
+                proc.wait(timeout=args.duration)
+            except subprocess.TimeoutExpired:
+                print(
+                    f"\n\nDuration limit ({args.duration}s) reached, "
+                    f"terminating agent..."
+                )
+                proc.send_signal(signal.SIGTERM)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        else:
+            proc.wait()
+
+    except KeyboardInterrupt:
+        print("\n\nInterrupted, terminating agent...")
+        if proc and proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+
+    elapsed = time.monotonic() - start_time
+
+    # 10. Parse the trace
+    print("\nParsing strace output...")
+    strace_parser = StraceParser(
+        trace_file,
+        home_dir=str(Path.home()),
+        project_dir=str(project_dir),
+    )
+    strace_parser.parse()
+    categories = strace_parser.categorize()
+
+    # 11. Generate suggestions
+    additions, removals, toml_fragment = generate_config_suggestions(
+        categories, config, agent_name, str(Path.home()),
+    )
+    # --compare shows over-permissive areas (removals); without it, only additions
+    if not getattr(args, "compare", False):
+        removals = []
+
+    # 12. Save TOML fragment
+    toml_output = args.output
+    if toml_output is None:
+        toml_fd, toml_output = tempfile.mkstemp(
+            prefix="agent-sandbox-learn-suggestions-",
+            suffix=".toml",
+        )
+        os.close(toml_fd)
+
+    with open(toml_output, "w") as fh:
+        fh.write(toml_fragment)
+
+    # 13. Print report
+    print_learn_report(
+        categories, strace_parser.network, strace_parser.executables,
+        additions, removals,
+        agent_name=agent_name,
+        duration_secs=elapsed,
+        trace_file=trace_file,
+        toml_output=toml_output,
+    )
+
+    # 14. Apply if requested
+    if args.apply:
+        print(f"Applying suggestions to {config_path}...")
+        if _apply_toml_suggestions(config_path, toml_fragment):
+            print(f"Suggestions appended to {config_path}")
+            print(
+                "Review the file and integrate the suggestions "
+                "into the proper sections."
+            )
+        else:
+            print("Failed to apply suggestions.", file=sys.stderr)
+            sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1292,6 +3988,189 @@ def main() -> None:
     # status
     sub.add_parser("status", help="Show sandbox status")
 
+    # proxy-status
+    sub.add_parser("proxy-status",
+                   help="Show credential proxy status")
+
+    # --- Snapshot subcommands ---
+
+    # snapshot
+    p_snap = sub.add_parser(
+        "snapshot", help="Create filesystem snapshots",
+    )
+    p_snap.add_argument(
+        "-a", "--agent", default="claude",
+        help="Agent name (default: claude)",
+    )
+    p_snap.add_argument(
+        "-p", "--project", default=".",
+        help="Project directory (default: cwd)",
+    )
+    p_snap.add_argument(
+        "--config-only", action="store_true",
+        help="Snapshot only the agent config dir",
+    )
+    p_snap.add_argument(
+        "--project-only", action="store_true",
+        help="Snapshot only the project dir",
+    )
+
+    # snapshot-list
+    p_snl = sub.add_parser(
+        "snapshot-list",
+        help="List available snapshots",
+    )
+    p_snl.add_argument(
+        "-a", "--agent", default="claude",
+        help="Agent name (default: claude)",
+    )
+    p_snl.add_argument(
+        "-p", "--project", default=".",
+        help="Project directory (default: cwd)",
+    )
+    p_snl_filter = p_snl.add_mutually_exclusive_group()
+    p_snl_filter.add_argument(
+        "--config-only", dest="config", action="store_true",
+        help="Show only config snapshots",
+    )
+    p_snl_filter.add_argument(
+        "--project-only", dest="project_only",
+        action="store_true",
+        help="Show only project snapshots",
+    )
+
+    # snapshot-diff
+    p_snd = sub.add_parser(
+        "snapshot-diff",
+        help="Compare snapshot(s) vs current state",
+    )
+    p_snd.add_argument(
+        "timestamps", nargs="*",
+        help="Timestamp(s): 0=latest vs current, "
+             "1=that vs current, 2=compare two",
+    )
+    p_snd.add_argument(
+        "-a", "--agent", default="claude",
+        help="Agent name (default: claude)",
+    )
+    p_snd.add_argument(
+        "-p", "--project", default=".",
+        help="Project directory (default: cwd)",
+    )
+    p_snd_filter = p_snd.add_mutually_exclusive_group()
+    p_snd_filter.add_argument(
+        "--config-only", dest="config", action="store_true",
+        help="Diff only config snapshots",
+    )
+    p_snd_filter.add_argument(
+        "--project-only", dest="project_flag",
+        action="store_true",
+        help="Diff only project snapshots",
+    )
+
+    # snapshot-restore
+    p_snr = sub.add_parser(
+        "snapshot-restore",
+        help="Interactive restore from snapshot",
+    )
+    p_snr.add_argument(
+        "timestamp", nargs="?", default=None,
+        help="Snapshot timestamp (default: latest)",
+    )
+    p_snr.add_argument(
+        "-a", "--agent", default="claude",
+        help="Agent name (default: claude)",
+    )
+    p_snr.add_argument(
+        "-p", "--project", default=".",
+        help="Project directory (default: cwd)",
+    )
+    p_snr_filter = p_snr.add_mutually_exclusive_group()
+    p_snr_filter.add_argument(
+        "--config-only", dest="config", action="store_true",
+        help="Restore only config",
+    )
+    p_snr_filter.add_argument(
+        "--project-only", dest="project_flag",
+        action="store_true",
+        help="Restore only project",
+    )
+
+    # snapshot-prune
+    p_snp = sub.add_parser(
+        "snapshot-prune",
+        help="Remove old snapshots",
+    )
+    p_snp.add_argument(
+        "-a", "--agent", default="claude",
+        help="Agent name (default: claude)",
+    )
+    p_snp.add_argument(
+        "-p", "--project", default=".",
+        help="Project directory (default: cwd)",
+    )
+    p_snp.add_argument(
+        "--config-only", dest="config", action="store_true",
+        help="Prune only config snapshots",
+    )
+    p_snp.add_argument(
+        "--project-only", dest="project_flag",
+        action="store_true",
+        help="Prune only project snapshots",
+    )
+    p_snp.add_argument(
+        "--all", dest="all_types", action="store_true",
+        help="Prune both project and config snapshots",
+    )
+
+    # learn
+    p_learn = sub.add_parser(
+        "learn",
+        help="Run agent under strace to learn its access patterns",
+    )
+    p_learn.add_argument(
+        "-a", "--agent", default="claude",
+        help="Agent to learn (default: claude)",
+    )
+    p_learn.add_argument(
+        "-P", "--profile", default=None,
+        help="Provider profile name (defined in config.toml)",
+    )
+    p_learn.add_argument(
+        "--duration", type=int, default=None, metavar="SECONDS",
+        help="Kill the agent after N seconds",
+    )
+    p_learn.add_argument(
+        "--compare", action="store_true",
+        help="Compare observed needs vs current config",
+    )
+    p_learn.add_argument(
+        "--apply", action="store_true",
+        help="Auto-merge suggestions into config.toml",
+    )
+    p_learn.add_argument(
+        "--output", default=None, metavar="FILE",
+        help="Save TOML suggestions to FILE (default: temp file)",
+    )
+
+    # nono-sync
+    p_nono = sub.add_parser(
+        "nono-sync",
+        help="Generate nono JSON profiles from lince agent configuration",
+    )
+    p_nono.add_argument(
+        "--dry-run", action="store_true",
+        help="Print generated JSON without writing files",
+    )
+    p_nono.add_argument(
+        "--agent", default=None,
+        help="Sync a specific agent only (default: all agents)",
+    )
+    p_nono.add_argument(
+        "-P", "--profile", default=None,
+        help="Provider profile name for env var mapping",
+    )
+
     # ---- Split argv on '--' so extra args go to the agent -------------------
     argv = sys.argv[1:]
     if "--" in argv:
@@ -1320,6 +4199,14 @@ def main() -> None:
         "diff": lambda: cmd_diff(args),
         "merge": lambda: cmd_merge(args),
         "status": lambda: cmd_status(args),
+        "proxy-status": lambda: cmd_proxy_status(args),
+        "snapshot": lambda: cmd_snapshot(args),
+        "snapshot-list": lambda: cmd_snapshot_list(args),
+        "snapshot-diff": lambda: cmd_snapshot_diff(args),
+        "snapshot-restore": lambda: cmd_snapshot_restore(args),
+        "snapshot-prune": lambda: cmd_snapshot_prune(args),
+        "learn": lambda: cmd_learn(args),
+        "nono-sync": lambda: cmd_nono_sync(args),
     }
     dispatch[args.command]()
 

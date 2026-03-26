@@ -56,6 +56,24 @@ else
 fi
 echo ""
 
+# ── nono profiles ─────────────────────────────────────────────────────
+NONO_PROFILES=$(ls "$HOME/.config/nono/profiles/lince-"*.json 2>/dev/null || true)
+if [ -n "$NONO_PROFILES" ]; then
+    echo -e "${YELLOW}Found generated nono profiles:${NC}"
+    for p in $NONO_PROFILES; do
+        echo "  $p"
+    done
+    if confirm "  Remove generated lince-* nono profiles?"; then
+        rm -f "$HOME/.config/nono/profiles/lince-"*.json
+        echo -e "${GREEN}  ✓ Removed${NC}"
+    fi
+    echo ""
+    echo -e "${YELLOW}NOTE: nono itself was NOT removed (you may use it independently).${NC}"
+else
+    echo "  No generated nono profiles found — skipping"
+fi
+echo ""
+
 echo -e "${BLUE}================================================${NC}"
 echo -e "${BLUE}   Uninstall Complete${NC}"
 echo -e "${BLUE}================================================${NC}"
