@@ -856,12 +856,14 @@ impl State {
         };
 
         // Some agents (e.g. Codex) launch into an interactive prompt, so the
-        // generic wrapper's initial "start" event is less accurate than pane
-        // reconciliation. Suppress it when configured via ignore_wrapper_start.
+        // generic wrapper's initial "start" event can arrive before pane
+        // reconciliation. Suppress only that premature start. Once the pane has
+        // been matched and moved to INPUT, allow a later wrapper start to
+        // transition the agent into Running.
         if msg.event == "start"
             && self.config.agent_types.get(&agent.agent_type)
                 .map_or(false, |c| c.ignore_wrapper_start)
-            && matches!(agent.status, AgentStatus::Starting | AgentStatus::WaitingForInput)
+            && matches!(agent.status, AgentStatus::Starting)
         {
             return;
         }

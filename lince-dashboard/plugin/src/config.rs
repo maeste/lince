@@ -543,6 +543,10 @@ impl DashboardConfig {
     pub fn load(path: &str) -> (Self, Option<String>) {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Missing config file is normal — silently use defaults.
+                return (DashboardConfig::default(), None);
+            }
             Err(e) => {
                 return (
                     DashboardConfig::default(),
