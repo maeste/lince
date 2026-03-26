@@ -1,4 +1,67 @@
-use serde::Deserialize;
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+/// Default agent type key used when no explicit type is specified.
+pub const DEFAULT_AGENT_TYPE: &str = "claude";
+
+/// Default sandbox command / pane title pattern fallback.
+pub const DEFAULT_SANDBOX_COMMAND: &str = "agent-sandbox";
+
+/// Configuration for a single agent type (e.g. "claude", "codex", "gemini").
+///
+/// Agent types are defined in `agents-defaults.toml` and can be overridden
+/// by `[agents.<name>]` sections in the user's `config.toml`.
+/// String keys only — no enum, fully data-driven.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTypeConfig {
+    /// Command template. Supports `{agent_id}`, `{project_dir}`, `{profile}` placeholders.
+    pub command: Vec<String>,
+    /// Pattern to match pane titles for reconciliation (e.g. "agent-sandbox").
+    pub pane_title_pattern: String,
+    /// Pipe name for receiving status messages (e.g. "claude-status").
+    pub status_pipe_name: String,
+    /// Full display name for the UI (e.g. "Claude Code").
+    pub display_name: String,
+    /// 3-char label for the table column header (e.g. "CLA").
+    pub short_label: String,
+    /// ANSI color name (e.g. "blue", "red", "cyan").
+    pub color: String,
+    /// Whether the agent runs inside the bwrap sandbox.
+    pub sandboxed: bool,
+    /// Environment variables to pass through to the agent process.
+    #[serde(default)]
+    pub env_vars: HashMap<String, String>,
+    /// If true, agent has its own status hooks; if false, needs a wrapper.
+    #[serde(default)]
+    pub has_native_hooks: bool,
+    /// Read-only bind mounts from $HOME (e.g. ["~/.claude/"]).
+    #[serde(default)]
+    pub home_ro_dirs: Vec<String>,
+    /// Read-write bind mounts from $HOME (e.g. ["~/.local/share/codex/"]).
+    #[serde(default)]
+    pub home_rw_dirs: Vec<String>,
+    /// Agent uses bwrap internally, conflicts with outer sandbox bwrap.
+    #[serde(default)]
+    pub bwrap_conflict: bool,
+    /// Arguments to disable agent's own sandbox (e.g. ["--sandbox", "none"]).
+    #[serde(default)]
+    pub disable_inner_sandbox_args: Vec<String>,
+    /// If true, ignore the generic wrapper's initial "start" event when the
+    /// agent is still in Starting/WaitingForInput state. Useful for agents
+    /// that launch into an interactive prompt (e.g. Codex).
+    #[serde(default)]
+    pub ignore_wrapper_start: bool,
+    /// Custom mapping from agent event names to lince status strings.
+    #[serde(default)]
+    pub event_map: HashMap<String, String>,
+    /// Sandbox profiles applicable to this agent type.
+    /// - `["__discover__"]` means use all auto-discovered profiles (default for sandboxed agents via agent-sandbox).
+    /// - Empty or omitted means no profiles (skip profile wizard step).
+    /// - Explicit list restricts the wizard to those profile names.
+    #[serde(default)]
+    pub profiles: Vec<String>,
+}
 
 /// Agent pane layout mode.
 ///
@@ -53,7 +116,7 @@ impl Default for StatusMethod {
 }
 
 fn default_sandbox_command() -> String {
-    "claude-sandbox".to_string()
+    DEFAULT_SANDBOX_COMMAND.to_string()
 }
 
 fn default_status_file_dir() -> String {
@@ -64,17 +127,30 @@ fn default_max_agents() -> usize {
     8
 }
 
+/// Parsed profile details from sandbox config (env vars to set/unset).
+#[derive(Debug, Clone, Default)]
+pub struct ProfileDetails {
+    /// Environment variables to set (from `[profiles.<name>.env]`).
+    pub env: HashMap<String, String>,
+    /// Environment variables to unset (from `[profiles.<name>.env_unset]`).
+    pub env_unset: Vec<String>,
+}
+
 /// Main dashboard configuration, deserialized from the `[dashboard]` TOML table.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashboardConfig {
     #[serde(default)]
     pub default_profile: Option<String>,
-    /// Available sandbox profiles for the wizard selector.
-    /// Auto-discovered from sandbox config if empty.
-    #[serde(default)]
-    pub profiles: Vec<String>,
+    /// Per-agent-type profile names, keyed by agent base name (e.g. "claude", "codex").
+    /// Populated from `[profiles.*]` (legacy → "claude") and `[<agent>.profiles.*]`
+    /// sections in the sandbox config.
+    #[serde(skip)]
+    pub profiles_by_agent: HashMap<String, Vec<String>>,
+    /// Per-agent-type profile details (env vars), keyed by agent base name then profile name.
+    #[serde(skip)]
+    pub profile_details_by_agent: HashMap<String, HashMap<String, ProfileDetails>>,
     /// Path to sandbox config for profile auto-discovery.
-    /// Defaults to `~/.claude-sandbox/config.toml`.
+    /// Defaults to `~/.agent-sandbox/config.toml`.
     #[serde(default)]
     pub sandbox_config_path: Option<String>,
     #[serde(default)]
@@ -91,13 +167,19 @@ pub struct DashboardConfig {
     pub status_file_dir: String,
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
+    /// Agent type configurations keyed by type name (e.g. "claude", "codex").
+    /// Loaded asynchronously from `agents-defaults.toml`, then merged with
+    /// any `[agents.<name>]` sections from the user's `config.toml`.
+    #[serde(default)]
+    pub agent_types: HashMap<String, AgentTypeConfig>,
 }
 
 impl Default for DashboardConfig {
     fn default() -> Self {
         DashboardConfig {
             default_profile: None,
-            profiles: Vec::new(),
+            profiles_by_agent: HashMap::new(),
+            profile_details_by_agent: HashMap::new(),
             sandbox_config_path: None,
             default_project_dir: None,
             sandbox_command: default_sandbox_command(),
@@ -106,6 +188,7 @@ impl Default for DashboardConfig {
             status_method: StatusMethod::default(),
             status_file_dir: default_status_file_dir(),
             max_agents: default_max_agents(),
+            agent_types: HashMap::new(),
         }
     }
 }
@@ -115,6 +198,14 @@ impl Default for DashboardConfig {
 struct DashboardConfigFile {
     #[serde(default)]
     dashboard: DashboardConfig,
+}
+
+/// Current Unix timestamp in seconds, or 0 if unavailable (e.g. WASM).
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Return the modification time (Unix seconds) of a file, or 0 if unavailable.
@@ -147,6 +238,16 @@ pub fn collapse_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Convert a path that may start with `~` into a shell expression using `$HOME`.
+/// Used for `run_command` scripts since the WASI sandbox lacks `$HOME` in its env.
+fn shell_path_expr(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix('~') {
+        format!("\"$HOME{}\"", shell_escape(rest))
+    } else {
+        format!("'{}'", shell_escape(path))
+    }
+}
+
 /// Find the longest common prefix among a list of strings.
 /// Returns an empty string if the list is empty.
 /// Handles multi-byte UTF-8 correctly by snapping to char boundaries.
@@ -177,6 +278,8 @@ pub fn common_prefix(items: &[String]) -> String {
 pub const CMD_TYPE_KEY: &str = "type";
 /// Command type for async profile discovery via `run_command`.
 pub const CMD_DISCOVER_PROFILES: &str = "discover_profiles";
+/// Command type for async loading of agent type defaults via `run_command`.
+pub const CMD_LOAD_AGENT_DEFAULTS: &str = "load_agent_defaults";
 
 /// Run a command with a typed context map. Wraps the common
 /// BTreeMap + `run_command` boilerplate used across modules.
@@ -200,24 +303,91 @@ pub fn run_typed_command_with(args: &[&str], cmd_type: &str, extra: &[(&str, &st
 /// Command type for async path tab-completion via `run_command`.
 pub const CMD_PATH_COMPLETE: &str = "path_complete";
 
-/// Parse sandbox profile names from TOML content (e.g. from `cat` output).
+/// Extract profile details from a TOML table (the value side of a `[*.profiles.<name>]` entry).
+fn parse_profile_details(profile_table: &toml::Table) -> ProfileDetails {
+    let mut pd = ProfileDetails::default();
+    // Parse env vars to set
+    if let Some(env_table) = profile_table.get("env").and_then(|v| v.as_table()) {
+        for (k, v) in env_table {
+            if let Some(s) = v.as_str() {
+                pd.env.insert(k.clone(), s.to_string());
+            }
+        }
+    }
+    // Parse env vars to unset
+    if let Some(unset_arr) = profile_table.get("env_unset").and_then(|v| v.as_array()) {
+        for v in unset_arr {
+            if let Some(s) = v.as_str() {
+                pd.env_unset.push(s.to_string());
+            }
+        }
+    }
+    pd
+}
+
+/// Parse sandbox profiles from TOML content, returning per-agent-type maps.
 ///
-/// Looks for `[profiles.<name>]` tables and returns sorted profile names.
-/// Returns an empty vec on any error (parse error, no profiles section, etc.).
-pub fn parse_profiles_from_toml(content: &str) -> Vec<String> {
+/// Recognises two formats:
+///   - Legacy `[profiles.<name>]`          → attributed to agent base "claude"
+///   - Namespaced `[<agent>.profiles.<name>]` → attributed to `<agent>`
+///
+/// Returns `(profiles_by_agent, details_by_agent)`.
+pub fn parse_profiles_from_toml(
+    content: &str,
+) -> (HashMap<String, Vec<String>>, HashMap<String, HashMap<String, ProfileDetails>>) {
     let table: toml::Table = match toml::from_str(content) {
         Ok(t) => t,
-        Err(_) => return Vec::new(),
+        Err(_) => return (HashMap::new(), HashMap::new()),
     };
 
-    let profiles = match table.get("profiles").and_then(|v| v.as_table()) {
-        Some(p) => p,
-        None => return Vec::new(),
-    };
+    let mut by_agent: HashMap<String, Vec<String>> = HashMap::new();
+    let mut details_by_agent: HashMap<String, HashMap<String, ProfileDetails>> = HashMap::new();
 
-    let mut names: Vec<String> = profiles.keys().cloned().collect();
-    names.sort();
-    names
+    // 1) Legacy `[profiles.*]` → attributed to "claude"
+    if let Some(profiles) = table.get("profiles").and_then(|v| v.as_table()) {
+        let agent = "claude".to_string();
+        let names = by_agent.entry(agent.clone()).or_default();
+        let details = details_by_agent.entry(agent).or_default();
+        for (name, value) in profiles {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+            if let Some(profile_table) = value.as_table() {
+                details.entry(name.clone()).or_insert_with(|| parse_profile_details(profile_table));
+            }
+        }
+    }
+
+    // 2) Namespaced `[<agent>.profiles.*]`
+    // Scan all top-level keys: any that contain a `profiles` subtable are treated
+    // as agent-type profile namespaces. This supports custom agent types too.
+    for (key, value) in &table {
+        if key == "profiles" {
+            continue; // Already handled above as legacy
+        }
+        if let Some(agent_section) = value.as_table() {
+            if let Some(profiles) = agent_section.get("profiles").and_then(|v| v.as_table()) {
+                let agent = key.clone();
+                let names = by_agent.entry(agent.clone()).or_default();
+                let details = details_by_agent.entry(agent).or_default();
+                for (name, val) in profiles {
+                    if !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                    if let Some(profile_table) = val.as_table() {
+                        details.entry(name.clone()).or_insert_with(|| parse_profile_details(profile_table));
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort each agent's profile names
+    for names in by_agent.values_mut() {
+        names.sort();
+    }
+
+    (by_agent, details_by_agent)
 }
 
 /// Escape a string for use inside single quotes in a shell command.
@@ -240,20 +410,15 @@ pub fn discover_profiles_async(sandbox_config_path: Option<&str>, launch_dir: Op
     // `std::env::var("HOME")` which is unavailable inside the WASI sandbox, so
     // the tilde would be passed through literally.  Instead we let the shell
     // handle `~` expansion by using `$HOME` in the script.
-    let raw_path = sandbox_config_path.unwrap_or("~/.claude-sandbox/config.toml");
-    let global_expr = if let Some(rest) = raw_path.strip_prefix('~') {
-        // Use $HOME so the *shell* resolves the home directory.
-        format!("\"$HOME{}\"", shell_escape(rest))
-    } else {
-        format!("'{}'", shell_escape(raw_path))
-    };
+    let raw_path = sandbox_config_path.unwrap_or("~/.agent-sandbox/config.toml");
+    let global_expr = shell_path_expr(raw_path);
 
     // Output each file separated by NUL so the handler can split and parse independently.
     let mut script = format!("cat {} 2>/dev/null", global_expr);
 
     if let Some(dir) = launch_dir {
         let local_path = format!(
-            "{}/.claude-sandbox/config.toml",
+            "{}/.agent-sandbox/config.toml",
             dir.trim_end_matches('/')
         );
         script = format!(
@@ -264,6 +429,68 @@ pub fn discover_profiles_async(sandbox_config_path: Option<&str>, launch_dir: Op
     }
 
     run_typed_command(&["sh", "-c", &script], CMD_DISCOVER_PROFILES);
+}
+
+/// Kick off async loading of agent type defaults from
+/// `~/.config/lince-dashboard/agents-defaults.toml` via `run_command`.
+/// Results arrive in `Event::RunCommandResult` with context
+/// `type=load_agent_defaults`.
+///
+/// The shell reads the defaults file first, then (separated by NUL) any
+/// `[agents.*]` sections from the user's config.toml so they can be merged.
+pub fn load_agent_defaults_async(sandbox_config_path: Option<&str>) {
+    let defaults_path = "\"$HOME/.config/lince-dashboard/agents-defaults.toml\"";
+
+    let raw_cfg = sandbox_config_path.unwrap_or("~/.agent-sandbox/config.toml");
+    let cfg_expr = shell_path_expr(raw_cfg);
+
+    // Output defaults first, then NUL, then user config (which may contain [agents.*]).
+    let script = format!(
+        "cat {} 2>/dev/null ; printf '\\0' ; cat {} 2>/dev/null",
+        defaults_path, cfg_expr
+    );
+
+    run_typed_command(&["sh", "-c", &script], CMD_LOAD_AGENT_DEFAULTS);
+}
+
+/// TOML wrapper for user config.toml `[agents.<name>]` sections.
+#[derive(Deserialize, Default)]
+struct UserAgentsSection {
+    #[serde(default)]
+    agents: HashMap<String, AgentTypeConfig>,
+}
+
+/// Parse agent type defaults from the stdout of `load_agent_defaults_async`.
+///
+/// The output consists of two NUL-separated chunks:
+///   1. Contents of `agents-defaults.toml` (`[agents.<name>]` tables)
+///   2. Contents of user `config.toml` (may contain `[agents.<name>]` tables)
+///
+/// User entries override defaults (full replacement per agent type key).
+pub fn parse_agent_defaults(stdout: &[u8]) -> HashMap<String, AgentTypeConfig> {
+    let chunks: Vec<&[u8]> = stdout.split(|&b| b == 0).collect();
+
+    // Parse defaults file (chunk 0) — uses [agents.<name>] structure.
+    let mut agent_types: HashMap<String, AgentTypeConfig> = if let Some(chunk) = chunks.first() {
+        let content = String::from_utf8_lossy(chunk);
+        toml::from_str::<UserAgentsSection>(content.trim())
+            .map(|s| s.agents)
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    // Parse user overrides from config.toml (chunk 1) — also [agents.<name>].
+    if let Some(chunk) = chunks.get(1) {
+        let content = String::from_utf8_lossy(chunk);
+        if let Ok(user) = toml::from_str::<UserAgentsSection>(content.trim()) {
+            for (key, val) in user.agents {
+                agent_types.insert(key, val);
+            }
+        }
+    }
+
+    agent_types
 }
 
 /// Kick off async path tab-completion for the wizard project directory.
@@ -277,14 +504,7 @@ pub fn discover_profiles_async(sandbox_config_path: Option<&str>, launch_dir: Op
 const MAX_COMPLETIONS: usize = 50;
 
 pub fn complete_path_async(partial: &str) {
-    // Build a shell expression for the prefix. Use `$HOME` instead of
-    // `expand_tilde()` so the *shell* resolves `~` (the WASI sandbox
-    // doesn't have $HOME in its environment).
-    let prefix_expr = if let Some(rest) = partial.strip_prefix('~') {
-        format!("\"$HOME{}\"", shell_escape(rest))
-    } else {
-        format!("'{}'", shell_escape(partial))
-    };
+    let prefix_expr = shell_path_expr(partial);
 
     // Glob for directories matching the prefix. The trailing `*/` ensures
     // only directories are matched. Limit output to avoid unbounded results
@@ -344,12 +564,70 @@ impl DashboardConfig {
         }
     }
 
-    /// Merge discovered profile names into `self.profiles`, deduplicating.
-    pub fn merge_profiles(&mut self, discovered: &[String]) {
-        for name in discovered {
-            if !self.profiles.contains(name) {
-                self.profiles.push(name.clone());
+    /// Merge discovered per-agent-type profiles, deduplicating.
+    pub fn merge_profiles(
+        &mut self,
+        by_agent: &HashMap<String, Vec<String>>,
+        details_by_agent: &HashMap<String, HashMap<String, ProfileDetails>>,
+    ) {
+        for (agent, names) in by_agent {
+            let existing = self.profiles_by_agent.entry(agent.clone()).or_default();
+            for name in names {
+                if !existing.contains(name) {
+                    existing.push(name.clone());
+                }
+            }
+            existing.sort();
+        }
+        for (agent, details) in details_by_agent {
+            let existing = self.profile_details_by_agent.entry(agent.clone()).or_default();
+            for (name, detail) in details {
+                existing.entry(name.clone()).or_insert_with(|| detail.clone());
             }
         }
+    }
+
+    /// Resolve the effective profile list for a given agent type.
+    ///
+    /// - If the agent type has `profiles = ["__discover__"]`, returns discovered profiles
+    ///   for the agent's base name (e.g. "claude", "codex").
+    /// - If the agent type has an explicit list, returns the intersection with discovered.
+    /// - If the agent type has no profiles (empty), returns an empty list.
+    pub fn profiles_for_agent_type(&self, agent_type: &str) -> Vec<String> {
+        let cfg = match self.agent_types.get(agent_type) {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        if cfg.profiles.is_empty() {
+            return Vec::new();
+        }
+        let base = crate::agent::agent_type_base_name(agent_type);
+        let discovered = self.profiles_by_agent.get(base);
+        if cfg.profiles.len() == 1 && cfg.profiles[0] == "__discover__" {
+            return discovered.cloned().unwrap_or_default();
+        }
+        // Explicit list: intersect with discovered profiles for validation
+        let disc = discovered.cloned().unwrap_or_default();
+        cfg.profiles
+            .iter()
+            .filter(|p| disc.contains(p))
+            .cloned()
+            .collect()
+    }
+
+    /// Look up profile details for a given agent type and profile name.
+    pub fn profile_details_for(&self, agent_type: &str, profile_name: &str) -> Option<&ProfileDetails> {
+        let base = crate::agent::agent_type_base_name(agent_type);
+        self.profile_details_by_agent
+            .get(base)
+            .and_then(|m| m.get(profile_name))
+    }
+
+    /// Return the event_map for a given agent type, or None if empty/missing.
+    pub fn event_map_for(&self, agent_type: &str) -> Option<&HashMap<String, String>> {
+        self.agent_types
+            .get(agent_type)
+            .map(|c| &c.event_map)
+            .filter(|m| !m.is_empty())
     }
 }

@@ -8,9 +8,10 @@ mod types;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
-use crate::config::{DashboardConfig, StatusMethod};
+use crate::config::{DashboardConfig, StatusMethod, DEFAULT_AGENT_TYPE};
 
 const PIPE_CLAUDE_STATUS: &str = "claude-status";
+const PIPE_LINCE_STATUS: &str = "lince-status";
 const PIPE_VOXCODE_TEXT: &str = "voxcode-text";
 const CMD_GET_CWD: &str = "get_cwd";
 
@@ -36,6 +37,11 @@ struct State {
     /// When set, the name_prompt acts as a rename prompt for this agent id.
     rename_target: Option<String>,
     launch_dir: Option<String>,
+    /// Buffered saved state awaiting agent type defaults before restore.
+    /// Set when load_state completes before load_agent_defaults.
+    pending_restore: Option<Vec<SavedAgentInfo>>,
+    /// Whether agent type defaults have been loaded at least once.
+    agent_types_loaded: bool,
 }
 
 impl Default for State {
@@ -56,6 +62,8 @@ impl Default for State {
             name_prompt: None,
             rename_target: None,
             launch_dir: None,
+            pending_restore: None,
+            agent_types_loaded: false,
         }
     }
 }
@@ -112,7 +120,7 @@ impl ZellijPlugin for State {
             }
             Event::Key(key) => self.handle_key(key),
             Event::PaneUpdate(manifest) => {
-                let changed = agent::reconcile_panes(&mut self.agents, &manifest, &self.config.agent_layout);
+                let changed = agent::reconcile_panes(&mut self.agents, &manifest, &self.config.agent_layout, &self.config.agent_types);
                 if changed {
                     self.sort_agents_by_dir();
                 }
@@ -159,6 +167,10 @@ impl ZellijPlugin for State {
                                 self.config.sandbox_config_path.as_deref(),
                                 Some(&dir),
                             );
+                            // Kick off async load of agent type defaults.
+                            config::load_agent_defaults_async(
+                                self.config.sandbox_config_path.as_deref(),
+                            );
                             // Kick off async load of saved state.
                             state_file::load_state_async(&dir);
                             self.launch_dir = Some(dir);
@@ -170,10 +182,13 @@ impl ZellijPlugin for State {
                             match state_file::parse_loaded_state(&stdout) {
                                 Ok(saved) => {
                                     self.next_agent_id = saved.next_agent_id;
-                                    self.restore_agents(saved.agents);
-                                    // Keep the state file around so that CTRL-Q (ungraceful quit)
-                                    // still preserves the last known state.  The file is
-                                    // overwritten on the next graceful Q-quit anyway.
+                                    if self.agent_types_loaded {
+                                        // Agent types already available — restore immediately.
+                                        self.restore_agents(saved.agents);
+                                    } else {
+                                        // Agent types not loaded yet — buffer for later.
+                                        self.pending_restore = Some(saved.agents);
+                                    }
                                 }
                                 Err(e) => {
                                     self.status_message = Some(format!("Restore: {}", e));
@@ -204,8 +219,20 @@ impl ZellijPlugin for State {
                         for chunk in stdout.split(|&b| b == 0) {
                             if chunk.is_empty() { continue; }
                             let content = String::from_utf8_lossy(chunk);
-                            let discovered = config::parse_profiles_from_toml(&content);
-                            self.config.merge_profiles(&discovered);
+                            let (by_agent, details_by_agent) = config::parse_profiles_from_toml(&content);
+                            self.config.merge_profiles(&by_agent, &details_by_agent);
+                        }
+                        true
+                    }
+                    Some(config::CMD_LOAD_AGENT_DEFAULTS) => {
+                        let agent_types = config::parse_agent_defaults(&stdout);
+                        if !agent_types.is_empty() {
+                            self.config.agent_types = agent_types;
+                        }
+                        self.agent_types_loaded = true;
+                        // Flush any buffered restore that was waiting for agent types.
+                        if let Some(saved_agents) = self.pending_restore.take() {
+                            self.restore_agents(saved_agents);
                         }
                         true
                     }
@@ -258,7 +285,7 @@ impl ZellijPlugin for State {
 
         // If wizard is active, render the wizard overlay instead of the dashboard
         if let Some(ref wizard) = self.wizard {
-            dashboard::render_wizard(wizard, rows, cols);
+            dashboard::render_wizard(wizard, rows, cols, &self.config.agent_types);
             return;
         }
 
@@ -280,6 +307,7 @@ impl ZellijPlugin for State {
             cols,
             effective_status,
             self.name_prompt.as_ref(),
+            &self.config.agent_types,
         );
     }
 
@@ -289,7 +317,7 @@ impl ZellijPlugin for State {
         cli_pipe_output(&pipe_message.name, "");
 
         match pipe_message.name.as_str() {
-            PIPE_CLAUDE_STATUS => {
+            PIPE_CLAUDE_STATUS | PIPE_LINCE_STATUS => {
                 if let Some(payload) = pipe_message.payload {
                     self.handle_status_message(&payload);
                     return true;
@@ -345,7 +373,8 @@ impl State {
 
         match bare {
             BareKey::Char('n') => {
-                let default_name = format!("agent-{}", self.next_agent_id + 1);
+                let base = agent::agent_type_base_name(DEFAULT_AGENT_TYPE);
+                let default_name = format!("{}-{}", base, self.next_agent_id + 1);
                 self.name_prompt = Some(NamePromptState {
                     input: String::new(),
                     default_name,
@@ -365,17 +394,40 @@ impl State {
                 true
             }
             BareKey::Char('N') => {
-                let available_profiles: Vec<String> = self.config.profiles.iter().cloned().collect();
-                let default_index = self.config.default_profile.as_ref()
-                    .and_then(|dp| available_profiles.iter().position(|p| p == dp))
-                    .unwrap_or(0);
                 let default_dir = self.config.default_project_dir.clone()
                     .unwrap_or_default();
+                // Build sorted list of available agent types from config
+                let mut agent_type_list: Vec<(String, String)> = self.config.agent_types.iter()
+                    .map(|(k, v)| (k.clone(), v.display_name.clone()))
+                    .collect();
+                agent_type_list.sort_by(|a, b| a.0.cmp(&b.0));
+                let default_at_index = agent_type_list.iter()
+                    .position(|(k, _)| k == DEFAULT_AGENT_TYPE)
+                    .unwrap_or(0);
+                // Resolve profiles for the default agent type
+                let default_at_key = agent_type_list.get(default_at_index)
+                    .map(|(k, _)| k.as_str())
+                    .unwrap_or(DEFAULT_AGENT_TYPE);
+                let available_profiles = self.config.profiles_for_agent_type(default_at_key);
+                let default_profile_index = self.config.default_profile.as_ref()
+                    .and_then(|dp| available_profiles.iter().position(|p| p == dp))
+                    .unwrap_or(0);
+                // Skip agent type step if only one type available
+                let first_step = if agent_type_list.len() <= 1 {
+                    WizardStep::Name
+                } else {
+                    WizardStep::AgentType
+                };
+                let base = agent::agent_type_base_name(default_at_key);
+                let default_name = format!("{}-{}", base, self.next_agent_id + 1);
                 self.wizard = Some(WizardState {
-                    step: WizardStep::Name,
+                    step: first_step,
+                    available_agent_types: agent_type_list,
+                    agent_type_index: default_at_index,
                     name: String::new(),
+                    default_name,
                     available_profiles,
-                    profile_index: default_index,
+                    profile_index: default_profile_index,
                     project_dir: default_dir,
                     completions: Vec::new(),
                     completion_index: None,
@@ -500,7 +552,8 @@ impl State {
                     if let Some(agent) = self.agents.iter_mut().find(|a| a.id == agent_id) {
                         agent.name = name.clone();
                         if let Some(pid) = agent.pane_id {
-                            rename_pane_with_id(PaneId::Terminal(pid), &name);
+                            let title = agent::pane_title(&name, &agent.agent_type, &self.config.agent_types);
+                            rename_pane_with_id(PaneId::Terminal(pid), &title);
                         }
                         self.status_message = Some(format!("Renamed to {}", name));
                     }
@@ -512,6 +565,7 @@ impl State {
                         &mut self.next_agent_id,
                         &self.agents,
                         name,
+                        DEFAULT_AGENT_TYPE,
                         self.config.default_profile.clone(),
                         self.config
                             .default_project_dir
@@ -573,6 +627,32 @@ impl State {
         }
 
         match wizard.step {
+            WizardStep::AgentType => match bare {
+                BareKey::Enter | BareKey::Tab => {
+                    // Re-resolve profiles for the newly selected agent type
+                    let at_key = wizard.selected_agent_type().to_string();
+                    wizard.available_profiles = self.config.profiles_for_agent_type(&at_key);
+                    wizard.profile_index = 0;
+                    // Update default name to reflect selected agent type
+                    let base = agent::agent_type_base_name(&at_key);
+                    wizard.default_name = format!("{}-{}", base, self.next_agent_id + 1);
+                    wizard.step = WizardStep::Name;
+                }
+                BareKey::Up | BareKey::Char('k') => {
+                    if wizard.agent_type_index > 0 {
+                        wizard.agent_type_index -= 1;
+                    } else {
+                        wizard.agent_type_index = wizard.available_agent_types.len().saturating_sub(1);
+                    }
+                }
+                BareKey::Down | BareKey::Char('j') => {
+                    let len = wizard.available_agent_types.len();
+                    if len > 0 {
+                        wizard.agent_type_index = (wizard.agent_type_index + 1) % len;
+                    }
+                }
+                _ => {}
+            },
             WizardStep::Name => match bare {
                 BareKey::Enter | BareKey::Tab => {
                     if wizard.has_profiles() {
@@ -582,7 +662,11 @@ impl State {
                     }
                 }
                 BareKey::Backspace => {
-                    wizard.name.pop();
+                    if wizard.name.is_empty() && wizard.has_agent_types() {
+                        wizard.step = WizardStep::AgentType;
+                    } else {
+                        wizard.name.pop();
+                    }
                 }
                 BareKey::Char(c) => {
                     wizard.name.push(c);
@@ -658,10 +742,11 @@ impl State {
                 BareKey::Enter => {
                     // Clone values out before dropping the borrow
                     let name = wizard.name.clone();
+                    let agent_type = wizard.selected_agent_type().to_string();
                     let profile = wizard.selected_profile().map(|s| s.to_string());
                     let project_dir = wizard.project_dir.clone();
                     self.wizard = None;
-                    self.spawn_wizard_agent(name, profile, project_dir);
+                    self.spawn_wizard_agent(name, &agent_type, profile, project_dir);
                     return true;
                 }
                 BareKey::Backspace => {
@@ -677,6 +762,7 @@ impl State {
     fn spawn_wizard_agent(
         &mut self,
         name: String,
+        agent_type: &str,
         profile: Option<String>,
         project_dir: String,
     ) {
@@ -685,6 +771,7 @@ impl State {
             &mut self.next_agent_id,
             &self.agents,
             name,
+            agent_type,
             profile,
             project_dir,
             self.launch_dir.as_deref(),
@@ -741,11 +828,17 @@ impl State {
         }
         // Preserve fields that are not hot-reloadable or are populated at runtime.
         let sandbox_command = std::mem::take(&mut self.config.sandbox_command);
-        let profiles = std::mem::take(&mut self.config.profiles);
+        let profiles_by_agent = std::mem::take(&mut self.config.profiles_by_agent);
+        let profile_details_by_agent = std::mem::take(&mut self.config.profile_details_by_agent);
+        let agent_types = std::mem::take(&mut self.config.agent_types);
         self.config = new_cfg;
         self.config.sandbox_command = sandbox_command;
         // Merge back auto-discovered profiles (they aren't in the config file).
-        self.config.merge_profiles(&profiles);
+        self.config.merge_profiles(&profiles_by_agent, &profile_details_by_agent);
+        // Preserve async-loaded agent types across hot-reload.
+        if self.config.agent_types.is_empty() {
+            self.config.agent_types = agent_types;
+        }
         self.config_error = None;
         self.status_message = Some("Config reloaded".to_string());
     }
@@ -762,6 +855,17 @@ impl State {
             None => return, // unknown agent, ignore
         };
 
+        // Some agents (e.g. Codex) launch into an interactive prompt, so the
+        // generic wrapper's initial "start" event is less accurate than pane
+        // reconciliation. Suppress it when configured via ignore_wrapper_start.
+        if msg.event == "start"
+            && self.config.agent_types.get(&agent.agent_type)
+                .map_or(false, |c| c.ignore_wrapper_start)
+            && matches!(agent.status, AgentStatus::Starting | AgentStatus::WaitingForInput)
+        {
+            return;
+        }
+
         // LINCE-53: handle subagent start/stop events
         match msg.event.as_str() {
             "subagent_start" => {
@@ -775,7 +879,7 @@ impl State {
             _ => {}
         }
 
-        let new_status = msg.to_agent_status();
+        let new_status = msg.to_agent_status(self.config.event_map_for(&agent.agent_type));
         agent.status = new_status;
 
         // LINCE-48: update detailed fields
@@ -790,6 +894,9 @@ impl State {
         }
         if let Some(e) = msg.error {
             agent.last_error = Some(e);
+        }
+        if let Some(m) = msg.model {
+            agent.model = Some(m);
         }
         agent.apply_status_side_effects();
     }
@@ -835,10 +942,21 @@ impl State {
         let mut changed = false;
         let status_dir = &self.config.status_file_dir;
         for agent in self.agents.iter_mut() {
-            let path = format!("{}/claude-{}.state", status_dir, agent.id);
-            if let Ok(content) = std::fs::read_to_string(&path) {
+            // Check both file naming conventions:
+            // Claude hook writes "claude-{id}.state", wrapper writes "{id}.state"
+            let path_claude = format!("{}/claude-{}.state", status_dir, agent.id);
+            let path_wrapper = format!("{}/{}.state", status_dir, agent.id);
+            let content_opt = std::fs::read_to_string(&path_claude)
+                .or_else(|_| std::fs::read_to_string(&path_wrapper))
+                .ok();
+            if let Some(content) = content_opt {
                 let event = content.trim().to_string();
                 if !event.is_empty() {
+                    // Skip if the event hasn't changed since last poll
+                    if agent.last_polled_event.as_ref() == Some(&event) {
+                        continue;
+                    }
+                    agent.last_polled_event = Some(event.clone());
                     let msg = StatusMessage {
                         agent_id: agent.id.clone(),
                         event,
@@ -848,8 +966,9 @@ impl State {
                         tokens_out: None,
                         error: None,
                         subagent_type: None,
+                        model: None,
                     };
-                    let new_status = msg.to_agent_status();
+                    let new_status = msg.to_agent_status(self.config.event_map_for(&agent.agent_type));
                     if agent.status != new_status {
                         agent.status = new_status;
                         changed = true;
@@ -899,6 +1018,7 @@ impl State {
                 &mut self.next_agent_id,
                 &self.agents,
                 saved.name,
+                &saved.agent_type,
                 saved.profile,
                 saved.project_dir,
                 self.launch_dir.as_deref(),

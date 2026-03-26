@@ -21,7 +21,7 @@ confirm() {
 }
 
 # ── Step 1: Prerequisites ─────────────────────────────────────────────
-echo -e "${GREEN}[1/8] Checking prerequisites...${NC}"
+echo -e "${GREEN}[1/10] Checking prerequisites...${NC}"
 
 MISSING=()
 
@@ -55,7 +55,7 @@ fi
 echo ""
 
 # ── Step 2: WASM target ───────────────────────────────────────────────
-echo -e "${GREEN}[2/8] Checking wasm32-wasip1 target...${NC}"
+echo -e "${GREEN}[2/10] Checking wasm32-wasip1 target...${NC}"
 
 # Ensure rustup toolchain takes precedence
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -72,7 +72,7 @@ fi
 echo ""
 
 # ── Step 3: Build plugin ──────────────────────────────────────────────
-echo -e "${GREEN}[3/8] Building plugin...${NC}"
+echo -e "${GREEN}[3/10] Building plugin...${NC}"
 
 if ! "$SCRIPT_DIR/plugin/build.sh"; then
     echo -e "${RED}Build failed. Check errors above.${NC}"
@@ -81,7 +81,7 @@ fi
 echo ""
 
 # ── Step 4: Install WASM plugin ───────────────────────────────────────
-echo -e "${GREEN}[4/8] Installing plugin...${NC}"
+echo -e "${GREEN}[4/10] Installing plugin...${NC}"
 
 PLUGIN_DIR="$HOME/.config/zellij/plugins"
 mkdir -p "$PLUGIN_DIR"
@@ -99,7 +99,7 @@ echo -e "${GREEN}  ✓ Installed: $WASM_DST${NC}"
 echo ""
 
 # ── Step 5: Install layouts ───────────────────────────────────────────
-echo -e "${GREEN}[5/8] Installing layouts...${NC}"
+echo -e "${GREEN}[5/10] Installing layouts...${NC}"
 
 LAYOUT_DIR="$HOME/.config/zellij/layouts"
 mkdir -p "$LAYOUT_DIR"
@@ -115,7 +115,7 @@ done
 echo ""
 
 # ── Step 6: Install config ────────────────────────────────────────────
-echo -e "${GREEN}[6/8] Installing configuration...${NC}"
+echo -e "${GREEN}[6/10] Installing configuration...${NC}"
 
 CONFIG_DIR="$HOME/.config/lince-dashboard"
 CONFIG_DST="$CONFIG_DIR/config.toml"
@@ -123,15 +123,16 @@ CONFIG_DST="$CONFIG_DIR/config.toml"
 mkdir -p "$CONFIG_DIR"
 
 if [ -f "$CONFIG_DST" ]; then
-    echo -e "${YELLOW}  Config already exists — keeping current: $CONFIG_DST${NC}"
-else
-    cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
-    echo -e "${GREEN}  ✓ Installed: $CONFIG_DST${NC}"
+    BACKUP="${CONFIG_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$CONFIG_DST" "$BACKUP"
+    echo -e "${YELLOW}  Existing config backed up → $(basename "$BACKUP")${NC}"
 fi
+cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
+echo -e "${GREEN}  ✓ Installed: $CONFIG_DST${NC}"
 echo ""
 
 # ── Step 7: Install hooks ─────────────────────────────────────────────
-echo -e "${GREEN}[7/8] Installing Claude Code hooks...${NC}"
+echo -e "${GREEN}[7/10] Installing agent platform hooks...${NC}"
 
 if [ -f "$SCRIPT_DIR/hooks/install-hooks.sh" ]; then
     bash "$SCRIPT_DIR/hooks/install-hooks.sh"
@@ -140,8 +141,37 @@ else
 fi
 echo ""
 
-# ── Step 8: Shell alias ───────────────────────────────────────────────
-echo -e "${GREEN}[8/8] Setting up shell alias...${NC}"
+# ── Step 8: Install agents-defaults.toml ─────────────────────────────
+echo -e "${GREEN}[8/10] Installing agent defaults...${NC}"
+
+AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
+AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
+
+if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
+    cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
+    echo -e "${GREEN}  ✓ Installed: $AGENTS_DEFAULTS_DST${NC}"
+else
+    echo -e "${YELLOW}  ⚠ agents-defaults.toml not found — skipping${NC}"
+fi
+echo ""
+
+# ── Step 10: Install lince-setup skill ────────────────────────────────
+echo -e "${GREEN}[9/10] Installing lince-setup skill...${NC}"
+
+SKILL_SRC="$SCRIPT_DIR/skills/lince-setup"
+SKILL_DST="$HOME/.claude/skills/lince-setup"
+
+if [ -d "$SKILL_SRC" ]; then
+    mkdir -p "$SKILL_DST"
+    cp -r "$SKILL_SRC/." "$SKILL_DST/"
+    echo -e "${GREEN}  ✓ Installed: $SKILL_DST${NC}"
+else
+    echo -e "${YELLOW}  ⚠ skills/lince-setup/ not found — skipping${NC}"
+fi
+echo ""
+
+# ── Step 11: Shell alias ─────────────────────────────────────────────
+echo -e "${GREEN}[10/10] Setting up shell alias...${NC}"
 
 ALIAS_LINE='alias zd="zellij --layout dashboard"'
 ALIAS_COMMENT="# LINCE Dashboard alias"
@@ -166,10 +196,14 @@ echo -e "${BLUE}   Installation Complete${NC}"
 echo -e "${BLUE}================================================${NC}"
 echo ""
 echo -e "${GREEN}Installed:${NC}"
-echo "  Plugin:  $WASM_DST"
-echo "  Layouts: $LAYOUT_DIR/dashboard.kdl"
-echo "  Config:  $CONFIG_DST"
-echo "  Hooks:   ~/.local/bin/claude-status-hook.sh"
+echo "  Plugin:   $WASM_DST"
+echo "  Layouts:  $LAYOUT_DIR/dashboard.kdl"
+echo "  Config:   $CONFIG_DST"
+echo "  Hooks:    ~/.local/bin/claude-status-hook.sh"
+echo "            ~/.local/bin/codex-status-hook.sh"
+echo "  Wrapper:  ~/.local/bin/lince-agent-wrapper"
+echo "  Defaults: ~/.config/lince-dashboard/agents-defaults.toml"
+echo "  Skill:    ~/.claude/skills/lince-setup/"
 echo ""
 echo -e "${GREEN}Usage:${NC}"
 echo "  source ~/.bashrc   # reload aliases"

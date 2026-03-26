@@ -7,20 +7,22 @@
 - `lince-dashboard/` — Multi-agent TUI dashboard (Zellij WASM plugin, Rust)
 
 ## Build / Test
-- **sandbox**: No build step. `python3 sandbox/claude-sandbox --help` to verify.
+- **sandbox**: No build step. `python3 sandbox/agent-sandbox --help` to verify.
 - **voxcode**: `cd voxcode && uv sync && uv run voxcode --help`
 - **voxtts**: `cd voxtts && uv sync && uv run voxtts --help`
-- **lince-dashboard**: `cd lince-dashboard/plugin && PATH="$HOME/.cargo/bin:$PATH" cargo build --target wasm32-wasip1`
+- **lince-dashboard**: `cd lince-dashboard/plugin && PATH="$HOME/.cargo/bin:$PATH" $HOME/.cargo/bin/cargo build --target wasm32-wasip1`
 
 ### Rust / WASM toolchain note
-Fedora ships a system `rustc` at `/usr/bin/rustc` that **does not** include the `wasm32-wasip1` standard library. Always use the **rustup-managed** toolchain when building the dashboard plugin:
+Fedora ships system `rustc`/`cargo` at `/usr/bin/` that **do not** include the `wasm32-wasip1` standard library. Always use the **rustup-managed** toolchain. You need BOTH `PATH` (so child `rustc` resolves correctly) AND the explicit `cargo` path:
 ```bash
-PATH="$HOME/.cargo/bin:$PATH" cargo build --target wasm32-wasip1
+PATH="$HOME/.cargo/bin:$PATH" $HOME/.cargo/bin/cargo build --target wasm32-wasip1
 ```
 Or the build will fail with "can't find crate for `core`".
 
+**IMPORTANT for Claude**: Never use bare `cargo` for WASM builds. The system cargo at `/usr/bin/cargo` invokes `/usr/bin/rustc` which lacks the wasm target. Always use the full command above — both PATH and explicit cargo path are required.
+
 ### WASI sandbox filesystem limitations
-Zellij WASM plugins run inside a WASI sandbox with **restricted filesystem access**. `std::fs::read_to_string()` and similar direct I/O calls **silently fail** for paths outside the plugin's mapped directories (e.g. `~/.claude-sandbox/config.toml`).
+Zellij WASM plugins run inside a WASI sandbox with **restricted filesystem access**. `std::fs::read_to_string()` and similar direct I/O calls **silently fail** for paths outside the plugin's mapped directories (e.g. `~/.agent-sandbox/config.toml`).
 
 **Rule**: All file I/O in the dashboard plugin must use `run_command()` (async shell commands via Zellij host) instead of `std::fs` calls. The result arrives in `Event::RunCommandResult` with a context map to identify the operation. See `state_file.rs` and `config.rs` `discover_profiles_async()` for the pattern.
 

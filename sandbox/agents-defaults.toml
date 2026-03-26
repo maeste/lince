@@ -1,0 +1,68 @@
+# agents-defaults.toml — Default agent configurations for agent-sandbox.
+#
+# Each [agents.<name>] section defines how to run a specific AI coding agent
+# inside the bubblewrap sandbox.  Users can override any field in their own
+# config.toml under the same [agents.<name>] key.
+#
+# Fields:
+#   command               (string)       — binary name to execute
+#   default_args          (list[string]) — default CLI arguments
+#   env                   (dict)         — extra environment variables to set
+#   home_ro_dirs          (list[string]) — home subdirs to bind read-only
+#   home_rw_dirs          (list[string]) — home subdirs to bind read-write
+#   bwrap_conflict        (bool)         — agent uses bwrap internally
+#   disable_inner_sandbox_args (list[string]) — args to disable agent's own sandbox
+
+[agents.claude]
+command = "claude"
+default_args = ["--dangerously-skip-permissions"]
+env = {}
+home_ro_dirs = []
+home_rw_dirs = []
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+
+[agents.codex]
+command = "codex"
+default_args = ["--full-auto"]
+env = {}
+home_ro_dirs = []
+home_rw_dirs = [".codex"]
+bwrap_conflict = true
+disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+
+[agents.gemini]
+command = "gemini"
+default_args = []
+env = { GEMINI_API_KEY = "$GEMINI_API_KEY" }
+home_ro_dirs = []
+home_rw_dirs = [".gemini"]
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+
+[agents.aider]
+command = "aider"
+default_args = []
+env = {}
+home_ro_dirs = [".aider"]
+home_rw_dirs = []
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+
+[agents.opencode]
+command = "opencode"
+default_args = []
+env = {}
+home_ro_dirs = [".config/opencode"]
+home_rw_dirs = [".local/share/opencode"]
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+
+[agents.amp]
+command = "amp"
+default_args = []
+env = {}
+home_ro_dirs = [".amplication"]
+home_rw_dirs = []
+bwrap_conflict = false
+disable_inner_sandbox_args = []

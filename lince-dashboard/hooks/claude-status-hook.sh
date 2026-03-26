@@ -76,9 +76,14 @@ echo "  HOOK_EVENT=$HOOK_EVENT" >> "$LOG_FILE" 2>/dev/null || true
 STATUS=""
 TOOL_NAME=""
 SUBAGENT_TYPE=""
+MODEL=""
 case "$HOOK_EVENT" in
     Stop)
         STATUS="idle"
+        ;;
+    SessionStart)
+        STATUS="running"
+        MODEL=$(extract_json_field "model")
         ;;
     UserPromptSubmit)
         STATUS="running"
@@ -122,7 +127,8 @@ if $HAS_JQ; then
         --arg ts "$TIMESTAMP" \
         --arg tool "${TOOL_NAME:-}" \
         --arg subtype "${SUBAGENT_TYPE:-}" \
-        '{agent_id: $id, event: $event, timestamp: $ts} + (if $tool != "" then {tool_name: $tool} else {} end) + (if $subtype != "" then {subagent_type: $subtype} else {} end)')
+        --arg model "${MODEL:-}" \
+        '{agent_id: $id, event: $event, timestamp: $ts} + (if $tool != "" then {tool_name: $tool} else {} end) + (if $subtype != "" then {subagent_type: $subtype} else {} end) + (if $model != "" then {model: $model} else {} end)')
 else
     PAYLOAD="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${STATUS}\",\"timestamp\":\"${TIMESTAMP}\""
     if [ -n "${TOOL_NAME:-}" ]; then
@@ -131,7 +137,31 @@ else
     if [ -n "${SUBAGENT_TYPE:-}" ]; then
         PAYLOAD="${PAYLOAD},\"subagent_type\":\"${SUBAGENT_TYPE}\""
     fi
+    if [ -n "${MODEL:-}" ]; then
+        PAYLOAD="${PAYLOAD},\"model\":\"${MODEL}\""
+    fi
     PAYLOAD="${PAYLOAD}}"
+fi
+
+# Merge token data from statusline cache (if available)
+TOKEN_FILE="${STATUS_DIR}/tokens-${AGENT_ID}.json"
+if [ -f "$TOKEN_FILE" ]; then
+    if $HAS_JQ; then
+        TOK_IN=$(jq -r '.tokens_in // 0' "$TOKEN_FILE" 2>/dev/null || echo "0")
+        TOK_OUT=$(jq -r '.tokens_out // 0' "$TOKEN_FILE" 2>/dev/null || echo "0")
+    else
+        TOK_CONTENT=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
+        TOK_IN=0; TOK_OUT=0
+        [[ "$TOK_CONTENT" =~ \"tokens_in\":([0-9]+) ]] && TOK_IN="${BASH_REMATCH[1]}"
+        [[ "$TOK_CONTENT" =~ \"tokens_out\":([0-9]+) ]] && TOK_OUT="${BASH_REMATCH[1]}"
+    fi
+    if [ "$TOK_IN" -gt 0 ] || [ "$TOK_OUT" -gt 0 ]; then
+        if $HAS_JQ; then
+            PAYLOAD=$(echo "$PAYLOAD" | jq -c --argjson ti "$TOK_IN" --argjson to "$TOK_OUT" '. + {tokens_in: $ti, tokens_out: $to}')
+        else
+            PAYLOAD="${PAYLOAD%\}},\"tokens_in\":${TOK_IN},\"tokens_out\":${TOK_OUT}}"
+        fi
+    fi
 fi
 
 echo "  STATUS=$STATUS  PAYLOAD=$PAYLOAD" >> "$LOG_FILE" 2>/dev/null || true

@@ -1,6 +1,6 @@
 # Zellij Configuration Setup
 
-Custom Zellij configuration with keybindings, predefined layouts for Claude Code (via `claude-sandbox`), and shell aliases.
+Custom Zellij configuration with keybindings, predefined layouts for Claude Code (via `agent-sandbox`), and shell aliases.
 
 ## What's Included
 
@@ -17,14 +17,14 @@ All layouts share the same structure: a large pane on top (50%) running Claude C
 
 | Layout | Top pane command | Profile |
 |--------|-----------------|---------|
-| `three-pane` | `claude-sandbox run` | (default) |
-| `three-pane-zai` | `claude-sandbox run -P zai` | Z.ai |
-| `three-pane-mm` | `claude-sandbox run -P mm` | Minimax |
-| `three-pane-vertex` | `claude-sandbox run -P vertex` | Vertex AI |
+| `three-pane` | `agent-sandbox run` | (default) |
+| `three-pane-zai` | `agent-sandbox run -P zai` | Z.ai |
+| `three-pane-mm` | `agent-sandbox run -P mm` | Minimax |
+| `three-pane-vertex` | `agent-sandbox run -P vertex` | Vertex AI |
 
 ```
 ┌─────────────────────────────┐
-│   claude-sandbox (50%)      │
+│   agent-sandbox (50%)      │
 ├──────────────┬──────────────┤
 │ backlog      │ shell        │
 │ board (25%)  │ free  (25%)  │
@@ -59,7 +59,7 @@ zellij-setup/
 - **OS**: Fedora/RHEL (with dnf) — the script has comments for Ubuntu/Debian (apt-get)
 - **Shell**: Bash or Zsh
 - **Build deps** (if installing via Cargo): perl-IPC-Cmd, perl-core, openssl-devel
-- **Optional**: `claude-sandbox`, `backlog` commands (used by layouts)
+- **Optional**: `agent-sandbox`, `backlog` commands (used by layouts)
 
 ## Installation
 
@@ -75,7 +75,7 @@ The script walks you through:
 2. **Backup** existing configuration
 3. **Create directories** (`~/.config/zellij/layouts/`)
 4. **Copy config files** and verify syntax
-5. **Check commands** used by layouts (`claude-sandbox`, `backlog`)
+5. **Check commands** used by layouts (`agent-sandbox`, `backlog`)
 6. **Set up aliases** in `.bashrc` / `.zshrc`
 7. **Test** that Zellij starts correctly
 
@@ -171,12 +171,12 @@ zellij --debug         # verbose logs
 
 ### Layout commands missing
 
-If `claude-sandbox` or `backlog` aren't installed, the panes will show an error but Zellij still works. You can edit the layout to remove the command (the pane becomes a plain shell):
+If `agent-sandbox` or `backlog` aren't installed, the panes will show an error but Zellij still works. You can edit the layout to remove the command (the pane becomes a plain shell):
 
 ```kdl
 # from:
 pane size="50%" {
-    command "claude-sandbox"
+    command "agent-sandbox"
     args "run"
 }
 

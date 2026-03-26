@@ -65,16 +65,66 @@ else
 fi
 echo ""
 
-# ── Hook script ────────────────────────────────────────────────────────
-HOOK="$HOME/.local/bin/claude-status-hook.sh"
-if [ -f "$HOOK" ]; then
-    echo -e "${YELLOW}Found: $HOOK${NC}"
-    if confirm "  Remove hook script?"; then
-        rm -f "$HOOK"
+# ── Hook scripts ───────────────────────────────────────────────────────
+HOOKS=(
+    "$HOME/.local/bin/claude-status-hook.sh"
+    "$HOME/.local/bin/codex-status-hook.sh"
+)
+FOUND_HOOKS=()
+for hook in "${HOOKS[@]}"; do
+    [ -f "$hook" ] && FOUND_HOOKS+=("$hook")
+done
+
+if [ ${#FOUND_HOOKS[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Found hook scripts:${NC}"
+    for hook in "${FOUND_HOOKS[@]}"; do
+        echo "  $hook"
+    done
+    if confirm "  Remove hook scripts?"; then
+        rm -f "${FOUND_HOOKS[@]}"
         echo -e "${GREEN}  ✓ Removed${NC}"
     fi
 else
-    echo "  Hook script not found — skipping"
+    echo "  Hook scripts not found — skipping"
+fi
+echo ""
+
+# ── Agent wrapper ─────────────────────────────────────────────────────
+WRAPPER="$HOME/.local/bin/lince-agent-wrapper"
+if [ -f "$WRAPPER" ]; then
+    echo -e "${YELLOW}Found: $WRAPPER${NC}"
+    if confirm "  Remove agent wrapper?"; then
+        rm -f "$WRAPPER"
+        echo -e "${GREEN}  ✓ Removed${NC}"
+    fi
+else
+    echo "  Agent wrapper not found — skipping"
+fi
+echo ""
+
+# ── Agent defaults ────────────────────────────────────────────────────
+AGENTS_DEFAULTS="$HOME/.config/lince-dashboard/agents-defaults.toml"
+if [ -f "$AGENTS_DEFAULTS" ]; then
+    echo -e "${YELLOW}Found: $AGENTS_DEFAULTS${NC}"
+    if confirm "  Remove agent defaults?"; then
+        rm -f "$AGENTS_DEFAULTS"
+        echo -e "${GREEN}  ✓ Removed${NC}"
+    fi
+else
+    echo "  Agent defaults not found — skipping"
+fi
+echo ""
+
+# ── Lince-setup skill ────────────────────────────────────────────────
+SKILL_DIR="$HOME/.claude/skills/lince-setup"
+if [ -d "$SKILL_DIR" ]; then
+    echo -e "${YELLOW}Found: $SKILL_DIR${NC}"
+    if confirm "  Remove lince-setup skill?"; then
+        rm -rf "$SKILL_DIR"
+        echo -e "${GREEN}  ✓ Removed${NC}"
+    fi
+else
+    echo "  Lince-setup skill not found — skipping"
 fi
 echo ""
 
@@ -104,6 +154,31 @@ else
 fi
 echo ""
 
+# ── Codex notify in config.toml ────────────────────────────────────────
+CODEX_CONFIG="$HOME/.codex/config.toml"
+CODEX_BLOCK_START="# >>> LINCE Dashboard Codex notify >>>"
+CODEX_BLOCK_END="# <<< LINCE Dashboard Codex notify <<<"
+if [ -f "$CODEX_CONFIG" ]; then
+    if grep -Fq "$CODEX_BLOCK_START" "$CODEX_CONFIG"; then
+        echo -e "${YELLOW}Found dashboard Codex notify block in $CODEX_CONFIG${NC}"
+        if confirm "  Remove Codex notify block?"; then
+            TMP_FILE="$(mktemp)"
+            awk -v start="$CODEX_BLOCK_START" -v end="$CODEX_BLOCK_END" '
+                $0 == start { skipping=1; next }
+                $0 == end { skipping=0; next }
+                !skipping { print }
+            ' "$CODEX_CONFIG" > "$TMP_FILE"
+            mv "$TMP_FILE" "$CODEX_CONFIG"
+            echo -e "${GREEN}  ✓ Removed Codex notify block${NC}"
+        fi
+    else
+        echo "  No dashboard Codex notify block found — skipping"
+    fi
+else
+    echo "  Codex config not found — skipping notify cleanup"
+fi
+echo ""
+
 # ── Shell alias ────────────────────────────────────────────────────────
 ALIAS_REMOVED=false
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
@@ -125,10 +200,14 @@ echo ""
 
 # ── Status files ───────────────────────────────────────────────────────
 STATUS_FILES=$(ls /tmp/claude-agent-*.state 2>/dev/null || true)
-if [ -n "$STATUS_FILES" ]; then
+STATUS_DIR_EXISTS=false
+[ -d "/tmp/lince-dashboard" ] && STATUS_DIR_EXISTS=true
+
+if [ -n "$STATUS_FILES" ] || [ "$STATUS_DIR_EXISTS" = true ]; then
     echo -e "${YELLOW}Found status files in /tmp/${NC}"
     if confirm "  Remove status files?"; then
         rm -f /tmp/claude-agent-*.state
+        rm -rf /tmp/lince-dashboard
         echo -e "${GREEN}  ✓ Removed${NC}"
     fi
 fi

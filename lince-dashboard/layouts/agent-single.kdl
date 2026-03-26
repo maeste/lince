@@ -6,7 +6,7 @@
 // How it works:
 //   1. The plugin calls open_command_pane_floating() to spawn the agent process.
 //   2. The command executed is:
-//        claude-sandbox run -P <profile> -p <project_dir>
+//        agent-sandbox run -P <profile> -p <project_dir>
 //      where <profile> and <project_dir> come from the dashboard configuration.
 //   3. The pane is hidden by default and shown on demand via show_pane_with_id().
 //
@@ -26,7 +26,7 @@
 //       tab name="agent-{id}" {
 //           pane split_direction="horizontal" {
 //               pane {
-//                   command "claude-sandbox"
+//                   command "agent-sandbox"
 //                   args "run" "-P" "{PROFILE}" "-p" "{PROJECT_DIR}"
 //               }
 //           }

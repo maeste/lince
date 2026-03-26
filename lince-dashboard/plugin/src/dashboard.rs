@@ -1,6 +1,23 @@
+use std::collections::HashMap;
+
+use crate::config::AgentTypeConfig;
 use crate::types::{
     AgentInfo, AgentStatus, NamePromptState, WizardState, WizardStep,
 };
+
+/// Map a color name from config to an ANSI escape code.
+fn color_name_to_ansi(name: &str) -> &'static str {
+    match name {
+        "red" => "\x1b[31m",
+        "green" => "\x1b[32m",
+        "yellow" => "\x1b[33m",
+        "blue" => "\x1b[34m",
+        "magenta" => "\x1b[35m",
+        "cyan" => "\x1b[36m",
+        "white" => "\x1b[37m",
+        _ => "\x1b[37m",  // default to white
+    }
+}
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -76,6 +93,28 @@ fn repeat_char(c: char, n: usize) -> String {
     std::iter::repeat(c).take(n).collect()
 }
 
+/// Format a Unix timestamp as human-readable relative time (e.g. "5m ago", "2h 15m ago").
+fn format_elapsed(timestamp: u64) -> String {
+    let now = crate::config::now_secs();
+    if now == 0 || timestamp == 0 {
+        return "-".to_string();
+    }
+    let elapsed = now.saturating_sub(timestamp);
+    if elapsed < 60 {
+        format!("{}s ago", elapsed)
+    } else if elapsed < 3600 {
+        format!("{}m ago", elapsed / 60)
+    } else if elapsed < 86400 {
+        let h = elapsed / 3600;
+        let m = (elapsed % 3600) / 60;
+        if m > 0 { format!("{}h {}m ago", h, m) } else { format!("{}h ago", h) }
+    } else {
+        let d = elapsed / 86400;
+        let h = (elapsed % 86400) / 3600;
+        if h > 0 { format!("{}d {}h ago", d, h) } else { format!("{}d ago", d) }
+    }
+}
+
 /// Shorten a filesystem path by replacing $HOME with ~.
 /// In WASI, std::env::var("HOME") may not work, so we gracefully skip shortening.
 use crate::config::collapse_tilde;
@@ -137,6 +176,7 @@ pub fn render_dashboard(
     cols: usize,
     status_message: Option<&str>,
     name_prompt: Option<&NamePromptState>,
+    agent_types: &HashMap<String, AgentTypeConfig>,
 ) {
     if rows == 0 || cols == 0 {
         return;
@@ -167,12 +207,12 @@ pub fn render_dashboard(
     if agents.is_empty() {
         render_empty_state(table_rows, cols);
     } else {
-        render_agent_table(agents, selected, focused, table_rows, cols);
+        render_agent_table(agents, selected, focused, table_rows, cols, agent_types);
     }
 
     if let Some(detail_id) = detail {
         if let Some(agent) = agents.iter().find(|a| a.id == detail_id) {
-            render_detail_panel(agent, cols, detail_panel_rows);
+            render_detail_panel(agent, cols, detail_panel_rows, agent_types);
         }
     }
 
@@ -225,51 +265,47 @@ fn render_agent_table(
     focused: Option<&str>,
     table_rows: usize,
     cols: usize,
+    agent_types: &HashMap<String, AgentTypeConfig>,
 ) {
     let col_idx: usize = 3;
+    let col_type: usize = 5;  // 3 chars label + "!" marker + space
     let col_name: usize = 20;
+    let col_profile: usize = 12;
+    let col_model: usize = 18;
     let col_status: usize = 12;
 
-    // Determine if we need swimlane headers (more than 1 unique project_dir)
-    let mut unique_dirs: Vec<&str> = Vec::new();
-    for a in agents {
-        if !unique_dirs.contains(&a.project_dir.as_str()) {
-            unique_dirs.push(&a.project_dir);
-        }
-    }
-    let show_swimlanes = unique_dirs.len() >= 1;
+    // Show optional columns only when terminal is wide enough
+    let base_width: usize = 1 + col_idx + 1 + col_type + 1 + col_name + 1 + col_status;
+    let show_profile = cols >= base_width + 1 + col_profile;
+    let show_model = cols >= base_width + 1 + col_profile + 1 + col_model;
 
-    // Header row — simplified: #, Name, Status only
+    let hdr_profile = if show_profile { format!("{} ", pad_left("Profile", col_profile)) } else { String::new() };
+    let hdr_model = if show_model { format!("{} ", pad_left("Model", col_model)) } else { String::new() };
     let hdr = format!(
-        " {} {} {}",
-        pad_left("#", col_idx), pad_left("Name", col_name), pad_left("Status", col_status),
+        " {} {} {} {} {}{}",
+        pad_left("#", col_idx), pad_left("Agent", col_type),
+        pad_left("Name", col_name),
+        pad_left("Status", col_status),
+        hdr_profile, hdr_model,
     );
     println!("{}{}{}", BOLD, truncate(&hdr, cols), RESET);
 
     let data_rows = table_rows.saturating_sub(1);
 
-    // Build a list of "virtual rows": either swimlane headers or agent rows.
-    // Each entry is (agent_index_or_none, swimlane_dir_or_none).
-    // This lets us compute scroll offsets that account for header rows.
-    let mut virtual_rows: Vec<Option<usize>> = Vec::new(); // Some(agent_idx) or None (header)
-    let mut header_dirs: Vec<String> = Vec::new(); // parallel with virtual_rows for headers
-
-    if show_swimlanes {
-        let mut last_dir: Option<&str> = None;
-        for (i, agent) in agents.iter().enumerate() {
-            if last_dir != Some(&agent.project_dir) {
-                virtual_rows.push(None);
-                header_dirs.push(agent.project_dir.clone());
-                last_dir = Some(&agent.project_dir);
-            }
-            virtual_rows.push(Some(i));
-            header_dirs.push(String::new());
+    // Build virtual rows with swimlane headers interleaved.
+    // Always show headers — even with a single project directory,
+    // the header shows which directory the agents are working in.
+    let mut virtual_rows: Vec<Option<usize>> = Vec::new();
+    let mut header_dirs: Vec<String> = Vec::new();
+    let mut last_dir: Option<&str> = None;
+    for (i, agent) in agents.iter().enumerate() {
+        if last_dir != Some(&agent.project_dir) {
+            virtual_rows.push(None);
+            header_dirs.push(agent.project_dir.clone());
+            last_dir = Some(&agent.project_dir);
         }
-    } else {
-        for i in 0..agents.len() {
-            virtual_rows.push(Some(i));
-            header_dirs.push(String::new());
-        }
+        virtual_rows.push(Some(i));
+        header_dirs.push(String::new());
     }
 
     // Find the virtual row index of the selected agent
@@ -329,21 +365,50 @@ fn render_agent_table(
                     AgentStatus::WaitingForInput | AgentStatus::PermissionRequired
                 );
 
+                // Build type label column — always visible
+                let type_col = if let Some(cfg) = agent_types.get(&agent.agent_type) {
+                    if !cfg.sandboxed {
+                        format!(" \x1b[1;31m{}!{}", pad_left(&cfg.short_label, col_type.saturating_sub(2)), RESET)
+                    } else {
+                        format!(" {}{} {}", color_name_to_ansi(&cfg.color), pad_left(&cfg.short_label, col_type.saturating_sub(2)), RESET)
+                    }
+                } else {
+                    format!(" {}??? {}", RESET, RESET)
+                };
+
+                // Build optional profile/model column strings
+                let profile_col = if show_profile {
+                    let p = agent.profile.as_deref().unwrap_or("-");
+                    format!("{} ", pad_left(p, col_profile))
+                } else {
+                    String::new()
+                };
+                let model_col = if show_model {
+                    let m = agent.model.as_deref().unwrap_or("-");
+                    format!("{} ", pad_left(m, col_model))
+                } else {
+                    String::new()
+                };
+
                 if is_selected {
-                    let main_before_status = format!(
-                        "{}{} {}",
-                        prefix, pad_left(&idx_str, col_idx), pad_left(&agent.name, col_name),
+                    let main_part = format!(
+                        "{}{}{} {}",
+                        prefix, pad_left(&idx_str, col_idx), type_col,
+                        pad_left(&agent.name, col_name),
                     );
                     let status_str = pad_left(status_label, col_status);
+                    let trailing = format!(" {}{}", profile_col, model_col);
+                    let main_visible = strip_ansi_len(&main_part);
                     let suffix_visible_len = strip_ansi_len(&subagent_suffix);
-                    let plain_len = main_before_status.len() + 1 + status_str.len() + suffix_visible_len;
+                    let trailing_visible = strip_ansi_len(&trailing);
+                    let plain_len = main_visible + 1 + status_str.len() + suffix_visible_len + trailing_visible;
                     let fill = cols.saturating_sub(plain_len);
 
                     print!(
-                        "{}{} {}{}{}{}{}{}",
-                        REVERSE, main_before_status,
+                        "{}{} {}{}{}{}{}{}{}",
+                        REVERSE, main_part,
                         status_color, if needs_attention { BOLD } else { "" },
-                        REVERSE, status_str, subagent_suffix, RESET,
+                        REVERSE, status_str, subagent_suffix, trailing, RESET,
                     );
                     if fill > 0 {
                         print!("{}{:>fill$}{}", REVERSE, "", RESET, fill = fill);
@@ -363,10 +428,11 @@ fn render_agent_table(
                     };
 
                     let line = format!(
-                        "{}{} {} {}{}{}{}{}",
-                        prefix, pad_left(&idx_str, col_idx), name_field,
+                        "{}{}{} {} {}{}{}{}{} {}{}",
+                        prefix, pad_left(&idx_str, col_idx), type_col, name_field,
                         status_color, if needs_attention { BOLD } else { "" },
                         pad_left(status_label, col_status), subagent_suffix, RESET,
+                        profile_col, model_col,
                     );
                     println!("{}", truncate(&line, cols));
                 }
@@ -378,7 +444,7 @@ fn render_agent_table(
 }
 
 /// Render the detail panel for a specific agent below the table.
-fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize) {
+fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_types: &HashMap<String, AgentTypeConfig>) {
     if max_rows == 0 {
         return;
     }
@@ -388,16 +454,39 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize) {
 
     let mut row = 1;
 
+    // Agent name, type, and status
     if row < max_rows {
+        let (type_display, type_color, unsandboxed_warn) =
+            if let Some(cfg) = agent_types.get(&agent.agent_type) {
+                (
+                    cfg.display_name.as_str(),
+                    color_name_to_ansi(&cfg.color),
+                    if !cfg.sandboxed { " \x1b[1;31m[UNSANDBOXED]\x1b[0m" } else { "" },
+                )
+            } else {
+                (agent.agent_type.as_str(), RESET, "")
+            };
         println!(
-            " {}Agent:{} {}  {}{}{}",
-            CYAN, RESET, agent.name, agent.status.color(), agent.status.label(), RESET,
+            " {}Agent:{} {}  {}{}{}{} {}{}{}",
+            CYAN, RESET, agent.name,
+            type_color, type_display, RESET, unsandboxed_warn,
+            agent.status.color(), agent.status.label(), RESET,
         );
         row += 1;
     }
     if row < max_rows {
+        let model_str = agent.model.as_deref().unwrap_or("");
+        let model_display = if model_str.is_empty() {
+            String::new()
+        } else {
+            format!("  {}Model:{} {}", CYAN, RESET, model_str)
+        };
         let profile = agent.profile.as_deref().unwrap_or("(default)");
-        println!(" {}Profile:{} {}  {}Dir:{} {}", CYAN, RESET, profile, CYAN, RESET, agent.project_dir);
+        println!(" {}Profile:{} {}{}", CYAN, RESET, profile, model_display);
+        row += 1;
+    }
+    if row < max_rows {
+        println!(" {}Dir:{} {}", CYAN, RESET, agent.project_dir);
         row += 1;
     }
     if row < max_rows {
@@ -418,7 +507,7 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize) {
         row += 1;
     }
     if row < max_rows {
-        let started = agent.started_at.map_or("-".to_string(), |t| format!("{}", t));
+        let started = agent.started_at.map_or("-".to_string(), format_elapsed);
         println!(" {}Started:{} {}", CYAN, RESET, started);
         row += 1;
     }
@@ -532,7 +621,7 @@ fn render_status_bar(
 
 // ── Overlay: Wizard (LINCE-47) ─────────────────────────────────────
 
-pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize) {
+pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize, agent_types: &HashMap<String, AgentTypeConfig>) {
     if rows == 0 || cols == 0 {
         return;
     }
@@ -544,11 +633,18 @@ pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize) {
     push_box_line(&mut lines, "", box_width);
 
     let has_profiles = wizard.has_profiles();
-    let total_steps: usize = if has_profiles { 4 } else { 3 };
+    let has_agent_types = wizard.has_agent_types();
+    let base: usize = 1;
+    let at_step = if has_agent_types { base } else { 0 };
+    let name_step = at_step + 1;
+    let profile_step = if has_profiles { name_step + 1 } else { 0 };
+    let dir_step = if has_profiles { profile_step + 1 } else { name_step + 1 };
+    let total_steps = dir_step + 1;
     let (step_num, step_label) = match wizard.step {
-        WizardStep::Name => (1, "Agent Name"),
-        WizardStep::Profile => (2, "Profile"),
-        WizardStep::ProjectDir => (if has_profiles { 3 } else { 2 }, "Project Directory"),
+        WizardStep::AgentType => (at_step, "Agent Type"),
+        WizardStep::Name => (name_step, "Agent Name"),
+        WizardStep::Profile => (profile_step, "Profile"),
+        WizardStep::ProjectDir => (dir_step, "Project Directory"),
         WizardStep::Confirm => (total_steps, "Confirm"),
     };
 
@@ -556,10 +652,33 @@ pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize) {
     push_box_line(&mut lines, &header, box_width);
 
     match wizard.step {
+        WizardStep::AgentType => {
+            for (i, (key, display_name)) in wizard.available_agent_types.iter().enumerate() {
+                let is_selected = i == wizard.agent_type_index;
+                let sandboxed = agent_types.get(key.as_str()).map_or(true, |c| c.sandboxed);
+                let label = if sandboxed {
+                    format!("{}", display_name)
+                } else {
+                    format!("{} (non-sandboxed)", display_name)
+                };
+                if is_selected {
+                    // Green background for sandboxed, red for non-sandboxed
+                    let bg = if sandboxed { "\x1b[42m" } else { "\x1b[41m" }; // bg green / bg red
+                    push_box_line(&mut lines, &format!("  {}> {}{}", bg, label, RESET), box_width);
+                } else {
+                    push_box_line(&mut lines, &format!("    {}", label), box_width);
+                }
+            }
+            push_box_line(&mut lines, "", box_width);
+            push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);
+        }
         WizardStep::Confirm => {
+            let at_display = wizard.selected_agent_type();
             let profile_display = wizard.selected_profile().unwrap_or("(none)");
             let dir_display = if wizard.project_dir.is_empty() { "(current dir)" } else { &wizard.project_dir };
-            push_box_line(&mut lines, &format!("  Name:    {}", wizard.name), box_width);
+            push_box_line(&mut lines, &format!("  Type:    {}", at_display), box_width);
+            let effective_name = if wizard.name.is_empty() { &wizard.default_name } else { &wizard.name };
+            push_box_line(&mut lines, &format!("  Name:    {}", effective_name), box_width);
             push_box_line(&mut lines, &format!("  Profile: {}", profile_display), box_width);
             push_box_line(&mut lines, &format!("  Dir:     {}", dir_display), box_width);
             push_box_line(&mut lines, "", box_width);
@@ -635,7 +754,7 @@ pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize) {
                 wizard.name.clone()
             };
             push_box_line(&mut lines, &format!("{}{}{}", input_prefix, name_display, input_suffix), box_width);
-            push_box_line(&mut lines, "  (custom name or leave empty for default)", box_width);
+            push_box_line(&mut lines, &format!("  (leave empty for \"{}\")", wizard.default_name), box_width);
             push_box_line(&mut lines, "", box_width);
             push_box_line(&mut lines, "  [Enter] Next  [Esc] Cancel", box_width);
         }

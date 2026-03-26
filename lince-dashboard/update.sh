@@ -18,7 +18,7 @@ echo ""
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # ── Build ──────────────────────────────────────────────────────────────
-echo -e "${GREEN}[1/4] Building plugin...${NC}"
+echo -e "${GREEN}[1/8] Building plugin...${NC}"
 if ! "$SCRIPT_DIR/plugin/build.sh"; then
     echo -e "${RED}Build failed.${NC}"
     exit 1
@@ -26,7 +26,7 @@ fi
 echo ""
 
 # ── Plugin ─────────────────────────────────────────────────────────────
-echo -e "${GREEN}[2/4] Updating plugin...${NC}"
+echo -e "${GREEN}[2/8] Updating plugin...${NC}"
 PLUGIN_DIR="$HOME/.config/zellij/plugins"
 mkdir -p "$PLUGIN_DIR"
 cp "$SCRIPT_DIR/plugin/lince-dashboard.wasm" "$PLUGIN_DIR/lince-dashboard.wasm"
@@ -34,7 +34,7 @@ echo -e "${GREEN}  ✓ Plugin updated${NC}"
 echo ""
 
 # ── Layouts ────────────────────────────────────────────────────────────
-echo -e "${GREEN}[3/4] Updating layouts...${NC}"
+echo -e "${GREEN}[3/8] Updating layouts...${NC}"
 LAYOUT_DIR="$HOME/.config/zellij/layouts"
 mkdir -p "$LAYOUT_DIR"
 for layout in dashboard.kdl agent-single.kdl agent-multi.kdl; do
@@ -46,50 +46,60 @@ for layout in dashboard.kdl agent-single.kdl agent-multi.kdl; do
 done
 echo ""
 
-# ── Hooks ──────────────────────────────────────────────────────────────
-echo -e "${GREEN}[4/4] Updating hooks...${NC}"
-HOOK_SRC="$SCRIPT_DIR/hooks/claude-status-hook.sh"
-HOOK_DST="$HOME/.local/bin/claude-status-hook.sh"
+# ── Config ─────────────────────────────────────────────────────────────
+echo -e "${GREEN}[4/8] Updating configuration...${NC}"
+CONFIG_DIR="$HOME/.config/lince-dashboard"
+CONFIG_DST="$CONFIG_DIR/config.toml"
+mkdir -p "$CONFIG_DIR"
 
-if [ -f "$HOOK_SRC" ]; then
-    mkdir -p "$HOME/.local/bin"
-    cp "$HOOK_SRC" "$HOOK_DST"
-    chmod +x "$HOOK_DST"
-    echo -e "${GREEN}  ✓ Hook script updated${NC}"
+if [ -f "$CONFIG_DST" ]; then
+    BACKUP="${CONFIG_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$CONFIG_DST" "$BACKUP"
+    echo -e "${YELLOW}  Existing config backed up → $(basename "$BACKUP")${NC}"
 fi
+cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
+echo -e "${GREEN}  ✓ Config updated${NC}"
+echo ""
 
-# Update Claude Code hooks in settings.json
-# Events: Stop (→idle), UserPromptSubmit (→running), PreToolUse (→running), Notification (→various)
-SETTINGS="$HOME/.claude/settings.json"
-if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
-    HOOK_CMD="claude-status-hook.sh"
-    HOOK_ENTRY='{"matcher": "", "hooks": [{"type": "command", "command": "'"$HOOK_CMD"'"}]}'
-
-    # Idempotent: for each event, add our entry only if not already present (correct format)
-    # Also removes any old-format entries (missing "matcher" key) for our command
-    UPDATED=$(jq --arg cmd "$HOOK_CMD" --argjson entry "$HOOK_ENTRY" '
-        .hooks //= {} |
-        reduce ("Stop", "UserPromptSubmit", "PreToolUse", "Notification") as $event (.;
-            .hooks[$event] = [.hooks[$event][]? | select(has("matcher"))] |
-            if (.hooks[$event] | map(select(.hooks[]?.command == $cmd)) | length) == 0
-            then .hooks[$event] = ((.hooks[$event] // []) + [$entry])
-            else . end
-        )
-    ' "$SETTINGS" 2>/dev/null)
-
-    if [ -n "$UPDATED" ]; then
-        echo "$UPDATED" > "$SETTINGS"
-        echo -e "${GREEN}  ✓ Hooks configured (Stop, UserPromptSubmit, PreToolUse, Notification)${NC}"
-    else
-        echo -e "${YELLOW}  ⚠ Could not update settings.json — check jq version${NC}"
-    fi
+# ── Hooks ──────────────────────────────────────────────────────────────
+echo -e "${GREEN}[5/8] Updating agent platform hooks...${NC}"
+if [ -f "$SCRIPT_DIR/hooks/update-hooks.sh" ]; then
+    bash "$SCRIPT_DIR/hooks/update-hooks.sh"
 else
-    echo -e "${YELLOW}  settings.json or jq not found — run install.sh for first setup${NC}"
+    echo -e "${YELLOW}  ⚠ hooks/update-hooks.sh not found — run install.sh for first setup${NC}"
+fi
+echo ""
+
+# ── Agent wrapper ─────────────────────────────────────────────────────
+echo -e "${GREEN}[6/8] Updating agent wrapper...${NC}"
+echo -e "${GREEN}  ✓ Managed by hooks/update-hooks.sh${NC}"
+echo ""
+
+# ── Agents defaults ──────────────────────────────────────────────────
+echo -e "${GREEN}[7/8] Updating agent defaults...${NC}"
+AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
+AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
+
+if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
+    cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
+    echo -e "${GREEN}  ✓ Agent defaults updated${NC}"
+fi
+echo ""
+
+# ── Lince-setup skill ────────────────────────────────────────────────
+echo -e "${GREEN}[8/8] Updating lince-setup skill...${NC}"
+SKILL_SRC="$SCRIPT_DIR/skills/lince-setup"
+SKILL_DST="$HOME/.claude/skills/lince-setup"
+
+if [ -d "$SKILL_SRC" ]; then
+    mkdir -p "$SKILL_DST"
+    cp -r "$SKILL_SRC/." "$SKILL_DST/"
+    echo -e "${GREEN}  ✓ Skill updated${NC}"
 fi
 echo ""
 
 # ── Sandbox check (informational only) ─────────────────────────────────
-SANDBOX_CONFIG="$HOME/.claude-sandbox/config.toml"
+SANDBOX_CONFIG="$HOME/.agent-sandbox/config.toml"
 if [ -f "$SANDBOX_CONFIG" ]; then
     MISSING=false
     for var in ZELLIJ ZELLIJ_SESSION_NAME LINCE_AGENT_ID; do
@@ -108,7 +118,7 @@ sys.exit(0 if sys.argv[2] in cfg.get('env', {}).get('passthrough', []) else 1)
         echo -e "${YELLOW}  Run: cd ../sandbox && ./update.sh${NC}"
         echo ""
     fi
-elif [ ! -f "$HOME/.local/bin/claude-sandbox" ]; then
+elif [ ! -f "$HOME/.local/bin/agent-sandbox" ]; then
     true  # sandbox not installed, skip check
 else
     echo -e "${YELLOW}NOTE: No sandbox config found. Run: cd ../sandbox && ./install.sh${NC}"

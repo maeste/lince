@@ -5,18 +5,18 @@
 # default_profile = ""
 
 # Available sandbox profiles shown in the wizard selector.
-# Auto-discovered from ~/.claude-sandbox/config.toml [profiles.*] sections.
+# Auto-discovered from ~/.agent-sandbox/config.toml [profiles.*] sections.
 # Override with an explicit list if needed:
 # profiles = ["anthropic", "vertex"]
 
-# Path to sandbox config for profile auto-discovery (default: ~/.claude-sandbox/config.toml)
+# Path to sandbox config for profile auto-discovery (default: ~/.agent-sandbox/config.toml)
 # sandbox_config_path = "/custom/path/to/config.toml"
 
 # Default working directory for new agents (empty = current dir)
 # default_project_dir = ""
 
-# Path to claude-sandbox command
-sandbox_command = "claude-sandbox"
+# Path to agent-sandbox command
+sandbox_command = "agent-sandbox"
 
 # Agent pane layout: "floating" (overlay, default) or "tiled" (fixed position in layout grid)
 # Use "tiled" with layouts/dashboard-tiled.kdl for a split view (agents left, dashboard right)
@@ -33,4 +33,27 @@ status_file_dir = "/tmp/lince-dashboard"
 
 # Maximum concurrent agents
 max_agents = 8
+
+# Default agent type for new agents (matches a key in agents-defaults.toml)
+# default_agent_type = "claude"
+
+# ── Agent type overrides ──────────────────────────────────────────────
+# Default agent configurations live in ~/.agent-sandbox/agents-defaults.toml.
+# Override or add custom agents below.  Each [agents.<name>] section can set:
+#   command, default_args, env, home_ro_dirs, home_rw_dirs,
+#   bwrap_conflict, disable_inner_sandbox_args, profiles
+#
+# Example: override codex to use a custom model
+# [agents.codex]
+# default_args = ["--full-auto", "--model", "o4-mini"]
+#
+# Example: add a custom agent
+# [agents.custom-agent]
+# command = "my-agent"
+# default_args = ["--auto"]
+# env = {}
+# home_ro_dirs = [".my-agent"]
+# home_rw_dirs = []
+# bwrap_conflict = false
+# disable_inner_sandbox_args = []
 

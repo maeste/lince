@@ -1,4 +1,4 @@
-# claude-sandbox
+# agent-sandbox
 
 A lightweight Linux sandbox for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with `--dangerously-skip-permissions` safely. It uses [bubblewrap](https://github.com/containers/bubblewrap) (the same technology behind Flatpak) to restrict what Claude can see and touch on your machine, with near-zero overhead.
 
@@ -6,7 +6,7 @@ A lightweight Linux sandbox for running [Claude Code](https://docs.anthropic.com
 
 Claude Code's `--dangerously-skip-permissions` flag removes all confirmation prompts, letting Claude execute any bash command, edit any file, and install anything without asking. This is great for productivity but terrifying for your system: a bad prompt, a hallucination, or a prompt injection from malicious code in a repo could wipe your home directory, exfiltrate your SSH keys, push to production, or install a backdoor.
 
-**claude-sandbox** creates a restricted environment where Claude has full autonomy *within* the project you're working on, but physically cannot damage anything else.
+**agent-sandbox** creates a restricted environment where Claude has full autonomy *within* the project you're working on, but physically cannot damage anything else.
 
 ## What it blocks
 
@@ -31,7 +31,7 @@ Claude Code's `--dangerously-skip-permissions` flag removes all confirmation pro
 | **Read other projects** | Claude may need to reference sibling repos | `--ro-bind ~/project ~/project` (read-only, configurable) |
 | **Network access** | Needed for Anthropic API, pip, npm, git clone | No `--unshare-net` |
 | **Build tools** | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected |
-| **Claude config** | Settings, MCP servers, skills | Isolated copy in `~/.claude-sandbox/claude-config` |
+| **Claude config** | Settings, MCP servers, skills | Isolated copy in `~/.agent-sandbox/claude-config` |
 | **Package caches** | `cargo build` can download crates, npm can cache | Persistent writable dirs for registry/cache subdirectories |
 
 ### Security model
@@ -46,7 +46,7 @@ The sandbox is **not** a defense against a compromised Claude binary or a kernel
 
 ## How it works
 
-claude-sandbox builds a [bubblewrap](https://github.com/containers/bubblewrap) command that sets up a Linux mount namespace. In plain terms, it creates a "view" of the filesystem where:
+agent-sandbox builds a [bubblewrap](https://github.com/containers/bubblewrap) command that sets up a Linux mount namespace. In plain terms, it creates a "view" of the filesystem where:
 
 ```
 /                           read-only   (entire OS visible but unmodifiable)
@@ -118,15 +118,15 @@ Verify:
 claude --version
 ```
 
-### Installing claude-sandbox
+### Installing agent-sandbox
 
 ```bash
 # Option 1: copy to a directory in your PATH
-cp claude-sandbox ~/.local/bin/
-chmod +x ~/.local/bin/claude-sandbox
+cp agent-sandbox ~/.local/bin/
+chmod +x ~/.local/bin/agent-sandbox
 
 # Option 2: symlink (so updates to the repo are picked up automatically)
-ln -s "$(pwd)/claude-sandbox" ~/.local/bin/claude-sandbox
+ln -s "$(pwd)/agent-sandbox" ~/.local/bin/agent-sandbox
 ```
 
 Make sure `~/.local/bin` is in your `$PATH`. If it isn't, add this to your `~/.bashrc` or `~/.zshrc`:
@@ -138,13 +138,13 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 # 1. Initialize the sandbox (copies Claude config, sanitizes gitconfig)
-claude-sandbox init
+agent-sandbox init
 
 # 2. Go to your project
 cd ~/project/my-repo
 
 # 3. Run Claude inside the sandbox
-claude-sandbox run
+agent-sandbox run
 ```
 
 That's it. Claude starts with `--dangerously-skip-permissions` by default (configurable) and has full autonomy within your project directory, but cannot escape.
@@ -153,47 +153,50 @@ That's it. Claude starts with `--dangerously-skip-permissions` by default (confi
 
 ### Commands
 
-#### `claude-sandbox init`
+#### `agent-sandbox init`
 
 Sets up the sandbox environment. Run this once, or again with `--force` to reset.
 
 What it does:
-- Creates `~/.claude-sandbox/` directory structure
-- Copies `~/.claude/` to `~/.claude-sandbox/claude-config/` (isolated copy)
-- Generates a sanitized `~/.claude-sandbox/gitconfig` (credential sections stripped)
+- Creates `~/.agent-sandbox/` directory structure
+- Copies `~/.claude/` to `~/.agent-sandbox/claude-config/` (isolated copy)
+- Generates a sanitized `~/.agent-sandbox/gitconfig` (credential sections stripped)
 - Creates a `git` wrapper script that blocks `git push`
-- Writes default `~/.claude-sandbox/config.toml`
+- Writes default `~/.agent-sandbox/config.toml`
 - Auto-detects `$PATH` entries under `$HOME` and reports them
 
 ```bash
-claude-sandbox init                # first-time setup
-claude-sandbox init --force        # reset everything
-claude-sandbox init --real-config  # use real ~/.claude directly (no copy)
+agent-sandbox init                # first-time setup
+agent-sandbox init --force        # reset everything
+agent-sandbox init --real-config  # use real ~/.claude directly (no copy)
 ```
 
-#### `claude-sandbox run`
+#### `agent-sandbox run`
 
-Launches Claude Code inside the bubblewrap sandbox.
+Launches an AI coding agent inside the bubblewrap sandbox. Defaults to Claude Code, but supports any agent defined in `agents-defaults.toml` or `[agents.<name>]` config sections.
 
 ```bash
-claude-sandbox run                        # run in current directory
-claude-sandbox run -p ~/project/foo       # run in a specific project
-claude-sandbox run -P zai                 # run with "zai" provider profile
-claude-sandbox run --profile mm           # run with "mm" provider profile
-claude-sandbox run --safe                 # disable --dangerously-skip-permissions
-claude-sandbox run --log                  # enable session transcript logging
-claude-sandbox run --dry-run              # print the bwrap command without executing
-claude-sandbox run --continue             # --continue passed to Claude automatically
-claude-sandbox run --model opus --resume ID  # --model and --resume passed to Claude
-claude-sandbox run -- -p                  # -p passed to Claude (--print) via separator
-claude-sandbox run -p /tmp --continue     # -p /tmp to sandbox, --continue to Claude
+agent-sandbox run                        # run Claude Code (default) in current directory
+agent-sandbox run -a codex              # run Codex instead of Claude
+agent-sandbox run -a gemini             # run Gemini CLI
+agent-sandbox run -a opencode           # run OpenCode
+agent-sandbox run -p ~/project/foo       # run in a specific project
+agent-sandbox run -P zai                 # run with "zai" provider profile
+agent-sandbox run --profile mm           # run with "mm" provider profile
+agent-sandbox run --safe                 # disable --dangerously-skip-permissions
+agent-sandbox run --log                  # enable session transcript logging
+agent-sandbox run --dry-run              # print the bwrap command without executing
+agent-sandbox run --continue             # --continue passed to the agent automatically
+agent-sandbox run --model opus --resume ID  # --model and --resume passed to the agent
+agent-sandbox run -- -p                  # -p passed to the agent (--print) via separator
+agent-sandbox run -p /tmp --continue     # -p /tmp to sandbox, --continue to the agent
 ```
 
-**CLI pass-through**: Options not recognized by `claude-sandbox run` are passed directly to Claude. This means you can use Claude CLI flags like `--continue`, `--model`, `--resume`, `--print` (long form) without the `--` separator. The `--` separator is still supported for edge cases, e.g. when you need to pass `-p` to Claude (since `-p` is used by claude-sandbox for `--project`).
+**CLI pass-through**: Options not recognized by `agent-sandbox run` are passed directly to the agent. This means you can use agent CLI flags like `--continue`, `--model`, `--resume`, `--print` (long form) without the `--` separator. The `--` separator is still supported for edge cases, e.g. when you need to pass `-p` to the agent (since `-p` is used by agent-sandbox for `--project`).
 
 On launch, it prints a banner showing active protections:
 ```
-claude-sandbox
+agent-sandbox
   profile     zai (Vertex AI via zai project)
   project     /home/you/project/my-repo
   filesystem  read-only root, writable project dir
@@ -203,42 +206,42 @@ claude-sandbox
   env vars    clearenv + whitelist
 ```
 
-#### `claude-sandbox diff`
+#### `agent-sandbox diff`
 
 Shows a unified diff between your real `~/.claude/` config and the sandbox's isolated copy. Useful to see what Claude changed inside the sandbox (installed MCP servers, modified settings, etc.).
 
 ```bash
-claude-sandbox diff
+agent-sandbox diff
 ```
 
-#### `claude-sandbox merge`
+#### `agent-sandbox merge`
 
 Interactive file-by-file merge of sandbox config changes back to your real `~/.claude/`. For each changed file, you can (a)pply, (s)kip, view (d)iff, or (q)uit.
 
 ```bash
-claude-sandbox merge
+agent-sandbox merge
 ```
 
 This is the safe way to adopt changes Claude made in the sandbox (like installing a new MCP server or skill) into your real environment.
 
-#### `claude-sandbox status`
+#### `agent-sandbox status`
 
 Shows the current state of the sandbox: config location, file counts, toolchain cache sizes, log count, bwrap version, and pending config changes.
 
 ```bash
-claude-sandbox status
+agent-sandbox status
 ```
 
 ## Configuration
 
 The config file is searched in order:
 
-1. **`./.claude-sandbox/config.toml`** — project-local (takes priority)
-2. **`~/.claude-sandbox/config.toml`** — global fallback
+1. **`./.agent-sandbox/config.toml`** — project-local (takes priority)
+2. **`~/.agent-sandbox/config.toml`** — global fallback
 
 This lets you have project-specific sandbox settings (different profiles, extra writable dirs, etc.) while keeping a global default. If no config is found in either location, the sandbox refuses to start with a clear error.
 
-There is no inline default config — you must always have a real `config.toml` file. Create one with `claude-sandbox init`, or copy an existing one into `.claude-sandbox/` in your project directory.
+There is no inline default config — you must always have a real `config.toml` file. Create one with `agent-sandbox init`, or copy an existing one into `.agent-sandbox/` in your project directory.
 
 Here's a reference of every option:
 
@@ -277,11 +280,11 @@ default_profile = "zai"
 [claude]
 # Arguments always passed to Claude.
 # --dangerously-skip-permissions is the default (the whole point of the sandbox).
-# To disable it for a single run, use: claude-sandbox run --safe
+# To disable it for a single run, use: agent-sandbox run --safe
 default_args = ["--dangerously-skip-permissions"]
 
 # Where the sandbox keeps its isolated copy of Claude's config
-config_dir = "~/.claude-sandbox/claude-config"
+config_dir = "~/.agent-sandbox/claude-config"
 
 # Use the real ~/.claude and ~/.claude.json directly (no isolated copy).
 # Skips the copy during init and mounts the real dirs in the sandbox.
@@ -337,7 +340,7 @@ passthrough = [
 enabled = false
 
 # Where log files are stored
-dir = "~/.claude-sandbox/logs"
+dir = "~/.agent-sandbox/logs"
 ```
 
 When enabled, the session is recorded using the `script` command. Logs are saved as `YYYY-MM-DD_HHMMSS_projectname.log` and contain the full terminal output (including ANSI colors). View them with `cat` (colors preserved) or pipe through `col -b` for plain text.
@@ -385,13 +388,13 @@ ANTHROPIC_API_KEY = "sk-ant-api01-..."
 
 Usage:
 ```bash
-claude-sandbox run              # uses default_profile ("zai" in example above)
-claude-sandbox run -P mm        # override: uses "mm" profile instead
-claude-sandbox run -P zai       # explicit: same as default in this case
+agent-sandbox run              # uses default_profile ("zai" in example above)
+agent-sandbox run -P mm        # override: uses "mm" profile instead
+agent-sandbox run -P zai       # explicit: same as default in this case
 ```
 
 **How it works:**
-- `default_profile` in `[sandbox]` sets which profile is used when you just run `claude-sandbox run` without `-P`. All credentials come from the TOML.
+- `default_profile` in `[sandbox]` sets which profile is used when you just run `agent-sandbox run` without `-P`. All credentials come from the TOML.
 - `-P <name>` overrides the default for that invocation.
 - Profile env vars are set via bwrap `--setenv` and **do not need to exist in your host shell**. Your shell stays clean.
 - The `[env].passthrough` list only needs terminal/locale vars (TERM, LANG, etc.) — no API keys.
@@ -399,15 +402,15 @@ claude-sandbox run -P zai       # explicit: same as default in this case
 
 **Security note:** Since API keys live in the TOML file, make sure it has appropriate permissions:
 ```bash
-chmod 600 ~/.claude-sandbox/config.toml
+chmod 600 ~/.agent-sandbox/config.toml
 ```
 
 ## Directory layout
 
-After initialization, `~/.claude-sandbox/` contains:
+After initialization, `~/.agent-sandbox/` contains:
 
 ```
-~/.claude-sandbox/
+~/.agent-sandbox/
 ├── config.toml             # Sandbox configuration
 ├── claude-config/          # Isolated copy of ~/.claude (writable by Claude)
 │   ├── settings.json
@@ -436,11 +439,11 @@ source .venv/bin/activate
 pip install requests  # works: writes to ./venv/
 ```
 
-**npm**: `node_modules/` is created in the project directory by default, so `npm install` works out of the box. The npm download cache is redirected to a persistent sandbox directory (`~/.claude-sandbox/toolchains/npm-cache/`).
+**npm**: `node_modules/` is created in the project directory by default, so `npm install` works out of the box. The npm download cache is redirected to a persistent sandbox directory (`~/.agent-sandbox/toolchains/npm-cache/`).
 
-**cargo**: If you have Rust installed on your system (`~/.cargo/bin/`), the binaries are available read-only. Cargo's registry and git caches are mounted writable from `~/.claude-sandbox/toolchains/cargo/`, so `cargo build` can download dependencies.
+**cargo**: If you have Rust installed on your system (`~/.cargo/bin/`), the binaries are available read-only. Cargo's registry and git caches are mounted writable from `~/.agent-sandbox/toolchains/cargo/`, so `cargo build` can download dependencies.
 
-**go**: `GOPATH` and `GOMODCACHE` are redirected to `~/.claude-sandbox/toolchains/go/`, so `go build` and `go mod download` work.
+**go**: `GOPATH` and `GOMODCACHE` are redirected to `~/.agent-sandbox/toolchains/go/`, so `go build` and `go mod download` work.
 
 **System-installed tools**: Everything in `/usr/bin`, `/usr/local/bin`, etc. is available read-only. If you have tools installed under `$HOME` (via nvm, pyenv, sdkman, etc.), they are auto-detected from your `$PATH` and exposed read-only inside the sandbox.
 
@@ -450,7 +453,7 @@ pip install requests  # works: writes to ./venv/
 
 ```bash
 cd ~/project/my-app
-claude-sandbox run
+agent-sandbox run
 # Claude works freely inside my-app/ but can't touch anything else
 ```
 
@@ -458,10 +461,10 @@ claude-sandbox run
 
 ```bash
 # After a sandbox session where Claude installed an MCP server:
-claude-sandbox diff
+agent-sandbox diff
 # Shows: +++ sandbox/settings.json has new mcpServers entry
 
-claude-sandbox merge
+agent-sandbox merge
 # [MOD] settings.json
 #   apply? (y)es / (n)o / (d)iff / (q)uit: d
 #   <shows diff>
@@ -474,18 +477,18 @@ claude-sandbox merge
 ```bash
 # Define profiles in config.toml (see Configuration section),
 # then use -P to select:
-claude-sandbox run -P zai           # Vertex AI
-claude-sandbox run -P mm            # Direct Anthropic API
-claude-sandbox run -P zai --dry-run # inspect the bwrap command for a profile
+agent-sandbox run -P zai           # Vertex AI
+agent-sandbox run -P mm            # Direct Anthropic API
+agent-sandbox run -P zai --dry-run # inspect the bwrap command for a profile
 ```
 
 ### Using real Claude config (no isolated copy)
 
-By default, `claude-sandbox init` copies `~/.claude/` into the sandbox. This lets you review changes Claude made (via `diff`/`merge`) before applying them to your real config. If you prefer to skip this isolation and let Claude work directly with your real config:
+By default, `agent-sandbox init` copies `~/.claude/` into the sandbox. This lets you review changes Claude made (via `diff`/`merge`) before applying them to your real config. If you prefer to skip this isolation and let Claude work directly with your real config:
 
 ```bash
 # Option 1: set during init
-claude-sandbox init --real-config
+agent-sandbox init --real-config
 
 # Option 2: edit config.toml
 [claude]
@@ -501,20 +504,75 @@ With `use_real_config = true`:
 
 ```bash
 # See exactly what bwrap command would be executed
-claude-sandbox run --dry-run
+agent-sandbox run --dry-run
 
 # Check sandbox state
-claude-sandbox status
+agent-sandbox status
 ```
 
 ### Logging a session for audit
 
 ```bash
-claude-sandbox run --log
+agent-sandbox run --log
 # After the session:
-ls ~/.claude-sandbox/logs/
-cat ~/.claude-sandbox/logs/2025-01-15_143022_myrepo.log
+ls ~/.agent-sandbox/logs/
+cat ~/.agent-sandbox/logs/2025-01-15_143022_myrepo.log
 ```
+
+## Multi-agent support
+
+The sandbox is not limited to Claude Code. It can run any AI coding agent using the `--agent` (`-a`) flag and the `agents-defaults.toml` configuration file.
+
+### Agent configuration
+
+Agent definitions are loaded from three layers (later layers override earlier ones):
+
+1. **`agents-defaults.toml`** — shipped alongside the script (searched in `./.agent-sandbox/`, `~/.agent-sandbox/`, and the script directory)
+2. **`[agents.<name>]` in user `config.toml`** — per-user overrides
+3. **Hardcoded fallback** — if no config is found, `claude` defaults to the original behavior
+
+Each agent definition specifies the command, default arguments, environment variables, home directory bindings, and bwrap conflict handling:
+
+```toml
+[agents.codex]
+command = "codex"
+default_args = ["--full-auto"]
+env = {}
+home_ro_dirs = [".codex"]
+home_rw_dirs = []
+bwrap_conflict = true
+disable_inner_sandbox_args = ["--no-sandbox"]
+```
+
+### Usage
+
+```bash
+agent-sandbox run                  # Run Claude Code (default agent)
+agent-sandbox run -a codex         # Run Codex
+agent-sandbox run -a gemini        # Run Gemini CLI
+agent-sandbox run -a aider         # Run Aider
+```
+
+### Handling bwrap conflicts
+
+Some agents (like Codex) use bubblewrap internally. When `bwrap_conflict = true`, the sandbox automatically injects the `disable_inner_sandbox_args` to prevent nested bwrap failures. This is fully config-driven.
+
+### Adding a custom agent
+
+Add an `[agents.<name>]` section to `~/.agent-sandbox/config.toml`:
+
+```toml
+[agents.my-agent]
+command = "my-agent-binary"
+default_args = ["--auto"]
+env = {}
+home_ro_dirs = [".config/my-agent"]
+home_rw_dirs = []
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+```
+
+Then run: `agent-sandbox run -a my-agent`
 
 ## Known limitations
 
@@ -526,7 +584,7 @@ cat ~/.claude-sandbox/logs/2025-01-15_143022_myrepo.log
 
 4. **Read-only build tools**: Tools installed under `$HOME` (like `~/.cargo/bin/cargo`) are available read-only. `cargo install new-tool` inside the sandbox will fail. Use system package managers to install new tools, or add specific writable directories via `extra_rw` in config.
 
-5. **MCP server secrets**: If your `~/.claude/settings.json` contains API keys in MCP server environment variables, those are copied to the sandbox. Review `~/.claude-sandbox/claude-config/settings.json` after init and remove any credentials you don't want exposed.
+5. **MCP server secrets**: If your `~/.claude/settings.json` contains API keys in MCP server environment variables, those are copied to the sandbox. Review `~/.agent-sandbox/claude-config/settings.json` after init and remove any credentials you don't want exposed.
 
 6. **Tmpfs home is writable**: The `$HOME` tmpfs overlay is writable (that's how tmpfs works). Claude can create files like `~/temp.txt`, but they are ephemeral and vanish when the sandbox exits. They never touch your real home directory.
 
@@ -559,7 +617,7 @@ If you have `new_session = true` in the config, try setting it to `false`. The n
 
 ### "API Error: Unable to connect" or DNS failures
 
-On systemd-based distros, `/etc/resolv.conf` is a symlink to `/run/systemd/resolve/stub-resolv.conf`. If the sandbox hides `/run`, DNS breaks. claude-sandbox handles this by only hiding `/run/user/$UID` (DBus/Wayland sockets) instead of all of `/run`. If you still see DNS issues, check:
+On systemd-based distros, `/etc/resolv.conf` is a symlink to `/run/systemd/resolve/stub-resolv.conf`. If the sandbox hides `/run`, DNS breaks. agent-sandbox handles this by only hiding `/run/user/$UID` (DBus/Wayland sockets) instead of all of `/run`. If you still see DNS issues, check:
 ```bash
 # Inside the sandbox:
 cat /etc/resolv.conf

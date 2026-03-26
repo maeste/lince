@@ -8,17 +8,17 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SANDBOX_CMD="$SCRIPT_DIR/claude-sandbox"
-INSTALL_DST="$HOME/.local/bin/claude-sandbox"
-CONFIG_DST="$HOME/.claude-sandbox/config.toml"
+SANDBOX_CMD="$SCRIPT_DIR/agent-sandbox"
+INSTALL_DST="$HOME/.local/bin/agent-sandbox"
+CONFIG_DST="$HOME/.agent-sandbox/config.toml"
 
 echo -e "${BLUE}================================================${NC}"
-echo -e "${BLUE}   claude-sandbox — Update${NC}"
+echo -e "${BLUE}   agent-sandbox — Update${NC}"
 echo -e "${BLUE}================================================${NC}"
 echo ""
 
 # ── Step 1: Update command ─────────────────────────────────────────────
-echo -e "${GREEN}[1/2] Updating claude-sandbox command...${NC}"
+echo -e "${GREEN}[1/2] Updating agent-sandbox command...${NC}"
 
 if [ ! -f "$INSTALL_DST" ]; then
     echo -e "${YELLOW}  Not installed — run install.sh first${NC}"
@@ -28,6 +28,17 @@ fi
 cp "$SANDBOX_CMD" "$INSTALL_DST"
 chmod +x "$INSTALL_DST"
 echo -e "${GREEN}  ✓ Command updated${NC}"
+
+# Update agents-defaults.toml in both locations:
+#   ~/.agent-sandbox/  (search path #2, highest-priority installed location)
+#   ~/.local/bin/      (search path #3, fallback alongside binary)
+DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
+if [ -f "$DEFAULTS_SRC" ]; then
+    cp "$DEFAULTS_SRC" "$HOME/.agent-sandbox/agents-defaults.toml"
+    echo -e "${GREEN}  ✓ Agent defaults updated: ~/.agent-sandbox/agents-defaults.toml${NC}"
+    cp "$DEFAULTS_SRC" "$HOME/.local/bin/agents-defaults.toml"
+    echo -e "${GREEN}  ✓ Agent defaults updated: ~/.local/bin/agents-defaults.toml${NC}"
+fi
 echo ""
 
 # ── Step 2: Ensure env passthrough ─────────────────────────────────────
