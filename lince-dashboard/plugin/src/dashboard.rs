@@ -269,21 +269,24 @@ fn render_agent_table(
 ) {
     let col_idx: usize = 3;
     let col_type: usize = 5;  // 3 chars label + "!" marker + space
+    let col_sandbox: usize = 6; // "bwrap" / "nono" / "NOSB" + padding
     let col_name: usize = 20;
     let col_profile: usize = 12;
     let col_status: usize = 12;
 
     // Show optional columns only when terminal is wide enough
     let base_width: usize = 1 + col_idx + 1 + col_type + 1 + col_name + 1 + col_status;
-    let show_profile = cols >= base_width + 1 + col_profile;
+    let show_sandbox = cols >= base_width + 1 + col_sandbox;
+    let show_profile = cols >= base_width + 1 + col_sandbox + 1 + col_profile;
 
+    let hdr_sandbox = if show_sandbox { format!("{} ", pad_left("Sbox", col_sandbox)) } else { String::new() };
     let hdr_profile = if show_profile { format!("{} ", pad_left("Profile", col_profile)) } else { String::new() };
     let hdr = format!(
-        " {} {} {} {} {}",
+        " {} {} {} {} {}{}",
         pad_left("#", col_idx), pad_left("Agent", col_type),
         pad_left("Name", col_name),
         pad_left("Status", col_status),
-        hdr_profile,
+        hdr_sandbox, hdr_profile,
     );
     println!("{}{}{}", BOLD, truncate(&hdr, cols), RESET);
 
@@ -373,6 +376,22 @@ fn render_agent_table(
                     format!(" {}??? {}", RESET, RESET)
                 };
 
+                // Build optional sandbox backend column string
+                let sandbox_col = if show_sandbox {
+                    if let Some(cfg) = agent_types.get(&agent.agent_type) {
+                        if !cfg.sandboxed {
+                            format!("\x1b[1;31m{}{} ", pad_left("NOSB", col_sandbox), RESET)
+                        } else {
+                            let bname = cfg.sandbox_backend.display_name();
+                            format!("\x1b[2m{}{} ", pad_left(bname, col_sandbox), RESET)
+                        }
+                    } else {
+                        format!("{} ", pad_left("-", col_sandbox))
+                    }
+                } else {
+                    String::new()
+                };
+
                 // Build optional profile column string
                 let profile_col = if show_profile {
                     let p = agent.profile.as_deref().unwrap_or("-");
@@ -388,7 +407,7 @@ fn render_agent_table(
                         pad_left(&agent.name, col_name),
                     );
                     let status_str = pad_left(status_label, col_status);
-                    let trailing = format!(" {}", profile_col);
+                    let trailing = format!(" {}{}", sandbox_col, profile_col);
                     let main_visible = strip_ansi_len(&main_part);
                     let suffix_visible_len = strip_ansi_len(&subagent_suffix);
                     let trailing_visible = strip_ansi_len(&trailing);
@@ -419,11 +438,11 @@ fn render_agent_table(
                     };
 
                     let line = format!(
-                        "{}{}{} {} {}{}{}{}{} {}",
+                        "{}{}{} {} {}{}{}{}{} {}{}",
                         prefix, pad_left(&idx_str, col_idx), type_col, name_field,
                         status_color, if needs_attention { BOLD } else { "" },
                         pad_left(status_label, col_status), subagent_suffix, RESET,
-                        profile_col,
+                        sandbox_col, profile_col,
                     );
                     println!("{}", truncate(&line, cols));
                 }

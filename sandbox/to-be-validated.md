@@ -1,8 +1,8 @@
-# Experimental Features — Validation Guide
+# Validation Guide
 
-All features below are marked **experimental**. They need manual testing before being considered stable. If you can help validate any of these, please see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Features in sections 1–6 have been validated on Linux (Fedora 43, kernel 6.18, Python 3.11+, nono 0.24.0). Section 7 (macOS) is **experimental** and needs community validation — see [#19](https://github.com/RisorseArtificiali/lince/issues/19).
 
-Each section is a standalone test you can run independently. Check the boxes as you validate.
+**Known issue:** Gemini CLI asks for login inside nono sandbox due to D-Bus socket restrictions — see [#18](https://github.com/RisorseArtificiali/lince/issues/18). Workaround: `GEMINI_FORCE_FILE_STORAGE=true` (applied in agents-defaults.toml).
 
 ---
 
@@ -33,8 +33,8 @@ agent-sandbox run -P test --dry-run
 agent-sandbox proxy-status
 ```
 
-- [ ] `--dry-run` output mentions credential proxy configuration
-- [ ] `proxy-status` shows "not running" when no sandbox is active
+- [x] `--dry-run` output mentions credential proxy configuration
+- [x] `proxy-status` shows "not running" when no sandbox is active
 
 ### Test 1.2: Proxy injects credentials
 
@@ -46,10 +46,10 @@ agent-sandbox run -P test
 agent-sandbox proxy-status
 ```
 
-- [ ] `proxy-status` shows port, PID, and configured domains
-- [ ] The sandbox banner shows credential proxy info (port, domains)
-- [ ] API keys (ANTHROPIC_API_KEY, etc.) are NOT in the sandbox environment (check with `env | grep API` inside sandbox)
-- [ ] The agent can still make API calls successfully (requests go through proxy)
+- [x] `proxy-status` shows port, PID, and configured domains
+- [x] The sandbox banner shows credential proxy info (port, domains)
+- [x] API keys (ANTHROPIC_API_KEY, etc.) are NOT in the sandbox environment (check with `env | grep API` inside sandbox)
+- [x] The agent can still make API calls successfully (requests go through proxy)
 
 ### Test 1.3: Proxy stops on sandbox exit
 
@@ -59,8 +59,8 @@ agent-sandbox proxy-status
 agent-sandbox proxy-status
 ```
 
-- [ ] Proxy is no longer running after sandbox exits
-- [ ] PID file is cleaned up
+- [x] Proxy is no longer running after sandbox exits
+- [x] PID file is cleaned up
 
 ### Test 1.4: Cloud metadata endpoints are blocked
 
@@ -70,8 +70,8 @@ curl -s http://169.254.169.254/latest/meta-data/ 2>&1
 # Should fail or return 403
 ```
 
-- [ ] Requests to `169.254.169.254` are blocked
-- [ ] Requests to `metadata.google.internal` are blocked
+- [x] Requests to `169.254.169.254` are blocked
+- [x] Requests to `metadata.google.internal` are blocked
 
 ### Test 1.5: Backward compatibility (proxy disabled)
 
@@ -80,9 +80,9 @@ curl -s http://169.254.169.254/latest/meta-data/ 2>&1
 agent-sandbox run
 ```
 
-- [ ] Agent works normally without proxy
-- [ ] API keys are in the sandbox environment as before
-- [ ] No proxy PID file created
+- [x] Agent works normally without proxy
+- [x] API keys are in the sandbox environment as before
+- [x] No proxy PID file created
 
 ---
 
@@ -104,9 +104,9 @@ agent-sandbox snapshot
 agent-sandbox snapshot-list
 ```
 
-- [ ] Snapshot is created for both project and config
-- [ ] `snapshot-list` shows the snapshot with timestamp and size
-- [ ] Snapshot dir exists at `~/.agent-sandbox/snapshots/`
+- [x] Snapshot is created for both project and config
+- [x] `snapshot-list` shows the snapshot with timestamp and size
+- [x] Snapshot dir exists at `~/.agent-sandbox/snapshots/`
 
 ### Test 2.2: Config-only and project-only
 
@@ -116,9 +116,9 @@ agent-sandbox snapshot --project-only
 agent-sandbox snapshot-list
 ```
 
-- [ ] `--config-only` creates only a config snapshot
-- [ ] `--project-only` creates only a project snapshot
-- [ ] `snapshot-list` shows them separately
+- [x] `--config-only` creates only a config snapshot
+- [x] `--project-only` creates only a project snapshot
+- [x] `snapshot-list` shows them separately
 
 ### Test 2.3: Snapshot diff
 
@@ -133,8 +133,8 @@ echo "test change" >> some-file.txt
 agent-sandbox snapshot-diff
 ```
 
-- [ ] Diff shows `some-file.txt` as modified
-- [ ] Diff output shows the actual content change
+- [x] Diff shows `some-file.txt` as modified
+- [x] Diff output shows the actual content change
 
 ### Test 2.4: Cross-session diff (two timestamps)
 
@@ -153,8 +153,8 @@ agent-sandbox snapshot
 agent-sandbox snapshot-diff <ts1> <ts2>
 ```
 
-- [ ] Shows changes between the two snapshots
-- [ ] Does not compare against current state
+- [x] Shows changes between the two snapshots
+- [x] Does not compare against current state
 
 ### Test 2.5: Interactive restore
 
@@ -167,10 +167,10 @@ agent-sandbox snapshot-restore
 # 2. For each changed file, accept or reject
 ```
 
-- [ ] Interactive prompt appears for each changed file
-- [ ] Accepting restores the file from snapshot
-- [ ] Rejecting keeps the current version
-- [ ] Restored file matches the snapshot content
+- [x] Interactive prompt appears for each changed file
+- [x] Accepting restores the file from snapshot
+- [x] Rejecting keeps the current version
+- [x] Restored file matches the snapshot content
 
 ### Test 2.6: Auto-snapshot (config)
 
@@ -182,8 +182,8 @@ agent-sandbox run
 agent-sandbox snapshot-list --config
 ```
 
-- [ ] A config snapshot was created automatically before the run
-- [ ] No snapshot created if `auto_config = false`
+- [x] A config snapshot was created automatically before the run
+- [x] No snapshot created if `auto_config = false`
 
 ### Test 2.7: Auto-snapshot (project, opt-in)
 
@@ -195,8 +195,8 @@ agent-sandbox run
 agent-sandbox snapshot-list --project
 ```
 
-- [ ] A project snapshot was created automatically
-- [ ] Large dirs (.git, node_modules) are excluded
+- [x] A project snapshot was created automatically
+- [x] Large dirs (.git, node_modules) are excluded
 
 ### Test 2.8: Snapshot pruning
 
@@ -207,7 +207,7 @@ for i in $(seq 1 7); do agent-sandbox snapshot --config-only; sleep 1; done
 agent-sandbox snapshot-list --config
 ```
 
-- [ ] Only `max_config_snapshots` snapshots remain (oldest pruned)
+- [x] Only `max_config_snapshots` snapshots remain (oldest pruned)
 
 ### Test 2.9: diff/merge regression
 
@@ -217,8 +217,8 @@ agent-sandbox diff
 agent-sandbox merge
 ```
 
-- [ ] `diff` shows same output as before the changes
-- [ ] `merge` interactive UX works identically
+- [x] `diff` shows same output as before the changes
+- [x] `merge` interactive UX works identically
 
 ---
 
@@ -237,13 +237,13 @@ cd ~/project/some-repo
 agent-sandbox learn --duration 30
 ```
 
-- [ ] strace is launched and attaches to the sandbox
-- [ ] Agent runs inside a permissive sandbox
-- [ ] After timeout, a report is printed
-- [ ] Report shows filesystem access categories (project, home_config, system, toolchain)
-- [ ] Report shows network connections with hostnames
-- [ ] Report shows executed binaries
-- [ ] TOML suggestion fragment is saved to temp file
+- [x] strace is launched and attaches to the sandbox
+- [x] Agent runs inside a permissive sandbox
+- [x] After timeout, a report is printed
+- [x] Report shows filesystem access categories (project, home_config, system, toolchain)
+- [x] Report shows network connections with hostnames
+- [x] Report shows executed binaries
+- [x] TOML suggestion fragment is saved to temp file
 
 ### Test 3.2: Learn with specific agent
 
@@ -251,8 +251,8 @@ agent-sandbox learn --duration 30
 agent-sandbox learn -a codex --duration 30
 ```
 
-- [ ] Codex (or configured agent) runs instead of Claude
-- [ ] Report reflects that agent's access patterns
+- [x] Codex (or configured agent) runs instead of Claude
+- [x] Report reflects that agent's access patterns
 
 ### Test 3.3: Compare mode
 
@@ -260,8 +260,8 @@ agent-sandbox learn -a codex --duration 30
 agent-sandbox learn --compare --duration 30
 ```
 
-- [ ] Report shows over-permissive areas (allowed but not accessed)
-- [ ] Report shows under-permissive areas (accessed but not allowed)
+- [x] Report shows over-permissive areas (allowed but not accessed)
+- [x] Report shows under-permissive areas (accessed but not allowed)
 
 ### Test 3.4: Apply suggestions
 
@@ -272,9 +272,9 @@ agent-sandbox learn --apply --duration 30
 cat ~/.agent-sandbox/config.toml
 ```
 
-- [ ] Suggestions are appended to config.toml
-- [ ] Existing config is not corrupted
-- [ ] Re-running `--apply` replaces previous suggestions (not duplicated)
+- [x] Suggestions are appended to config.toml
+- [x] Existing config is not corrupted
+- [x] Re-running `--apply` replaces previous suggestions (not duplicated)
 
 ### Test 3.5: Output to file
 
@@ -283,8 +283,8 @@ agent-sandbox learn --output /tmp/learn-report.toml --duration 30
 cat /tmp/learn-report.toml
 ```
 
-- [ ] TOML fragment is written to the specified file
-- [ ] File contains valid TOML
+- [x] TOML fragment is written to the specified file
+- [x] File contains valid TOML
 
 ### Test 3.6: strace missing
 
@@ -296,8 +296,8 @@ agent-sandbox learn 2>&1
 export PATH="$PATH_BAK"
 ```
 
-- [ ] Clear error message about strace not being found
-- [ ] Suggests installation command
+- [x] Clear error message about strace not being found
+- [x] Suggests installation command
 
 ---
 
@@ -313,8 +313,8 @@ export PATH="$PATH_BAK"
 agent-sandbox status
 ```
 
-- [ ] Shows detected backends (agent-sandbox: yes/no, nono: yes/no)
-- [ ] Shows active backend based on config
+- [x] Shows detected backends (agent-sandbox: yes/no, nono: yes/no)
+- [x] Shows active backend based on config
 
 ### Test 4.2: nono-sync dry-run
 
@@ -322,10 +322,10 @@ agent-sandbox status
 agent-sandbox nono-sync --dry-run
 ```
 
-- [ ] Prints JSON profile for each configured agent
-- [ ] Profile uses `lince-` prefix
-- [ ] Warnings for untranslatable features (bwrap_conflict, etc.)
-- [ ] No files written
+- [x] Prints JSON profile for each configured agent
+- [x] Profile uses `lince-` prefix
+- [x] Warnings for untranslatable features (bwrap_conflict, etc.)
+- [x] No files written
 
 ### Test 4.3: nono-sync write
 
@@ -334,9 +334,9 @@ agent-sandbox nono-sync
 ls ~/.config/nono/profiles/lince-*.json
 ```
 
-- [ ] JSON files created at `~/.config/nono/profiles/lince-<agent>.json`
-- [ ] One file per configured agent
-- [ ] Files contain valid JSON
+- [x] JSON files created at `~/.config/nono/profiles/lince-<agent>.json`
+- [x] One file per configured agent
+- [x] Files contain valid JSON
 
 ### Test 4.4: nono-sync specific agent
 
@@ -344,8 +344,8 @@ ls ~/.config/nono/profiles/lince-*.json
 agent-sandbox nono-sync --agent claude --dry-run
 ```
 
-- [ ] Only generates profile for claude
-- [ ] Other agents are skipped
+- [x] Only generates profile for claude
+- [x] Other agents are skipped
 
 ### Test 4.5: Run with nono backend
 
@@ -354,9 +354,9 @@ agent-sandbox nono-sync --agent claude --dry-run
 agent-sandbox run
 ```
 
-- [ ] Runs `nono run --profile lince-claude -- claude ...` instead of bwrap
-- [ ] Agent starts successfully inside nono sandbox
-- [ ] Sandbox banner shows nono backend
+- [x] Runs `nono run --profile lince-claude -- claude ...` instead of bwrap
+- [x] Agent starts successfully inside nono sandbox
+- [x] Sandbox banner shows nono backend
 
 ### Test 4.6: Auto backend selection
 
@@ -365,9 +365,9 @@ agent-sandbox run
 agent-sandbox status
 ```
 
-- [ ] On Linux with bwrap: selects agent-sandbox
-- [ ] On Linux without bwrap but with nono: selects nono
-- [ ] On macOS: selects nono (or error if missing)
+- [x] On Linux with bwrap: selects agent-sandbox
+- [x] On Linux without bwrap but with nono: selects nono
+- [x] On macOS: selects nono (or error if missing)
 
 ### Test 4.7: macOS error message (Linux simulation)
 
@@ -377,8 +377,8 @@ agent-sandbox status
 agent-sandbox run 2>&1
 ```
 
-- [ ] Clear error when configured backend is not available
-- [ ] Suggests installing the missing backend
+- [x] Clear error when configured backend is not available
+- [x] Suggests installing the missing backend
 
 ---
 
@@ -397,8 +397,8 @@ zd
 # Check that backend detection runs (visible in agent detail panel)
 ```
 
-- [ ] Dashboard starts without errors
-- [ ] Backend detection completes (no "unknown backend" warnings)
+- [x] Dashboard starts without errors
+- [x] Backend detection completes (no "unknown backend" warnings)
 
 ### Test 5.2: Agent type shows backend
 
@@ -407,8 +407,8 @@ zd
 # Select the agent, press Enter for detail panel
 ```
 
-- [ ] Detail panel shows sandbox backend (e.g., "[bwrap]" or "[nono]")
-- [ ] Table shows backend indicator
+- [x] Detail panel shows sandbox backend (e.g., "[bwrap]" or "[nono]")
+- [x] Table shows backend indicator
 
 ### Test 5.3: Per-agent backend override
 
@@ -422,8 +422,8 @@ sandbox_backend = "nono"
 # Spawn a claude agent in the dashboard
 ```
 
-- [ ] Claude agent uses nono backend
-- [ ] Other agents still use default backend
+- [x] Claude agent uses nono backend
+- [x] Other agents still use default backend
 
 ### Test 5.4: Dashboard config sandbox_backend
 
@@ -433,8 +433,8 @@ sandbox_backend = "nono"
 sandbox_backend = "nono"
 ```
 
-- [ ] All sandboxed agents default to nono
-- [ ] Per-agent overrides still work
+- [x] All sandboxed agents default to nono
+- [x] Per-agent overrides still work
 
 ### Test 5.5: Regression — agent-sandbox backend
 
@@ -443,8 +443,8 @@ sandbox_backend = "nono"
 # Spawn agents normally
 ```
 
-- [ ] All existing functionality works as before
-- [ ] No regressions in agent launching, status reporting, or pane management
+- [x] All existing functionality works as before
+- [x] No regressions in agent launching, status reporting, or pane management
 
 ---
 
@@ -456,9 +456,9 @@ sandbox_backend = "nono"
 cd sandbox && ./install.sh
 ```
 
-- [ ] Detects bwrap, installs normally
-- [ ] Step 5 shows nono status (not installed or detected)
-- [ ] Summary shows backend info
+- [x] Detects bwrap, installs normally
+- [x] Step 5 shows nono status (not installed or detected)
+- [x] Summary shows backend info
 
 ### Test 6.2: sandbox/install.sh on Linux with nono
 
@@ -467,9 +467,9 @@ cd sandbox && ./install.sh
 cd sandbox && ./install.sh
 ```
 
-- [ ] Detects both bwrap and nono
-- [ ] Runs nono-sync to generate profiles
-- [ ] Summary shows "auto (agent-sandbox + nono)"
+- [x] Detects both bwrap and nono
+- [x] Runs nono-sync to generate profiles
+- [x] Summary shows "auto (agent-sandbox + nono)"
 
 ### Test 6.3: sandbox/update.sh with nono
 
@@ -477,8 +477,8 @@ cd sandbox && ./install.sh
 cd sandbox && ./update.sh
 ```
 
-- [ ] Step 3 re-runs nono-sync if nono is detected
-- [ ] Profiles are updated
+- [x] Step 3 re-runs nono-sync if nono is detected
+- [x] Profiles are updated
 
 ### Test 6.4: sandbox/uninstall.sh with nono profiles
 
@@ -486,9 +486,9 @@ cd sandbox && ./update.sh
 cd sandbox && ./uninstall.sh
 ```
 
-- [ ] Offers to remove `lince-*.json` nono profiles
-- [ ] Does NOT attempt to uninstall nono itself
-- [ ] Existing uninstall flow (command, config dir) unchanged
+- [x] Offers to remove `lince-*.json` nono profiles
+- [x] Does NOT attempt to uninstall nono itself
+- [x] Existing uninstall flow (command, config dir) unchanged
 
 ### Test 6.5: lince-dashboard/install.sh sandbox check
 
@@ -496,8 +496,106 @@ cd sandbox && ./uninstall.sh
 cd lince-dashboard && ./install.sh
 ```
 
-- [ ] Post-install shows detected sandbox backends
-- [ ] On macOS (or without bwrap): guides to install nono
+- [x] Post-install shows detected sandbox backends
+- [x] On macOS (or without bwrap): guides to install nono
+
+---
+
+## 7. macOS via nono (experimental)
+
+> **Status: experimental** — macOS support via nono's Seatbelt backend has not been validated. See [#19](https://github.com/RisorseArtificiali/lince/issues/19).
+
+**What it does**: On macOS, nono uses Seatbelt (the same sandboxing tech behind App Sandbox) instead of Landlock. Profile generation (`nono-sync`) and the credential proxy should work the same, but Seatbelt has different semantics.
+
+**Prerequisites**: macOS (Ventura or later), Python 3.11+, `nono` (`brew install nono`), at least one AI coding agent.
+
+### Test 7.1: Profile generation on macOS
+
+```bash
+agent-sandbox nono-sync --dry-run
+```
+
+- [ ] Profiles are generated without errors
+- [ ] macOS-specific paths are handled (e.g., `/opt/homebrew`, `~/Library`)
+- [ ] No Linux-specific paths leak into the profile (e.g., `/etc/pki/tls`)
+
+### Test 7.2: Claude Code runs in nono on macOS
+
+```bash
+agent-sandbox nono-sync
+agent-sandbox run --backend nono
+```
+
+- [ ] Claude Code starts successfully
+- [ ] Can read and write files in the project directory
+- [ ] Cannot access `~/.ssh`, `~/.aws`, or other sensitive directories
+- [ ] Sandbox banner shows nono backend
+
+### Test 7.3: Gemini CLI on macOS
+
+```bash
+agent-sandbox run -a gemini --backend nono
+```
+
+- [ ] Gemini CLI starts (may need `GEMINI_FORCE_FILE_STORAGE=true` if Keychain is blocked)
+- [ ] OAuth authentication works or falls back gracefully
+- [ ] Can read/write project files
+
+### Test 7.4: Homebrew tool access
+
+```bash
+# Inside the nono sandbox on macOS:
+which node
+which python3
+which git
+```
+
+- [ ] Tools installed via Homebrew (`/opt/homebrew/bin/`) are accessible
+- [ ] Tools in `/usr/local/bin/` (Intel Mac) are accessible
+- [ ] Build tools (cargo, npm, go) work inside the sandbox
+
+### Test 7.5: macOS Keychain isolation
+
+```bash
+# Inside the nono sandbox:
+security find-generic-password -s "test" 2>&1
+```
+
+- [ ] Keychain access is restricted (agents cannot read arbitrary secrets)
+- [ ] Agents that need Keychain (e.g., Gemini's keytar) fail gracefully to FileKeychain fallback
+
+### Test 7.6: Credential proxy on macOS
+
+```bash
+# Enable credential_proxy = true
+agent-sandbox run -P test --backend nono
+```
+
+- [ ] Proxy starts and injects credentials
+- [ ] API calls succeed through the proxy
+- [ ] Cloud metadata endpoints are blocked
+
+### Test 7.7: Install script on macOS
+
+```bash
+cd sandbox && ./install.sh
+```
+
+- [ ] Detects macOS, skips bwrap check
+- [ ] Guides user to install nono via Homebrew if not present
+- [ ] Runs nono-sync after installation
+- [ ] Summary shows nono as the backend
+
+### Test 7.8: Network and DNS on macOS
+
+```bash
+# Inside the nono sandbox:
+curl -s https://api.anthropic.com/v1/models 2>&1 | head -5
+python3 -c "import urllib.request; urllib.request.urlopen('https://pypi.org')"
+```
+
+- [ ] Network access works (HTTPS, DNS resolution)
+- [ ] Package manager operations (pip, npm) succeed
 
 ---
 

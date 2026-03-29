@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use zellij_tile::prelude::*;
 
 use crate::config::{AgentLayout, AgentTypeConfig, DashboardConfig, DEFAULT_SANDBOX_COMMAND};
+use crate::sandbox_backend::SandboxBackend;
 
 /// Name of the lifecycle wrapper script for agents without native hooks.
 const AGENT_WRAPPER: &str = "lince-agent-wrapper";
@@ -133,9 +134,10 @@ fn spawn_inner(
             &project_dir,
             profile.as_deref(),
         ));
-        // For sandboxed agents, pass the profile via -P flag so agent-sandbox
-        // can resolve the profile's env vars internally.
-        if type_config.sandboxed {
+        // For agent-sandbox (bwrap) agents, pass the profile via -P flag so
+        // agent-sandbox can resolve the profile's env vars internally.
+        // Nono agents already have --profile baked into their command template.
+        if type_config.sandboxed && type_config.sandbox_backend == SandboxBackend::AgentSandbox {
             if let Some(ref p) = profile {
                 if !p.is_empty() {
                     expanded.push("-P".to_string());

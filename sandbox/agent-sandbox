@@ -27,11 +27,11 @@ import threading
 import time
 from datetime import datetime
 from difflib import unified_diff
+import http.client
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingTCPServer
-from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 
 try:
     import tomllib
@@ -243,6 +243,13 @@ CREDENTIAL_PROXY_RULES: dict[str, dict[str, str]] = {
         "env_var": "ANTHROPIC_API_KEY",
         "base_url_env": "ANTHROPIC_BASE_URL",
     },
+    "ANTHROPIC_AUTH_TOKEN": {
+        "domain": "api.anthropic.com",
+        "header_name": "Authorization",
+        "header_prefix": "Bearer ",
+        "env_var": "ANTHROPIC_AUTH_TOKEN",
+        "base_url_env": "ANTHROPIC_BASE_URL",
+    },
     "OPENAI_API_KEY": {
         "domain": "api.openai.com",
         "header_name": "Authorization",
@@ -285,6 +292,55 @@ _PROXY_SKIP_HEADERS = frozenset({
 # ---------------------------------------------------------------------------
 # Credential Proxy
 # ---------------------------------------------------------------------------
+
+class _UpstreamPool:
+    """Simple HTTPS connection pool keyed by (host, port).
+
+    Reuses persistent connections (HTTP keep-alive) so multiple API
+    requests share the same TLS session.  This avoids per-request TLS
+    handshakes that trigger aggressive rate limiting on some providers.
+    """
+
+    def __init__(self):
+        self._conns: dict[tuple[str, int], http.client.HTTPSConnection] = {}
+        self._lock = threading.Lock()
+
+    def request(
+        self,
+        url: str,
+        method: str,
+        body: bytes | None,
+        headers: dict[str, str],
+    ) -> http.client.HTTPResponse:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        port = parsed.port or 443
+        path = parsed.path
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+
+        key = (host, port)
+        with self._lock:
+            conn = self._conns.get(key)
+            if conn is None:
+                conn = http.client.HTTPSConnection(host, port)
+                self._conns[key] = conn
+
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            return conn.getresponse()
+        except (http.client.HTTPException, OSError):
+            # Stale connection — reconnect once.
+            conn = http.client.HTTPSConnection(host, port)
+            with self._lock:
+                self._conns[key] = conn
+            conn.request(method, path, body=body, headers=headers)
+            return conn.getresponse()
+
+
+# Module-level singleton so all handler instances share connections.
+_upstream_pool = _UpstreamPool()
+
 
 class _ProxyRequestHandler(BaseHTTPRequestHandler):
     """HTTP handler for the credential-injecting reverse proxy.
@@ -418,53 +474,70 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
 
         self._bump_count()
 
-        upstream_url = f"https://{rule['domain']}{self.path}"
+        # When the SDK uses HTTP_PROXY, self.path may be an absolute URL
+        # like "http://127.0.0.1:PORT/v1/messages?beta=true".  Extract
+        # just the path+query component for upstream construction.
+        req_path = self.path
+        if req_path.startswith("http://") or req_path.startswith("https://"):
+            parsed = urlparse(req_path)
+            req_path = parsed.path
+            if parsed.query:
+                req_path = f"{req_path}?{parsed.query}"
+
+        # Use the original base URL if the profile configured one (e.g.
+        # third-party API proxies like Z.ai), otherwise default to the
+        # rule's domain.
+        upstream_base = rule.get("upstream_base", "")
+        if upstream_base:
+            upstream_url = f"{upstream_base.rstrip('/')}{req_path}"
+        else:
+            upstream_url = f"https://{rule['domain']}{req_path}"
 
         content_length = int(self.headers.get("Content-Length", 0))
         body = (
             self.rfile.read(content_length) if content_length > 0 else None
         )
 
-        req = Request(upstream_url, data=body, method=method)
+        # Build headers dict for the upstream request.
+        fwd_headers: dict[str, str] = {}
         for hdr, val in self.headers.items():
             if hdr.lower() not in _PROXY_SKIP_HEADERS:
-                req.add_header(hdr, val)
+                fwd_headers[hdr] = val
 
         # Inject credential header.
         prefix = rule.get("header_prefix", "")
-        req.add_unredirected_header(
-            rule["header_name"], f"{prefix}{rule['header_value']}"
+        fwd_headers[rule["header_name"]] = f"{prefix}{rule['header_value']}"
+
+        _proxy_logger.info(
+            "FWD %s %s -> %s",
+            method, self.path, upstream_url,
         )
 
         try:
-            resp = urlopen(req, timeout=120)  # noqa: S310
+            # Use the connection pool for keep-alive (avoids per-request
+            # TLS handshakes that trigger rate limiting on some providers).
+            resp = _upstream_pool.request(
+                upstream_url, method, body, fwd_headers,
+            )
             self.send_response(resp.status)
             for hdr, val in resp.getheaders():
                 if hdr.lower() not in _PROXY_SKIP_HEADERS:
                     self.send_header(hdr, val)
             self.end_headers()
-            # Stream response in chunks to avoid buffering large bodies.
+            self.wfile.flush()
+            # Stream response: use small reads and flush after each
+            # write so SSE events reach the client immediately.
             while True:
-                chunk = resp.read(65536)
+                chunk = resp.read(4096)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
-        except URLError as exc:
-            status = getattr(exc, "code", 502)
-            err_body = b""
-            if hasattr(exc, "read"):
-                try:
-                    err_body = exc.read()
-                except (OSError, AttributeError):
-                    pass
+                self.wfile.flush()
+        except http.client.HTTPException as exc:
             _proxy_logger.warning(
                 "Upstream error %s %s: %s", method, upstream_url, exc
             )
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(err_body)))
-            self.end_headers()
-            self.wfile.write(err_body)
+            self.send_error(502, f"Upstream error: {exc}")
         except OSError as exc:
             _proxy_logger.error("Proxy forwarding error: %s", exc)
             self.send_error(502, f"Proxy error: {exc}")
@@ -549,7 +622,11 @@ class CredentialProxy:
             "port": self._port,
             "start_time": time.time(),
             "rules": [
-                {"domain": r["domain"], "header_name": r["header_name"]}
+                {
+                    "domain": r["domain"],
+                    "header_name": r["header_name"],
+                    "upstream_base": r.get("upstream_base", ""),
+                }
                 for r in self._rules
             ],
         }
@@ -598,17 +675,31 @@ class CredentialProxy:
         return 0.0
 
 
-def _collect_proxy_rules(env_vars: dict[str, str]) -> list[dict]:
+def _collect_proxy_rules(env_vars: dict[str, str]) -> tuple[list[dict], list[str]]:
     """Build credential proxy rules from resolved environment variables.
 
     Scans *env_vars* for keys matching ``CREDENTIAL_PROXY_RULES`` and
-    returns a list of rule dicts ready for ``CredentialProxy``.
+    returns ``(rules, strip_vars)`` — a list of rule dicts ready for
+    ``CredentialProxy`` and a list of **all** env var names that must be
+    stripped from the sandbox (even when two vars map to the same domain
+    and only one proxy rule is created, e.g. ANTHROPIC_API_KEY and
+    ANTHROPIC_AUTH_TOKEN both target api.anthropic.com).
     """
     rules: list[dict] = []
+    strip_vars: list[str] = []
     seen_domains: set[str] = set()
     for env_key, rule_tpl in CREDENTIAL_PROXY_RULES.items():
         value = env_vars.get(env_key)
-        if value and rule_tpl["domain"] not in seen_domains:
+        if not value:
+            continue
+        # Always strip the env var from the sandbox.
+        strip_vars.append(env_key)
+        # Register at most one proxy rule per domain (first match wins).
+        if rule_tpl["domain"] not in seen_domains:
+            # Capture the original base URL (if the user set one, e.g.
+            # for third-party proxies like Z.ai) so the proxy forwards
+            # to the correct upstream instead of the default domain.
+            original_base = env_vars.get(rule_tpl["base_url_env"], "")
             rules.append({
                 "domain": rule_tpl["domain"],
                 "header_name": rule_tpl["header_name"],
@@ -616,9 +707,10 @@ def _collect_proxy_rules(env_vars: dict[str, str]) -> list[dict]:
                 "header_value": value,
                 "env_var": env_key,
                 "base_url_env": rule_tpl["base_url_env"],
+                "upstream_base": original_base,
             })
             seen_domains.add(rule_tpl["domain"])
-    return rules
+    return rules, strip_vars
 
 
 # ---------------------------------------------------------------------------
@@ -862,11 +954,14 @@ def build_nono_cmd(
     agent_config: dict,
     agent_extra_args: list[str],
     safe_mode: bool = False,
+    agent_id: str | None = None,
 ) -> list[str]:
     """Build nono run command for the given agent."""
     profile_name = f"lince-{agent_name}"
     cmd = ["nono", "run", "--profile", profile_name]
     cmd.extend(["--workdir", str(project_dir)])
+    cmd.extend(["--allow-cwd"])
+
     cmd.append("--")
     cmd.append(agent_config.get("command", agent_name))
 
@@ -891,17 +986,31 @@ def generate_nono_profile(
     """
     warnings: list[str] = []
 
-    # Determine if nono has a built-in profile to extend
-    nono_base = NONO_BUILTIN_PROFILES.get(agent_name)
-    profile: dict = {}
-    if nono_base:
-        profile["extends"] = nono_base
+    # Determine if nono has a built-in profile to extend.
+    # Agents without a specific nono profile extend "default" so they
+    # get the base security groups (system_read, user_tools, etc.).
+    nono_base = NONO_BUILTIN_PROFILES.get(agent_name, "default")
+    profile: dict = {"extends": nono_base}
     profile["description"] = "Generated by lince agent-sandbox (nono-sync)"
 
     # --- Filesystem ---
     sandbox_conf = config.get("sandbox", {})
     read_paths: list[str] = []
-    write_paths: list[str] = ["$WORKDIR"]
+    write_paths: list[str] = []
+    allow_paths: list[str] = ["$WORKDIR"]  # read+write
+
+    # Fedora/RHEL use /etc/pki/tls for OpenSSL config (not /etc/ssl).
+    # nono's system_read_linux group covers /etc/ssl but not /etc/pki/tls,
+    # so Node.js/Python agents fail with "Permission denied" on openssl.cnf.
+    if Path("/etc/pki/tls").is_dir():
+        read_paths.append("/etc/pki/tls")
+
+    # Tools installed via npm/pip to ~/.local/bin are often symlinks into
+    # ~/.local/lib/node_modules/... — nono's user_tools group grants
+    # ~/.local/bin but not ~/.local/lib, so the binary can't be read.
+    local_lib = Path.home() / ".local" / "lib"
+    if local_lib.is_dir():
+        read_paths.append(str(local_lib))
 
     # ro_dirs from [sandbox]
     for d in sandbox_conf.get("ro_dirs", []):
@@ -922,19 +1031,21 @@ def generate_nono_profile(
         if full not in read_paths:
             read_paths.append(full)
 
-    # Agent-specific rw dirs
+    # Agent-specific rw dirs → allow (read+write) in nono
     for d in agent_config.get("home_rw_dirs", []):
         full = str(home / d)
-        if full not in write_paths:
-            write_paths.append(full)
+        if full not in allow_paths:
+            allow_paths.append(full)
 
-    # extra_rw from [sandbox]
+    # extra_rw from [sandbox] → allow (read+write)
     for d in sandbox_conf.get("extra_rw", []):
         ep = str(expand(d))
-        if ep not in write_paths:
-            write_paths.append(ep)
+        if ep not in allow_paths:
+            allow_paths.append(ep)
 
     filesystem: dict = {}
+    if allow_paths:
+        filesystem["allow"] = allow_paths
     if read_paths:
         filesystem["read"] = read_paths
     if write_paths:
@@ -948,9 +1059,10 @@ def generate_nono_profile(
     if passthrough:
         profile["environment"] = {"passthrough": passthrough}
 
-    # --- Secrets / env mappings ---
+    # --- Extra env vars ---
     # Collect env vars from agent config, profile env, and [env.extra]
-    env_mappings: list[dict[str, str]] = []
+    # and add them all to passthrough.  Credential isolation is handled
+    # by agent-sandbox's credential proxy, not by the nono profile.
     all_env: dict[str, str] = {}
 
     # [env.extra]
@@ -970,22 +1082,13 @@ def generate_nono_profile(
         all_env[var] = str(val)
 
     for var in sorted(all_env):
-        # Map env vars that look like API keys to nono keystore entries
-        if "KEY" in var or "TOKEN" in var or "SECRET" in var:
-            keystore_name = f"nono/{var.lower().replace('_', '-')}"
-            env_mappings.append({"env_var": var, "keystore": keystore_name})
-        else:
-            # Non-secret env vars go into passthrough
-            existing_pt = profile.get("environment", {}).get("passthrough", [])
-            if var not in existing_pt:
-                if "environment" not in profile:
-                    profile["environment"] = {"passthrough": []}
-                if "passthrough" not in profile["environment"]:
-                    profile["environment"]["passthrough"] = []
-                profile["environment"]["passthrough"].append(var)
-
-    if env_mappings:
-        profile["secrets"] = {"env_mappings": env_mappings}
+        existing_pt = profile.get("environment", {}).get("passthrough", [])
+        if var not in existing_pt:
+            if "environment" not in profile:
+                profile["environment"] = {"passthrough": []}
+            if "passthrough" not in profile["environment"]:
+                profile["environment"]["passthrough"] = []
+            profile["environment"]["passthrough"].append(var)
 
     # --- Security ---
     sec = config.get("security", {})
@@ -996,11 +1099,12 @@ def generate_nono_profile(
         security["allowed_commands"] = allowed_commands
     else:
         security["allowed_commands"] = allowed_commands + ["git push"]
-    security["signal_mode"] = "process_group"
+    security["signal_mode"] = "allow_same_sandbox"
     profile["security"] = security
 
     # --- Network ---
-    profile["network"] = {"network_profile": "allow_all"}
+    # nono allows network by default; no profile section needed.
+    # Use --block-net or network.block=true to deny it.
 
     # --- Warnings for untranslatable features ---
     if agent_config.get("bwrap_conflict"):
@@ -1065,9 +1169,10 @@ def cmd_nono_sync(args) -> None:
         all_warnings.extend(warnings)
 
         profile_json = json.dumps(profile, indent=2) + "\n"
-        out_file = NONO_PROFILE_DIR / f"lince-{agent_name}.json"
+        nono_profile_name = f"lince-{agent_name}"
+        out_file = NONO_PROFILE_DIR / f"{nono_profile_name}.json"
 
-        print(f"  {agent_name}:")
+        print(f"  {nono_profile_name}:")
         if dry_run:
             print(profile_json)
         else:
@@ -1687,6 +1792,12 @@ def cmd_run(args, agent_extra: list[str]) -> None:
 
     # --- nono backend path (simpler — nono handles isolation itself) -------
     if backend == "nono":
+        # Pre-create writable home dirs so they exist before Landlock
+        # restricts the parent directory.  Without this, agents that need
+        # writable config dirs (e.g. ~/.gemini) fail with EACCES.
+        for d in agent_cfg.get("home_rw_dirs", []):
+            (Path.home() / d).mkdir(parents=True, exist_ok=True)
+
         # Ensure nono profile exists
         nono_profile_file = NONO_PROFILE_DIR / f"lince-{agent_name}.json"
         if not nono_profile_file.exists():
@@ -1696,7 +1807,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
 
         cmd = build_nono_cmd(
             agent_name, project_dir, agent_cfg, agent_extra,
-            safe_mode=args.safe,
+            safe_mode=args.safe, agent_id=args.id,
         )
 
         if args.dry_run:
@@ -1760,7 +1871,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         for var, val in agent_cfg.get("env", {}).items():
             collected_env[var] = str(val)
 
-        rules = _collect_proxy_rules(collected_env)
+        rules, strip_vars = _collect_proxy_rules(collected_env)
         if rules:
             proxy_conf = config.get("credential_proxy", {})
             blocked = set(
@@ -1772,9 +1883,12 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             # Build env overrides: remove API keys, rewrite base URLs,
             # set HTTP_PROXY for general CONNECT tunneling.
             proxy_base = f"http://127.0.0.1:{port}"
+            # Strip ALL credential env vars (not just those with a proxy
+            # rule — two vars can share a domain, e.g. ANTHROPIC_API_KEY
+            # and ANTHROPIC_AUTH_TOKEN).
+            for var in strip_vars:
+                proxy_env[var] = ""
             for rule in rules:
-                # Hide the API key from the sandbox env.
-                proxy_env[rule["env_var"]] = ""
                 # Rewrite the base URL so the SDK talks to our proxy.
                 proxy_env[rule["base_url_env"]] = proxy_base
             proxy_env["HTTP_PROXY"] = proxy_base
@@ -1823,8 +1937,10 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")
     print(f"  env vars    clearenv + whitelist")
     if proxy:
-        domains = [r["domain"] for r in proxy._rules]
-        print(f"  cred proxy  127.0.0.1:{proxy.get_port()} -> {', '.join(domains)}")
+        targets = [
+            r.get("upstream_base") or r["domain"] for r in proxy._rules
+        ]
+        print(f"  cred proxy  127.0.0.1:{proxy.get_port()} -> {', '.join(targets)}")
     else:
         cred_label = "disabled" if not proxy_enabled else "no matching keys"
         print(f"  cred proxy  {cred_label}")
@@ -2146,9 +2262,9 @@ def cmd_proxy_status(args) -> None:
     if rules:
         print(f"  rules         {len(rules)} configured:")
         for r in rules:
-            domain = r.get("domain", "?")
+            target = r.get("upstream_base") or r.get("domain", "?")
             header = r.get("header_name", "?")
-            print(f"                  {domain} ({header})")
+            print(f"                  {target} ({header})")
     else:
         print(f"  rules         none configured")
 
@@ -2521,8 +2637,11 @@ def prune_snapshots(snapshot_base_dir: Path, max_count: int) -> int:
     removed = 0
     to_remove = snaps[: len(snaps) - max_count]
     for _ts, path, _sz in to_remove:
-        shutil.rmtree(path)
-        removed += 1
+        try:
+            shutil.rmtree(path)
+            removed += 1
+        except FileNotFoundError:
+            pass
 
     return removed
 

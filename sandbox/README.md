@@ -89,9 +89,7 @@ Environment variables are cleared (`--clearenv`) and only an explicit whitelist 
 
 Git push is blocked via a wrapper script placed first in `$PATH` that intercepts `git push` and returns an error. Additionally, the `.gitconfig` is sanitized to remove `[credential]` sections, and `push.default` is forced to `nothing`.
 
-## Sandbox Backends (experimental)
-
-> **Status: experimental** — This feature is new and has not been extensively validated. See [to-be-validated.md](to-be-validated.md) for testing instructions.
+## Sandbox Backends
 
 agent-sandbox supports two isolation backends:
 
@@ -100,7 +98,7 @@ agent-sandbox supports two isolation backends:
 | **agent-sandbox** (bubblewrap) | Linux namespaces | Linux only | 3.8+ | Zero (Python stdlib + bwrap) | Default on Linux |
 | **[nono](https://github.com/always-further/nono)** | Landlock LSM / Seatbelt | Linux + macOS | 5.13+ | Rust binary | Required on macOS |
 
-**macOS users**: agent-sandbox is Linux-only. Install nono (`brew install nono`) and set `backend = "nono"` in config.toml. See [nono integration guide](docs/nono-integration.md) for details.
+**macOS users** (experimental): agent-sandbox is Linux-only. Install nono (`brew install nono`) and set `backend = "nono"` in config.toml. macOS support via nono has not been validated yet — see [#19](https://github.com/RisorseArtificiali/lince/issues/19).
 
 ### Switching backends
 
@@ -318,7 +316,7 @@ Shows the current state of the sandbox: config location, file counts, toolchain 
 agent-sandbox status
 ```
 
-#### `agent-sandbox proxy-status` (experimental)
+#### `agent-sandbox proxy-status`
 
 Shows the state of the credential proxy: whether it's running, which port, uptime, PID, and configured API domains (keys are never displayed).
 
@@ -326,7 +324,7 @@ Shows the state of the credential proxy: whether it's running, which port, uptim
 agent-sandbox proxy-status
 ```
 
-#### `agent-sandbox snapshot` (experimental)
+#### `agent-sandbox snapshot`
 
 Creates filesystem snapshots of the project directory and/or the agent config directory. Snapshots use rsync with `--link-dest` for hardlink-based deduplication — near-zero disk cost for unchanged files.
 
@@ -337,7 +335,7 @@ agent-sandbox snapshot --project-only     # snapshot project dir only
 agent-sandbox snapshot -a codex           # snapshot Codex config dir
 ```
 
-#### `agent-sandbox snapshot-list` (experimental)
+#### `agent-sandbox snapshot-list`
 
 Lists available snapshots grouped by type (project/config) with timestamps and disk usage.
 
@@ -347,7 +345,7 @@ agent-sandbox snapshot-list --config      # config snapshots only
 agent-sandbox snapshot-list --project     # project snapshots only
 ```
 
-#### `agent-sandbox snapshot-diff` (experimental)
+#### `agent-sandbox snapshot-diff`
 
 Compares a snapshot against the current state, or two snapshots against each other. Uses the same comparison engine as `diff`/`merge`.
 
@@ -357,7 +355,7 @@ agent-sandbox snapshot-diff 20260325 20260326  # compare two snapshots (cross-se
 agent-sandbox snapshot-diff 2026 --config  # config changes only (prefix matching on timestamps)
 ```
 
-#### `agent-sandbox snapshot-restore` (experimental)
+#### `agent-sandbox snapshot-restore`
 
 Interactive restore from a snapshot. Presents each changed file for per-file accept/reject — the same UX as `merge`.
 
@@ -369,7 +367,7 @@ agent-sandbox snapshot-restore 20260326 --project     # restore project only
 
 If restoring a config snapshot and there are unmerged changes in the sandbox config (the `diff` workflow), a warning is printed.
 
-#### `agent-sandbox snapshot-prune` (experimental)
+#### `agent-sandbox snapshot-prune`
 
 Removes old snapshots beyond the configured maximum count.
 
@@ -379,7 +377,7 @@ agent-sandbox snapshot-prune --config     # prune config snapshots only
 agent-sandbox snapshot-prune --all        # prune all types
 ```
 
-#### `agent-sandbox learn` (experimental)
+#### `agent-sandbox learn`
 
 Runs the agent inside a permissive sandbox with `strace` attached to discover what filesystem paths, network connections, and executables the agent actually uses. Generates a suggested config.toml fragment to tighten or loosen your sandbox.
 
@@ -513,7 +511,7 @@ dir = "~/.agent-sandbox/logs"
 
 When enabled, the session is recorded using the `script` command. Logs are saved as `YYYY-MM-DD_HHMMSS_projectname.log` and contain the full terminal output (including ANSI colors). View them with `cat` (colors preserved) or pipe through `col -b` for plain text.
 
-### `[snapshot]` (experimental)
+### `[snapshot]`
 
 ```toml
 [snapshot]
@@ -551,14 +549,14 @@ new_session = false
 # Block git push via a wrapper script
 block_git_push = true
 
-# EXPERIMENTAL: Credential proxy — keep API keys outside the sandbox entirely.
+# Credential proxy — keep API keys outside the sandbox entirely.
 # When enabled, a localhost HTTP proxy intercepts API calls and injects
 # credentials on the host side — the agent never sees the raw keys.
 # API keys must be configured in a [*.profiles.*.env] section.
 credential_proxy = false
 ```
 
-#### `[credential_proxy]` (experimental, optional)
+#### `[credential_proxy]` (optional)
 
 ```toml
 [credential_proxy]
@@ -714,9 +712,7 @@ With `use_real_config = true`:
 - `run` mounts the real `~/.claude` and `~/.claude.json` writable
 - `diff` and `merge` are disabled (no separate copy to compare against)
 
-### Using the credential proxy (experimental)
-
-> **Status: experimental** — See [to-be-validated.md](to-be-validated.md) for testing instructions.
+### Using the credential proxy
 
 The credential proxy keeps API keys outside the sandbox entirely. Instead of passing `ANTHROPIC_API_KEY` into the sandbox environment, a localhost proxy intercepts API calls and injects the key on the host side. A prompt-injected agent cannot exfiltrate the key because it never exists in the sandbox's memory.
 
@@ -741,6 +737,7 @@ The proxy automatically maps these environment variables to API domains:
 | Env var | API domain | Header |
 |---------|-----------|--------|
 | `ANTHROPIC_API_KEY` | `api.anthropic.com` | `x-api-key` |
+| `ANTHROPIC_AUTH_TOKEN` | `api.anthropic.com` | `Authorization: Bearer` |
 | `OPENAI_API_KEY` | `api.openai.com` | `Authorization: Bearer` |
 | `GOOGLE_API_KEY` | `generativelanguage.googleapis.com` | `x-goog-api-key` |
 | `GEMINI_API_KEY` | `generativelanguage.googleapis.com` | `x-goog-api-key` |
@@ -749,9 +746,7 @@ Non-API traffic (package managers, git clone, etc.) passes through the proxy via
 
 Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, `metadata.azure.internal`) are always blocked to prevent SSRF attacks.
 
-### Snapshots and rollback (experimental)
-
-> **Status: experimental** — See [to-be-validated.md](to-be-validated.md) for testing instructions.
+### Snapshots and rollback
 
 Snapshots protect against agent damage to your project directory or config files. Even if the agent corrupts files inside the writable project dir, you can restore to a known-good state.
 
@@ -788,9 +783,7 @@ auto_config = true    # default: on
 
 **How snapshots relate to diff/merge**: The `diff`/`merge` commands are for reviewing and applying agent changes to your real config (forward flow). Snapshot-restore is for undoing unwanted changes (backward flow). Both use the same comparison engine and interactive UX.
 
-### Learning what the agent needs (experimental)
-
-> **Status: experimental** — See [to-be-validated.md](to-be-validated.md) for testing instructions.
+### Learning what the agent needs
 
 The `learn` command discovers what the agent actually touches, so you can tighten your sandbox configuration.
 

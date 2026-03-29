@@ -128,7 +128,7 @@ profiles = ["__discover__"]
 # Profiles are named "lince-<agent>" and managed by `agent-sandbox nono-sync`.
 
 [agents.claude-nono]
-command = ["nono", "run", "--profile", "lince-claude", "--workdir", "{project_dir}", "--", "claude", "--id", "{agent_id}"]
+command = ["nono", "run", "--profile", "lince-claude", "--workdir", "{project_dir}", "--", "claude", "--dangerously-skip-permissions"]
 pane_title_pattern = "nono"
 status_pipe_name = "claude-status"
 display_name = "Claude Code (nono)"
@@ -178,7 +178,10 @@ profiles = ["__discover__"]
 GEMINI_API_KEY = "$GEMINI_API_KEY"
 
 [agents.opencode-nono]
-command = ["nono", "run", "--profile", "lince-opencode", "--workdir", "{project_dir}", "--", "opencode"]
+# Bun-based binaries crash (SIGABRT) when spawned as subprocesses under Landlock.
+# Resolve the native binary and exec it directly, bypassing the Node.js launcher's
+# spawnSync which triggers the Bun/Landlock incompatibility.
+command = ["nono", "run", "--profile", "lince-opencode", "--workdir", "{project_dir}", "--", "bash", "-c", "exec \"$(dirname \"$(readlink -f \"$(which opencode)\")\")/.opencode\" \"$@\"", "--"]
 pane_title_pattern = "nono"
 status_pipe_name = "lince-status"
 display_name = "OpenCode (nono)"

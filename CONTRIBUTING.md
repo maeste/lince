@@ -4,15 +4,23 @@ Thank you for your interest in contributing to the Lince project. This guide cov
 
 ## Quick ways to contribute
 
-### Validate experimental features
+### Good first issues
 
-The fastest way to help right now is testing our experimental features. We have a detailed validation guide with step-by-step instructions and checkboxes:
+These are self-contained tasks that don't require deep knowledge of the codebase:
+
+- **[#19 — Validate macOS support via nono](https://github.com/RisorseArtificiali/lince/issues/19)**: Test the nono sandbox backend on macOS. No code changes needed — just run the test plan in [sandbox/to-be-validated.md](sandbox/to-be-validated.md) section 7 and report results. Requires a Mac with Python 3.11+ and nono installed.
+
+- **[#18 — Gemini CLI login in nono sandbox](https://github.com/RisorseArtificiali/lince/issues/18)**: Gemini CLI asks for login inside the nono sandbox because the D-Bus socket is read-only. A workaround is in place (`GEMINI_FORCE_FILE_STORAGE=true`), but a proper fix would involve granting D-Bus access or upstreaming a nono security group. Good for someone familiar with Linux keyrings/D-Bus.
+
+### Validate on different environments
+
+We have a validation guide with step-by-step test plans:
 
 **[sandbox/to-be-validated.md](sandbox/to-be-validated.md)**
 
-Pick any section, run the tests on your system, and report the results. This is especially valuable if you have:
-- A different Linux distribution (Fedora, Ubuntu, Arch, Debian, etc.)
-- macOS (for nono backend testing)
+Sections 1–6 are validated on Fedora 43. Section 7 (macOS) needs community validation. Testing on different environments is especially valuable:
+- A different Linux distribution (Ubuntu, Arch, Debian, etc.)
+- macOS (for nono backend testing — see [#19](https://github.com/RisorseArtificiali/lince/issues/19))
 - Older or newer kernel versions
 - Non-standard toolchain setups (nvm, pyenv, sdkman, etc.)
 
@@ -115,18 +123,26 @@ Every module must have `install.sh`, `update.sh`, and `uninstall.sh`:
 - How to test it
 - Any backward compatibility considerations
 
-## Experimental features
+## Feature status
 
-Features marked as **(experimental)** in the documentation are new and have not been extensively validated. They are:
+### Validated (Linux)
+
+These features have been validated on Linux (Fedora 43, kernel 6.18) and are considered stable:
 
 - **Credential proxy isolation** — API keys kept outside sandbox via HTTP proxy
 - **Filesystem snapshots and rollback** — rsync-based snapshots with interactive restore
 - **Learn mode** — strace-based capability discovery
-- **nono backend support** — alternative sandbox using Landlock/Seatbelt
+- **nono backend support (Linux)** — alternative sandbox using Landlock LSM
 - **nono profile sync** — generate nono profiles from lince config
 - **Dashboard nono integration** — launch agents via nono from the TUI dashboard
 
-These features are all backward-compatible and opt-in (except config auto-snapshot, which is on by default but non-breaking).
+### Experimental
+
+- **macOS support via nono** — nono's Seatbelt backend on macOS has not been validated ([#19](https://github.com/RisorseArtificiali/lince/issues/19))
+
+### Known issues
+
+- **Gemini CLI login in nono** — D-Bus socket restrictions cause Gemini to ask for login ([#18](https://github.com/RisorseArtificiali/lince/issues/18)). Workaround applied in `agents-defaults.toml`.
 
 To promote a feature from experimental to stable, it needs:
 1. Validation on at least 2 different environments (see [sandbox/to-be-validated.md](sandbox/to-be-validated.md))
