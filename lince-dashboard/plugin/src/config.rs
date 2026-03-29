@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::sandbox_backend::{BackendConfig, SandboxBackend};
+
 /// Default agent type key used when no explicit type is specified.
 pub const DEFAULT_AGENT_TYPE: &str = "claude";
 
@@ -61,6 +63,11 @@ pub struct AgentTypeConfig {
     /// - Explicit list restricts the wizard to those profile names.
     #[serde(default)]
     pub profiles: Vec<String>,
+    /// Sandbox backend used by this agent type.
+    /// Overrides the global `[dashboard].sandbox_backend` setting.
+    /// Defaults to `AgentSandbox` for backward compatibility.
+    #[serde(default)]
+    pub sandbox_backend: SandboxBackend,
 }
 
 /// Agent pane layout mode.
@@ -172,6 +179,11 @@ pub struct DashboardConfig {
     /// any `[agents.<name>]` sections from the user's `config.toml`.
     #[serde(default)]
     pub agent_types: HashMap<String, AgentTypeConfig>,
+    /// Global sandbox backend preference.
+    /// Individual agent types can override this with their own `sandbox_backend` field.
+    /// Defaults to `Auto` (auto-detect based on OS and available tools).
+    #[serde(default)]
+    pub sandbox_backend: BackendConfig,
 }
 
 impl Default for DashboardConfig {
@@ -189,6 +201,7 @@ impl Default for DashboardConfig {
             status_file_dir: default_status_file_dir(),
             max_agents: default_max_agents(),
             agent_types: HashMap::new(),
+            sandbox_backend: BackendConfig::default(),
         }
     }
 }

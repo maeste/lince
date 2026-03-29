@@ -9,6 +9,7 @@ uv.lock
 
 # Rust build artifacts
 target/
+lince-dashboard/plugin/lince-dashboard.wasm
 **/*.rs.bk
 *.pdb
 

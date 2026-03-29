@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod dashboard;
 mod pane_manager;
+mod sandbox_backend;
 mod state_file;
 mod types;
 
@@ -9,6 +10,7 @@ use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
 use crate::config::{DashboardConfig, StatusMethod, DEFAULT_AGENT_TYPE};
+use crate::sandbox_backend::DetectedBackends;
 
 const PIPE_CLAUDE_STATUS: &str = "claude-status";
 const PIPE_LINCE_STATUS: &str = "lince-status";
@@ -42,6 +44,8 @@ struct State {
     pending_restore: Option<Vec<SavedAgentInfo>>,
     /// Whether agent type defaults have been loaded at least once.
     agent_types_loaded: bool,
+    /// Detected sandbox backends (populated async after permissions granted).
+    detected_backends: Option<DetectedBackends>,
 }
 
 impl Default for State {
@@ -64,6 +68,7 @@ impl Default for State {
             launch_dir: None,
             pending_restore: None,
             agent_types_loaded: false,
+            detected_backends: None,
         }
     }
 }
@@ -116,6 +121,8 @@ impl ZellijPlugin for State {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 // Now that we have permissions, detect CWD via `pwd`.
                 config::run_typed_command(&["pwd"], CMD_GET_CWD);
+                // Detect available sandbox backends (agent-sandbox, nono).
+                sandbox_backend::detect_backend_async();
                 true
             }
             Event::Key(key) => self.handle_key(key),
@@ -233,6 +240,13 @@ impl ZellijPlugin for State {
                         // Flush any buffered restore that was waiting for agent types.
                         if let Some(saved_agents) = self.pending_restore.take() {
                             self.restore_agents(saved_agents);
+                        }
+                        true
+                    }
+                    Some(sandbox_backend::CMD_DETECT_BACKEND) => {
+                        if exit_code == Some(0) {
+                            let detected = DetectedBackends::from_stdout(&stdout);
+                            self.detected_backends = Some(detected);
                         }
                         true
                     }

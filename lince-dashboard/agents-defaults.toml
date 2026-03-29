@@ -122,3 +122,75 @@ bwrap_conflict = false
 disable_inner_sandbox_args = []
 home_ro_dirs = ["~/.config/opencode/"]
 profiles = ["__discover__"]
+
+# ── nono-sandboxed variants ─────────────────────────────────────────
+# nono uses Landlock LSM on Linux and Seatbelt on macOS.
+# Profiles are named "lince-<agent>" and managed by `agent-sandbox nono-sync`.
+
+[agents.claude-nono]
+command = ["nono", "run", "--profile", "lince-claude", "--workdir", "{project_dir}", "--", "claude", "--dangerously-skip-permissions"]
+pane_title_pattern = "nono"
+status_pipe_name = "claude-status"
+display_name = "Claude Code (nono)"
+short_label = "CLA"
+color = "blue"
+sandboxed = true
+has_native_hooks = true
+sandbox_backend = "nono"
+home_ro_dirs = ["~/.claude/"]
+profiles = ["__discover__"]
+
+[agents.codex-nono]
+command = ["nono", "run", "--profile", "lince-codex", "--workdir", "{project_dir}", "--", "codex", "--full-auto"]
+pane_title_pattern = "nono"
+status_pipe_name = "lince-status"
+display_name = "OpenAI Codex (nono)"
+short_label = "CDX"
+color = "cyan"
+sandboxed = true
+has_native_hooks = false
+ignore_wrapper_start = true
+sandbox_backend = "nono"
+bwrap_conflict = false
+disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+home_ro_dirs = ["~/.codex/"]
+profiles = ["__discover__"]
+
+[agents.codex-nono.env_vars]
+OPENAI_API_KEY = "$OPENAI_API_KEY"
+
+[agents.gemini-nono]
+command = ["nono", "run", "--profile", "lince-gemini", "--workdir", "{project_dir}", "--", "gemini"]
+pane_title_pattern = "nono"
+status_pipe_name = "lince-status"
+display_name = "Google Gemini CLI (nono)"
+short_label = "GEM"
+color = "yellow"
+sandboxed = true
+has_native_hooks = false
+sandbox_backend = "nono"
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+home_ro_dirs = ["~/.gemini/"]
+profiles = ["__discover__"]
+
+[agents.gemini-nono.env_vars]
+GEMINI_API_KEY = "$GEMINI_API_KEY"
+
+[agents.opencode-nono]
+# Bun-based binaries crash (SIGABRT) when spawned as subprocesses under Landlock.
+# Resolve the native binary and exec it directly, bypassing the Node.js launcher's
+# spawnSync which triggers the Bun/Landlock incompatibility.
+command = ["nono", "run", "--profile", "lince-opencode", "--workdir", "{project_dir}", "--", "bash", "-c", "exec \"$(dirname \"$(readlink -f \"$(which opencode)\")\")/.opencode\" \"$@\"", "--"]
+pane_title_pattern = "nono"
+status_pipe_name = "lince-status"
+display_name = "OpenCode (nono)"
+short_label = "OPC"
+color = "green"
+sandboxed = true
+has_native_hooks = false
+sandbox_backend = "nono"
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+home_ro_dirs = ["~/.config/opencode/"]
+profiles = ["__discover__"]

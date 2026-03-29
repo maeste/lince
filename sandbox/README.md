@@ -16,6 +16,8 @@ Claude Code's `--dangerously-skip-permissions` flag removes all confirmation pro
 | **SSH key theft** | `~/.ssh` does not exist inside the sandbox | Hidden by tmpfs overlay on `$HOME` |
 | **Cloud credential theft** | `~/.aws`, `~/.config/gcloud`, etc. invisible | Hidden by tmpfs overlay on `$HOME` |
 | **Git push** | Blocked at three layers | Wrapper script + sanitized `.gitconfig` + no credential helpers |
+| **API key exfiltration** | Credential proxy keeps keys outside sandbox | Reverse proxy injects headers; keys never enter sandbox env |
+| **Cloud SSRF** | Metadata endpoints blocked | Proxy blocks `169.254.169.254`, `metadata.google.internal`, etc. |
 | **Environment variable leaks** | Only whitelisted vars pass through | `--clearenv` + explicit `--setenv` |
 | **Process killing/inspection** | Host processes invisible | `--unshare-pid` (PID namespace) |
 | **System modification** | Cannot write to `/usr`, `/etc`, `/var` | Read-only root filesystem |
@@ -33,6 +35,7 @@ Claude Code's `--dangerously-skip-permissions` flag removes all confirmation pro
 | **Build tools** | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected |
 | **Claude config** | Settings, MCP servers, skills | Isolated copy in `~/.agent-sandbox/claude-config` |
 | **Package caches** | `cargo build` can download crates, npm can cache | Persistent writable dirs for registry/cache subdirectories |
+| **Filesystem snapshots** | Undo agent damage to project or config dirs | rsync hardlink-based snapshots with interactive restore |
 
 ### Security model
 
@@ -41,8 +44,23 @@ The sandbox protects your **host machine from Claude**, not secrets from Claude.
 1. **Primary**: prompt injection from malicious code in a repository causes Claude to run destructive commands
 2. **Secondary**: Claude hallucinating dangerous commands (rm -rf, git push --force, etc.)
 3. **Tertiary**: accidental damage from overly broad file operations
+4. **API key exfiltration**: with `credential_proxy = true`, API keys never enter the sandbox — the proxy injects them on the host side
 
 The sandbox is **not** a defense against a compromised Claude binary or a kernel-level exploit. For that level of isolation, use a VM.
+
+**Defense layers:**
+
+| Layer | Feature | Default |
+|-------|---------|---------|
+| Filesystem isolation | Read-only root, tmpfs home | Always on |
+| PID namespace | Host processes invisible | On |
+| Env var clearing | Only whitelisted vars pass | Always on |
+| Git push blocking | Wrapper + sanitized gitconfig | On |
+| Credential proxy | API keys never enter sandbox | Opt-in |
+| Cloud SSRF blocking | Metadata endpoints blocked by proxy | On (when proxy enabled) |
+| Config snapshots | Auto-snapshot before each run | On |
+| Project snapshots | Snapshot writable project dir | Opt-in |
+| Learn mode | Discover actual access needs | On-demand |
 
 ## How it works
 
@@ -71,12 +89,63 @@ Environment variables are cleared (`--clearenv`) and only an explicit whitelist 
 
 Git push is blocked via a wrapper script placed first in `$PATH` that intercepts `git push` and returns an error. Additionally, the `.gitconfig` is sanitized to remove `[credential]` sections, and `push.default` is forced to `nothing`.
 
+## Sandbox Backends
+
+agent-sandbox supports two isolation backends:
+
+| Backend | Isolation | Platform | Kernel | Dependencies | Default |
+|---------|-----------|----------|--------|-------------|---------|
+| **agent-sandbox** (bubblewrap) | Linux namespaces | Linux only | 3.8+ | Zero (Python stdlib + bwrap) | Default on Linux |
+| **[nono](https://github.com/always-further/nono)** | Landlock LSM / Seatbelt | Linux + macOS | 5.13+ | Rust binary | Required on macOS |
+
+**macOS users** (experimental): agent-sandbox is Linux-only. Install nono (`brew install nono`) and set `backend = "nono"` in config.toml. macOS support via nono has not been validated yet — see [#19](https://github.com/RisorseArtificiali/lince/issues/19).
+
+### Switching backends
+
+```toml
+# In ~/.agent-sandbox/config.toml
+[sandbox]
+backend = "auto"          # default: agent-sandbox on Linux, nono on macOS
+# backend = "nono"        # force nono
+# backend = "agent-sandbox"  # force bwrap
+```
+
+### Generating nono profiles
+
+```bash
+agent-sandbox nono-sync              # generate profiles for all agents
+agent-sandbox nono-sync --dry-run    # preview without writing
+agent-sandbox status                 # shows detected backends
+```
+
+### Feature comparison
+
+| Feature | agent-sandbox | nono |
+|---------|--------------|------|
+| Config diff/merge | Yes | No |
+| Credential proxy | Yes | Yes (built-in) |
+| Filesystem snapshots | Yes | Yes (`nono undo`) |
+| Learn mode | Yes (strace) | Yes |
+| Per-path granularity | Directory-level | File-level |
+| PID isolation | Full namespace | Signal scoping |
+| macOS support | No | Yes |
+
 ## Requirements
+
+### Linux (agent-sandbox backend)
 
 - **Linux** (any distribution with kernel 3.8+ for user namespaces)
 - **Python 3.11+** (for `tomllib` in the standard library)
 - **bubblewrap** (`bwrap`)
-- **Claude Code** (the `claude` CLI)
+- **rsync** (for snapshot features; installed by default on all mainstream distros)
+- **strace** (for learn mode; installed by default on all mainstream distros)
+- **Claude Code** (or another supported AI coding agent)
+
+### macOS (nono backend)
+
+- **Python 3.11+** (for `nono-sync` profile generation)
+- **nono** (`brew install nono`)
+- **Claude Code** (or another supported AI coding agent)
 
 ### Installing bubblewrap
 
@@ -148,6 +217,21 @@ agent-sandbox run
 ```
 
 That's it. Claude starts with `--dangerously-skip-permissions` by default (configurable) and has full autonomy within your project directory, but cannot escape.
+
+Config snapshots are taken automatically before each run (agent config dir is tiny). After the session, run `agent-sandbox snapshot-diff` to see what changed, or `agent-sandbox snapshot-restore` to undo damage.
+
+**Optional hardening:**
+
+```bash
+# Enable credential proxy (API keys never enter sandbox)
+# Edit ~/.agent-sandbox/config.toml:
+#   [security]
+#   credential_proxy = true
+
+# Learn what the agent actually needs and tighten the sandbox
+agent-sandbox learn --duration 120
+agent-sandbox learn --compare
+```
 
 ## Usage
 
@@ -226,11 +310,93 @@ This is the safe way to adopt changes Claude made in the sandbox (like installin
 
 #### `agent-sandbox status`
 
-Shows the current state of the sandbox: config location, file counts, toolchain cache sizes, log count, bwrap version, and pending config changes.
+Shows the current state of the sandbox: config location, file counts, toolchain cache sizes, log count, bwrap version, pending config changes, snapshot info, and credential proxy status.
 
 ```bash
 agent-sandbox status
 ```
+
+#### `agent-sandbox proxy-status`
+
+Shows the state of the credential proxy: whether it's running, which port, uptime, PID, and configured API domains (keys are never displayed).
+
+```bash
+agent-sandbox proxy-status
+```
+
+#### `agent-sandbox snapshot`
+
+Creates filesystem snapshots of the project directory and/or the agent config directory. Snapshots use rsync with `--link-dest` for hardlink-based deduplication — near-zero disk cost for unchanged files.
+
+```bash
+agent-sandbox snapshot                    # snapshot both project and config
+agent-sandbox snapshot --config-only      # snapshot config dir only (fast, < 1MB)
+agent-sandbox snapshot --project-only     # snapshot project dir only
+agent-sandbox snapshot -a codex           # snapshot Codex config dir
+```
+
+#### `agent-sandbox snapshot-list`
+
+Lists available snapshots grouped by type (project/config) with timestamps and disk usage.
+
+```bash
+agent-sandbox snapshot-list               # list all snapshots
+agent-sandbox snapshot-list --config      # config snapshots only
+agent-sandbox snapshot-list --project     # project snapshots only
+```
+
+#### `agent-sandbox snapshot-diff`
+
+Compares a snapshot against the current state, or two snapshots against each other. Uses the same comparison engine as `diff`/`merge`.
+
+```bash
+agent-sandbox snapshot-diff 20260326T1200  # snapshot vs current state
+agent-sandbox snapshot-diff 20260325 20260326  # compare two snapshots (cross-session drift)
+agent-sandbox snapshot-diff 2026 --config  # config changes only (prefix matching on timestamps)
+```
+
+#### `agent-sandbox snapshot-restore`
+
+Interactive restore from a snapshot. Presents each changed file for per-file accept/reject — the same UX as `merge`.
+
+```bash
+agent-sandbox snapshot-restore 20260326T1200          # restore project + config
+agent-sandbox snapshot-restore 20260326 --config      # restore config only
+agent-sandbox snapshot-restore 20260326 --project     # restore project only
+```
+
+If restoring a config snapshot and there are unmerged changes in the sandbox config (the `diff` workflow), a warning is printed.
+
+#### `agent-sandbox snapshot-prune`
+
+Removes old snapshots beyond the configured maximum count.
+
+```bash
+agent-sandbox snapshot-prune              # prune both project and config
+agent-sandbox snapshot-prune --config     # prune config snapshots only
+agent-sandbox snapshot-prune --all        # prune all types
+```
+
+#### `agent-sandbox learn`
+
+Runs the agent inside a permissive sandbox with `strace` attached to discover what filesystem paths, network connections, and executables the agent actually uses. Generates a suggested config.toml fragment to tighten or loosen your sandbox.
+
+```bash
+agent-sandbox learn                       # learn Claude's access patterns
+agent-sandbox learn -a codex              # learn Codex's access patterns
+agent-sandbox learn --duration 60         # stop after 60 seconds
+agent-sandbox learn --compare             # show over/under-permissive areas vs current config
+agent-sandbox learn --apply               # auto-merge suggestions into config.toml
+agent-sandbox learn --output report.toml  # save suggestions to a file
+```
+
+The report includes:
+- Filesystem access categorized by type (project, home config, system, toolchain, temp, unexpected)
+- Network connections with reverse DNS resolution
+- Executed binaries
+- Suggested config changes (add writable dirs, remove unused env vars, etc.)
+
+Requires `strace` to be installed (standard on all Linux distributions).
 
 ## Configuration
 
@@ -345,6 +511,30 @@ dir = "~/.agent-sandbox/logs"
 
 When enabled, the session is recorded using the `script` command. Logs are saved as `YYYY-MM-DD_HHMMSS_projectname.log` and contain the full terminal output (including ANSI colors). View them with `cat` (colors preserved) or pipe through `col -b` for plain text.
 
+### `[snapshot]`
+
+```toml
+[snapshot]
+# Auto-snapshot the project directory before each sandbox run.
+# Off by default — can be slow for large repos.
+auto_project = false
+
+# Auto-snapshot the agent config directory before each sandbox run.
+# On by default — config dirs are tiny and corruption is hard to notice.
+auto_config = true
+
+# Maximum snapshots to keep per project (oldest pruned automatically)
+max_project_snapshots = 3
+
+# Maximum snapshots to keep per agent config
+max_config_snapshots = 5
+
+# Directories to exclude from project snapshots
+project_exclude = [".git", "node_modules", "target", "__pycache__", ".venv", "build", "dist"]
+```
+
+Snapshots are stored in `~/.agent-sandbox/snapshots/` using rsync `--link-dest` for hardlink-based deduplication. Unchanged files share disk blocks with the previous snapshot, so the incremental cost is near-zero.
+
 ### `[security]`
 
 ```toml
@@ -358,6 +548,20 @@ new_session = false
 
 # Block git push via a wrapper script
 block_git_push = true
+
+# Credential proxy — keep API keys outside the sandbox entirely.
+# When enabled, a localhost HTTP proxy intercepts API calls and injects
+# credentials on the host side — the agent never sees the raw keys.
+# API keys must be configured in a [*.profiles.*.env] section.
+credential_proxy = false
+```
+
+#### `[credential_proxy]` (optional)
+
+```toml
+[credential_proxy]
+# Extra hosts to block (cloud metadata endpoints are always blocked)
+blocked_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]
 ```
 
 ### `[profiles.<name>]`
@@ -426,6 +630,14 @@ After initialization, `~/.agent-sandbox/` contains:
 │   │   └── git/            # Cargo git checkouts (writable)
 │   ├── npm-cache/          # npm download cache (writable)
 │   └── go/                 # Go module cache (writable)
+├── snapshots/              # Filesystem snapshots (if enabled)
+│   ├── projects/           # Project dir snapshots (by project hash)
+│   │   └── a1b2c3d4e5f6/
+│   │       └── 20260326T120000/
+│   └── configs/            # Agent config snapshots (by agent name)
+│       └── claude/
+│           └── 20260326T120000/
+├── proxy.pid               # Credential proxy PID file (when running)
 └── logs/                   # Session transcripts (if logging enabled)
     └── 2025-01-15_143022_myrepo.log
 ```
@@ -499,6 +711,112 @@ With `use_real_config = true`:
 - `init` skips copying `~/.claude` and `~/.claude.json`
 - `run` mounts the real `~/.claude` and `~/.claude.json` writable
 - `diff` and `merge` are disabled (no separate copy to compare against)
+
+### Using the credential proxy
+
+The credential proxy keeps API keys outside the sandbox entirely. Instead of passing `ANTHROPIC_API_KEY` into the sandbox environment, a localhost proxy intercepts API calls and injects the key on the host side. A prompt-injected agent cannot exfiltrate the key because it never exists in the sandbox's memory.
+
+```bash
+# 1. Enable in config.toml
+[security]
+credential_proxy = true
+
+# 2. Put your API key in a profile (it stays on the host)
+[claude.profiles.anthropic]
+description = "Direct Anthropic API"
+[claude.profiles.anthropic.env]
+ANTHROPIC_API_KEY = "sk-ant-..."
+
+# 3. Run as usual
+agent-sandbox run -P anthropic
+# Banner will show: credential_proxy  on (port 54321, domains: api.anthropic.com)
+```
+
+The proxy automatically maps these environment variables to API domains:
+
+| Env var | API domain | Header |
+|---------|-----------|--------|
+| `ANTHROPIC_API_KEY` | `api.anthropic.com` | `x-api-key` |
+| `ANTHROPIC_AUTH_TOKEN` | `api.anthropic.com` | `Authorization: Bearer` |
+| `OPENAI_API_KEY` | `api.openai.com` | `Authorization: Bearer` |
+| `GOOGLE_API_KEY` | `generativelanguage.googleapis.com` | `x-goog-api-key` |
+| `GEMINI_API_KEY` | `generativelanguage.googleapis.com` | `x-goog-api-key` |
+
+Non-API traffic (package managers, git clone, etc.) passes through the proxy via CONNECT tunneling without credential injection.
+
+Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, `metadata.azure.internal`) are always blocked to prevent SSRF attacks.
+
+### Snapshots and rollback
+
+Snapshots protect against agent damage to your project directory or config files. Even if the agent corrupts files inside the writable project dir, you can restore to a known-good state.
+
+```bash
+# Take a manual snapshot before a risky session
+agent-sandbox snapshot
+
+# After a session, review what changed
+agent-sandbox snapshot-diff 20260326
+
+# Restore specific files interactively
+agent-sandbox snapshot-restore 20260326
+# [MOD] src/main.py
+#   restore? (y)es / (n)o / (d)iff / (q)uit: d
+#   <shows diff>
+#   restore? (y)es / (n)o / (d)iff / (q)uit: y
+#   restored.
+
+# Compare what changed between two agent sessions
+agent-sandbox snapshot-diff 20260325 20260326
+
+# List and prune old snapshots
+agent-sandbox snapshot-list
+agent-sandbox snapshot-prune
+```
+
+**Auto-snapshots**: By default, config snapshots are taken automatically before each `agent-sandbox run` (the config dir is tiny, so this is free). Project snapshots are opt-in:
+
+```toml
+[snapshot]
+auto_project = true   # enable project auto-snapshots too
+auto_config = true    # default: on
+```
+
+**How snapshots relate to diff/merge**: The `diff`/`merge` commands are for reviewing and applying agent changes to your real config (forward flow). Snapshot-restore is for undoing unwanted changes (backward flow). Both use the same comparison engine and interactive UX.
+
+### Learning what the agent needs
+
+The `learn` command discovers what the agent actually touches, so you can tighten your sandbox configuration.
+
+```bash
+# Run Claude for 2 minutes under strace, then analyze
+agent-sandbox learn --duration 120
+
+# Output:
+# ═══════════════════════════════════════════════════
+#  Learn Mode Report — agent: claude
+#  Duration: 120s
+# ═══════════════════════════════════════════════════
+#  📂 Filesystem Access
+#  Project files:     89 reads, 23 writes
+#  Home config:       12 reads, 3 writes
+#  System paths:      45 reads, 0 writes
+#  Toolchain caches:   8 reads, 5 writes
+#  Unexpected:         0 reads, 0 writes
+#
+#  🌐 Network Connections
+#  api.anthropic.com:443  (12 connections)
+#  pypi.org:443           (3 connections)
+#
+#  📋 Suggested Config Changes
+#  ✚ Add writable:  ~/.cache/uv     (uv wrote cache files)
+#  ⊖ Remove unused: GOOGLE_API_KEY  (env var never accessed)
+
+# Compare current config vs actual needs
+agent-sandbox learn --compare
+
+# Auto-apply suggestions
+agent-sandbox learn --apply
+```
 
 ### Debugging the sandbox
 
@@ -576,17 +894,25 @@ Then run: `agent-sandbox run -a my-agent`
 
 ## Known limitations
 
-1. **Network is open**: Claude can make outbound HTTP requests. This is necessary for the Anthropic API, package managers, and git clone. A determined prompt injection could exfiltrate project source code via the network. Restricting to specific domains is possible with iptables but fragile and not implemented.
+1. **Network is open** (without credential proxy): Claude can make outbound HTTP requests. This is necessary for the Anthropic API, package managers, and git clone. A determined prompt injection could exfiltrate project source code via the network. Enable `credential_proxy = true` to at least prevent API key exfiltration and block cloud SSRF endpoints.
 
 2. **Git push bypass**: The `git` wrapper blocks `git push`, but Claude could call `/usr/bin/git push` directly. However, without SSH keys or credential helpers, the push would fail anyway (no authentication available). The wrapper is defense-in-depth.
 
 3. **Not a VM**: bubblewrap uses Linux namespaces, which are a kernel feature. A kernel vulnerability in namespace handling could theoretically allow escape. For higher assurance, run the sandbox inside a VM.
 
-4. **Read-only build tools**: Tools installed under `$HOME` (like `~/.cargo/bin/cargo`) are available read-only. `cargo install new-tool` inside the sandbox will fail. Use system package managers to install new tools, or add specific writable directories via `extra_rw` in config.
+4. **Linux only**: agent-sandbox requires bubblewrap, which depends on Linux kernel namespaces. It does not work on macOS or Windows. macOS users should consider [nono](https://github.com/always-further/nono), which uses macOS Seatbelt for sandboxing and offers similar protections. See `docs/comparison-agent-sandbox-vs-nono.md` for a detailed comparison.
 
-5. **MCP server secrets**: If your `~/.claude/settings.json` contains API keys in MCP server environment variables, those are copied to the sandbox. Review `~/.agent-sandbox/claude-config/settings.json` after init and remove any credentials you don't want exposed.
+5. **Read-only build tools**: Tools installed under `$HOME` (like `~/.cargo/bin/cargo`) are available read-only. `cargo install new-tool` inside the sandbox will fail. Use system package managers to install new tools, or add specific writable directories via `extra_rw` in config.
 
-6. **Tmpfs home is writable**: The `$HOME` tmpfs overlay is writable (that's how tmpfs works). Claude can create files like `~/temp.txt`, but they are ephemeral and vanish when the sandbox exits. They never touch your real home directory.
+6. **MCP server secrets**: If your `~/.claude/settings.json` contains API keys in MCP server environment variables, those are copied to the sandbox. Review `~/.agent-sandbox/claude-config/settings.json` after init and remove any credentials you don't want exposed. With `credential_proxy = true`, API keys configured in profiles are kept outside the sandbox.
+
+7. **Tmpfs home is writable**: The `$HOME` tmpfs overlay is writable (that's how tmpfs works). Claude can create files like `~/temp.txt`, but they are ephemeral and vanish when the sandbox exits. They never touch your real home directory.
+
+8. **Credential proxy and HTTPS**: The credential proxy works by rewriting the agent's `*_BASE_URL` to point to the local proxy, which then forwards with credentials over HTTPS. This means the agent sees `http://localhost:PORT` instead of the real API URL. All major AI SDKs support base URL overrides, so this works transparently. Custom HTTP clients that ignore `*_BASE_URL` env vars will not benefit from the proxy.
+
+9. **Learn mode accuracy**: The `learn` command uses `strace` to trace syscalls, which captures actual I/O but may miss paths that are checked with `access()` or `stat()` without opening. It also runs in a permissive sandbox, so the agent may access paths that would be blocked in the real sandbox. Use the report as guidance, not as an exhaustive specification.
+
+10. **Snapshot disk usage**: While snapshots use hardlinks for deduplication, they still consume disk space for changed files. Monitor usage with `agent-sandbox snapshot-list` and configure `max_project_snapshots` / `max_config_snapshots` to limit growth.
 
 ## Troubleshooting
 
