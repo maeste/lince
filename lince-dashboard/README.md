@@ -28,7 +28,7 @@ Sandboxed agents run inside [agent-sandbox](../sandbox/) (bubblewrap, Linux) or 
 - **A sandbox backend** (at least one):
   - **Linux**: [agent-sandbox](../sandbox/) (recommended) or [nono](https://github.com/always-further/nono)
   - **macOS**: [nono](https://github.com/always-further/nono) (required — agent-sandbox is Linux-only)
-- **VoxCode** (optional, for voice relay)
+- **[VoxCode](https://github.com/RisorseArtificiali/voxcode)** (optional, for voice relay)
 
 ## Installation
 
