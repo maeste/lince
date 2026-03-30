@@ -2,14 +2,10 @@
 
 ## Project Structure
 - `sandbox/` — Bubblewrap sandbox for Claude Code (Python 3.11+, single-file script)
-- `voxcode/` — Voice coding assistant, STT (Python, uv-managed)
-- `voxtts/` — Text-to-Speech with local engines (Python 3.12, uv-managed)
 - `lince-dashboard/` — Multi-agent TUI dashboard (Zellij WASM plugin, Rust)
 
 ## Build / Test
 - **sandbox**: No build step. `python3 sandbox/agent-sandbox --help` to verify.
-- **voxcode**: `cd voxcode && uv sync && uv run voxcode --help`
-- **voxtts**: `cd voxtts && uv sync && uv run voxtts --help`
 - **lince-dashboard**: `cd lince-dashboard/plugin && PATH="$HOME/.cargo/bin:$PATH" $HOME/.cargo/bin/cargo build --target wasm32-wasip1`
 
 ### Rust / WASM toolchain note
@@ -30,7 +26,7 @@ Zellij WASM plugins run inside a WASI sandbox with **restricted filesystem acces
 
 Every module must provide `install.sh`, `update.sh`, and `uninstall.sh` scripts.
 - All file copies, config changes, and system modifications go through these scripts — never done manually or directly by Claude
-- This applies to all modules: sandbox, voxcode, voxtts, lince-dashboard, and any future modules
+- This applies to all modules: sandbox, lince-dashboard, and any future modules
 - Scripts must be idempotent and safe to run multiple times
 - The system must be installable by third parties from a clean clone
 

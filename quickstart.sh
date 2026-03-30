@@ -5,7 +5,7 @@
 # Interactive installer for LINCE modules. Can be run in three modes:
 #   - Interactive: ./quickstart.sh (shows menu)
 #   - Mini:        ./quickstart.sh --mini (sandbox + dashboard)
-#   - Full:        ./quickstart.sh --full (all modules)
+#   - Full:        ./quickstart.sh --full (same as mini — voice modules are separate repos)
 #   - Non-interactive: Add --yes to auto-confirm prompts
 #
 # Exit codes:
@@ -26,7 +26,7 @@ NC='\033[0m'
 
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODULES=("sandbox" "lince-dashboard" "zellij-setup" "voxcode" "voxtts")
+MODULES=("sandbox" "lince-dashboard")
 
 # Options
 AUTO_YES=false
@@ -113,21 +113,15 @@ if ! command -v bash >/dev/null 2>&1; then
     MISSING_PREREQ+=("bash")
 fi
 
-if ! command -v uv >/dev/null 2>&1; then
-    MISSING_PREREQ+=("uv (package manager)")
-fi
-
 if [ ${#MISSING_PREREQ[@]} -gt 0 ]; then
     log_error "Missing prerequisites:"
     for prereq in "${MISSING_PREREQ[@]}"; do
         echo "  - $prereq"
     done
-    echo ""
-    echo "Install uv with: curl -LsSf https://astral.sh/uv/install.sh | sh"
     exit 1
 fi
 
-log_info "Found: bash, uv $(uv --version 2>/dev/null | awk '{print $2}')"
+log_info "Found: bash"
 echo ""
 
 # Determine which modules to install based on mode
@@ -142,10 +136,8 @@ case $MODE in
         # Show menu
         echo "Select your setup:"
         echo ""
-        echo "  1) Mini     (sandbox + lince-dashboard)"
-        echo "  2) Full     (all modules)"
-        echo "  3) Custom   (choose modules)"
-        echo "  4) Exit"
+        echo "  1) Install  (sandbox + lince-dashboard)"
+        echo "  2) Exit"
         echo ""
         
         read -p "Choice: " -n 1 -r CHOICE
@@ -155,27 +147,7 @@ case $MODE in
             1)
                 MODULES_TO_INSTALL=("sandbox" "lince-dashboard")
                 ;;
-            2)
-                MODULES_TO_INSTALL=("${MODULES[@]}")
-                ;;
-            3)
-                echo "Select modules to install (y/n for each):"
-                echo ""
-                MODULES_TO_INSTALL=()
-                for module in "${MODULES[@]}"; do
-                    read -p "  $module? " -n 1 -r ANSWER
-                    echo ""
-                    if [[ $ANSWER =~ ^[Yy]$ ]]; then
-                        MODULES_TO_INSTALL+=("$module")
-                    fi
-                done
-                
-                if [ ${#MODULES_TO_INSTALL[@]} -eq 0 ]; then
-                    log_error "No modules selected"
-                    exit 1
-                fi
-                ;;
-            4|*)
+            2|*)
                 echo "Exiting."
                 exit 0
                 ;;
@@ -208,22 +180,15 @@ if [[ " ${MODULES_TO_INSTALL[*]} " =~ " lince-dashboard " ]]; then
     check_prerequisite "zellij" "lince-dashboard" || true
 fi
 
-# zellij-setup requires zellij
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " zellij-setup " ]]; then
-    check_prerequisite "zellij" "zellij-setup" || true
-fi
 
 echo ""
 
 # Install modules in order (respecting dependencies)
-# Order: sandbox -> zellij-setup -> lince-dashboard -> voxcode -> voxtts
+# Order: sandbox -> lince-dashboard
 
 INSTALL_ORDER=(
     "sandbox:sandbox/install.sh"
-    "zellij-setup:zellij-setup/install.sh"
     "lince-dashboard:lince-dashboard/install.sh"
-    "voxcode:voxcode/install.sh"
-    "voxtts:voxtts/install.sh"
 )
 
 TOTAL=${#MODULES_TO_INSTALL[@]}
@@ -278,23 +243,6 @@ if [[ " ${MODULES_TO_INSTALL[*]} " =~ " lince-dashboard " ]]; then
     fi
 fi
 
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " zellij-setup " ]]; then
-    if [ -d "$HOME/.config/zellij/layouts" ]; then
-        INSTALLED+=("zellij-setup")
-    fi
-fi
-
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " voxcode " ]]; then
-    if command -v voxcode >/dev/null 2>&1; then
-        INSTALLED+=("voxcode")
-    fi
-fi
-
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " voxtts " ]]; then
-    if command -v voxtts >/dev/null 2>&1; then
-        INSTALLED+=("voxtts")
-    fi
-fi
 
 # Summary
 echo ""
@@ -319,19 +267,10 @@ if [[ " ${MODULES_TO_INSTALL[*]} " =~ " lince-dashboard " ]]; then
     echo ""
 fi
 
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " voxcode " ]]; then
-    echo "  # Test voice input:"
-    echo "  voxcode --list-devices"
-    echo ""
-fi
-
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " voxtts " ]]; then
-    echo "  # Test text-to-speech:"
-    echo "  voxtts --list-devices"
-    echo "  echo 'Hello world' | voxtts --play"
-    echo ""
-fi
-
+echo -e "${YELLOW}Optional — Voice input:${NC}"
+echo "  Install VoxCode for voice-controlled coding:"
+echo "  https://github.com/RisorseArtificiali/voxcode"
+echo ""
 echo -e "${YELLOW}For detailed documentation, see:${NC}"
 echo "  - README.md (main docs)"
 echo "  - QUICKSTART.md (step-by-step guide)"

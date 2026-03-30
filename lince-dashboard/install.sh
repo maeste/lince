@@ -21,7 +21,7 @@ confirm() {
 }
 
 # ── Step 1: Prerequisites ─────────────────────────────────────────────
-echo -e "${GREEN}[1/10] Checking prerequisites...${NC}"
+echo -e "${GREEN}[1/12] Checking prerequisites...${NC}"
 
 MISSING=()
 
@@ -55,7 +55,7 @@ fi
 echo ""
 
 # ── Step 2: WASM target ───────────────────────────────────────────────
-echo -e "${GREEN}[2/10] Checking wasm32-wasip1 target...${NC}"
+echo -e "${GREEN}[2/12] Checking wasm32-wasip1 target...${NC}"
 
 # Ensure rustup toolchain takes precedence
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -72,7 +72,7 @@ fi
 echo ""
 
 # ── Step 3: Build plugin ──────────────────────────────────────────────
-echo -e "${GREEN}[3/10] Building plugin...${NC}"
+echo -e "${GREEN}[3/12] Building plugin...${NC}"
 
 if ! "$SCRIPT_DIR/plugin/build.sh"; then
     echo -e "${RED}Build failed. Check errors above.${NC}"
@@ -81,7 +81,7 @@ fi
 echo ""
 
 # ── Step 4: Install WASM plugin ───────────────────────────────────────
-echo -e "${GREEN}[4/10] Installing plugin...${NC}"
+echo -e "${GREEN}[4/12] Installing plugin...${NC}"
 
 PLUGIN_DIR="$HOME/.config/zellij/plugins"
 mkdir -p "$PLUGIN_DIR"
@@ -99,12 +99,12 @@ echo -e "${GREEN}  ✓ Installed: $WASM_DST${NC}"
 echo ""
 
 # ── Step 5: Install layouts ───────────────────────────────────────────
-echo -e "${GREEN}[5/10] Installing layouts...${NC}"
+echo -e "${GREEN}[5/12] Installing layouts...${NC}"
 
 LAYOUT_DIR="$HOME/.config/zellij/layouts"
 mkdir -p "$LAYOUT_DIR"
 
-for layout in dashboard.kdl agent-single.kdl agent-multi.kdl; do
+for layout in dashboard.kdl dashboard-vox.kdl agent-single.kdl agent-multi.kdl; do
     SRC="$SCRIPT_DIR/layouts/$layout"
     DST="$LAYOUT_DIR/$layout"
     if [ -f "$SRC" ]; then
@@ -114,8 +114,47 @@ for layout in dashboard.kdl agent-single.kdl agent-multi.kdl; do
 done
 echo ""
 
-# ── Step 6: Install config ────────────────────────────────────────────
-echo -e "${GREEN}[6/10] Installing configuration...${NC}"
+# ── Step 6: Zellij keybinding configuration ──────────────────────────
+echo -e "${GREEN}[6/12] Zellij keybinding configuration...${NC}"
+
+ZELLIJ_CONFIG="$HOME/.config/zellij/config.kdl"
+LINCE_ZELLIJ_CONFIG="$SCRIPT_DIR/zellij-config/config.kdl"
+
+if [ -f "$LINCE_ZELLIJ_CONFIG" ]; then
+    if [ -f "$ZELLIJ_CONFIG" ]; then
+        echo -e "${YELLOW}  Existing Zellij config found: $ZELLIJ_CONFIG${NC}"
+        echo ""
+        echo "  LINCE includes keybindings optimized for AI coding agents"
+        echo "  (Ctrl+O disabled to avoid conflicts, custom mode bindings)."
+        echo "  Your current config will be backed up."
+        echo ""
+        if confirm "  Install LINCE keybindings?"; then
+            BACKUP="${ZELLIJ_CONFIG}.bak.$(date +%Y%m%d_%H%M%S)"
+            cp "$ZELLIJ_CONFIG" "$BACKUP"
+            echo -e "${GREEN}  ✓ Backup: $BACKUP${NC}"
+            cp "$LINCE_ZELLIJ_CONFIG" "$ZELLIJ_CONFIG"
+            echo -e "${GREEN}  ✓ LINCE keybindings installed${NC}"
+        else
+            echo -e "${YELLOW}  Skipped — keeping your existing config${NC}"
+            echo -e "${YELLOW}  Note: some keybindings may conflict with AI coding agents${NC}"
+        fi
+    else
+        echo "  No existing Zellij config found."
+        if confirm "  Install LINCE keybindings? (Ctrl+O disabled for agent compatibility)"; then
+            mkdir -p "$(dirname "$ZELLIJ_CONFIG")"
+            cp "$LINCE_ZELLIJ_CONFIG" "$ZELLIJ_CONFIG"
+            echo -e "${GREEN}  ✓ LINCE keybindings installed${NC}"
+        else
+            echo -e "${YELLOW}  Skipped${NC}"
+        fi
+    fi
+else
+    echo -e "${YELLOW}  ⚠ zellij-config/config.kdl not found — skipping${NC}"
+fi
+echo ""
+
+# ── Step 7: Install config ────────────────────────────────────────────
+echo -e "${GREEN}[7/12] Installing configuration...${NC}"
 
 CONFIG_DIR="$HOME/.config/lince-dashboard"
 CONFIG_DST="$CONFIG_DIR/config.toml"
@@ -131,8 +170,8 @@ cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
 echo -e "${GREEN}  ✓ Installed: $CONFIG_DST${NC}"
 echo ""
 
-# ── Step 7: Install hooks ─────────────────────────────────────────────
-echo -e "${GREEN}[7/10] Installing agent platform hooks...${NC}"
+# ── Step 8: Install hooks ─────────────────────────────────────────────
+echo -e "${GREEN}[8/12] Installing agent platform hooks...${NC}"
 
 if [ -f "$SCRIPT_DIR/hooks/install-hooks.sh" ]; then
     bash "$SCRIPT_DIR/hooks/install-hooks.sh"
@@ -141,8 +180,8 @@ else
 fi
 echo ""
 
-# ── Step 8: Install agents-defaults.toml ─────────────────────────────
-echo -e "${GREEN}[8/10] Installing agent defaults...${NC}"
+# ── Step 9: Install agents-defaults.toml ─────────────────────────────
+echo -e "${GREEN}[9/12] Installing agent defaults...${NC}"
 
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
@@ -156,7 +195,7 @@ fi
 echo ""
 
 # ── Step 10: Install lince-setup skill ────────────────────────────────
-echo -e "${GREEN}[9/10] Installing lince-setup skill...${NC}"
+echo -e "${GREEN}[10/12] Installing lince-setup skill...${NC}"
 
 SKILL_SRC="$SCRIPT_DIR/skills/lince-setup"
 SKILL_DST="$HOME/.claude/skills/lince-setup"
@@ -170,24 +209,43 @@ else
 fi
 echo ""
 
-# ── Step 11: Shell alias ─────────────────────────────────────────────
-echo -e "${GREEN}[10/10] Setting up shell alias...${NC}"
+# ── Step 11: Shell aliases ────────────────────────────────────────────
+echo -e "${GREEN}[11/12] Setting up shell aliases...${NC}"
 
-ALIAS_LINE='alias zd="zellij --layout dashboard"'
-ALIAS_COMMENT="# LINCE Dashboard alias"
+ALIAS_LINES='alias zd="zellij --layout dashboard"
+alias z="zellij"
+alias zn="zellij attach -c"'
+ALIAS_COMMENT="# LINCE aliases"
 
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     if [ -f "$rc" ]; then
-        if grep -q "alias zd=" "$rc" 2>/dev/null; then
-            echo -e "${YELLOW}  Alias 'zd' already in $(basename $rc)${NC}"
+        if grep -q "# LINCE aliases" "$rc" 2>/dev/null; then
+            echo -e "${YELLOW}  LINCE aliases already in $(basename $rc)${NC}"
         else
             echo "" >> "$rc"
             echo "$ALIAS_COMMENT" >> "$rc"
-            echo "$ALIAS_LINE" >> "$rc"
-            echo -e "${GREEN}  ✓ Added 'zd' alias to $(basename $rc)${NC}"
+            echo "$ALIAS_LINES" >> "$rc"
+            echo -e "${GREEN}  ✓ Added aliases (zd, z, zn) to $(basename $rc)${NC}"
         fi
     fi
 done
+echo ""
+
+# ── Step 12: VoxCode layout selection ─────────────────────────────────
+echo -e "${GREEN}[12/12] VoxCode layout configuration...${NC}"
+
+if command -v voxcode >/dev/null 2>&1; then
+    echo -e "${GREEN}  ✓ voxcode detected${NC}"
+    echo "  Setting dashboard-vox.kdl as default layout (includes VoxCode pane)."
+    if [ -f "$LAYOUT_DIR/dashboard-vox.kdl" ]; then
+        cp "$LAYOUT_DIR/dashboard-vox.kdl" "$LAYOUT_DIR/dashboard.kdl"
+        echo -e "${GREEN}  ✓ Dashboard layout updated with VoxCode pane${NC}"
+    fi
+else
+    echo -e "${YELLOW}  VoxCode not found — using standard dashboard layout${NC}"
+    echo "  For voice input, install VoxCode separately:"
+    echo "    https://github.com/RisorseArtificiali/voxcode"
+fi
 echo ""
 
 # ── Sandbox backend check ─────────────────────────────────────────────

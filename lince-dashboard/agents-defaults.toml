@@ -1,5 +1,9 @@
 # Default agent type configurations for lince-dashboard.
 #
+# Read by: lince-dashboard WASM plugin — defines how to spawn, display, and
+# monitor each agent type in the TUI. Different schema from sandbox's
+# agents-defaults.toml (which configures the bwrap jail per agent).
+#
 # Each [agents.<name>] section defines an agent type. Users can override any
 # agent type by adding [agents.<name>] sections to their config.toml.
 #

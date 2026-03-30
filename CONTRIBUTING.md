@@ -48,10 +48,12 @@ Open an issue describing the improvement. For larger changes, discuss the approa
 lince/
 ├── sandbox/           Python 3.11+, single-file script, zero deps
 ├── lince-dashboard/   Rust WASM plugin for Zellij
-├── voxcode/           Python, uv-managed voice coding assistant
-├── voxtts/            Python 3.12, uv-managed TTS
 └── backlog/           Task tracking (Backlog.md format)
 ```
+
+> **Note**: voxcode and voxtts have been split into their own repositories:
+> [github.com/RisorseArtificiali/voxcode](https://github.com/RisorseArtificiali/voxcode) and
+> [github.com/RisorseArtificiali/voxtts](https://github.com/RisorseArtificiali/voxtts).
 
 ### sandbox (Python)
 

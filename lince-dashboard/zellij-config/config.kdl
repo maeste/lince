@@ -530,8 +530,8 @@ web_client {
 // can be useful for removing wrappers around commands
 // Note: be sure to escape backslashes and similar characters properly
 // post_command_discovery_hook "echo $RESURRECT_COMMAND | sed <your_regex_here>"
-// Use three-pane layout as default
-default_layout "three-pane"
+// Use dashboard layout as default
+default_layout "dashboard"
 
 // Optional: other useful configurations
 theme "dracula"  // or "catppuccin-mocha", "tokyo-night", etc.

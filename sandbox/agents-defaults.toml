@@ -1,5 +1,9 @@
 # agents-defaults.toml — Default agent configurations for agent-sandbox.
 #
+# Read by: agent-sandbox (Python script) — configures the bwrap jail per agent.
+# Note: lince-dashboard has its own agents-defaults.toml with a different schema
+# (command templates, display settings, status pipes) for the dashboard UI.
+#
 # Each [agents.<name>] section defines how to run a specific AI coding agent
 # inside the bubblewrap sandbox.  Users can override any field in their own
 # config.toml under the same [agents.<name>] key.
