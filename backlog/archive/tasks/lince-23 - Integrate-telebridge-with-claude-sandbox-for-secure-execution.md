@@ -4,13 +4,13 @@ title: Integrate telebridge with claude-sandbox for secure execution
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:36'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - sandbox
   - security
 milestone: m-6
-dependencies:
-  - LINCE-13
+dependencies: []
 references:
   - sandbox/claude-sandbox
   - sandbox security model

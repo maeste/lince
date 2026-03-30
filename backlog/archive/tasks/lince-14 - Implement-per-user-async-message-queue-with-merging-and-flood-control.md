@@ -4,13 +4,12 @@ title: Implement per-user async message queue with merging and flood control
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:34'
-updated_date: '2026-03-03 16:51'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - telegram
 milestone: m-7
-dependencies:
-  - LINCE-11
+dependencies: []
 references:
   - ccbot src/ccbot/handlers/message_queue.py pattern
 priority: medium

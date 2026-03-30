@@ -4,13 +4,13 @@ title: Implement inline keyboard rendering for interactive UI
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:34'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - interactive-ui
   - telegram
 milestone: m-3
-dependencies:
-  - LINCE-15
+dependencies: []
 priority: medium
 ---
 

@@ -4,16 +4,13 @@ title: Implement Telegram bot skeleton with auth and basic routing
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:33'
-updated_date: '2026-03-03 16:51'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - telegram
   - core
 milestone: m-7
-dependencies:
-  - LINCE-3
-  - LINCE-4
-  - LINCE-5
+dependencies: []
 references:
   - ccbot src/ccbot/bot.py Application setup
   - python-telegram-bot v21 documentation

@@ -4,13 +4,13 @@ title: Implement OGG/Opus to numpy audio conversion for Telegram voice
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:35'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - voice
   - audio
 milestone: m-5
-dependencies:
-  - LINCE-3
+dependencies: []
 priority: medium
 ---
 

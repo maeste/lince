@@ -4,13 +4,12 @@ title: 'Implement bot commands: /start, /history, /usage, /help'
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:35'
-updated_date: '2026-03-03 16:51'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - commands
 milestone: m-7
-dependencies:
-  - LINCE-13
+dependencies: []
 priority: medium
 ---
 

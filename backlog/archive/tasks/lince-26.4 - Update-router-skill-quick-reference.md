@@ -4,11 +4,11 @@ title: Update router skill quick reference
 status: To Do
 assignee: []
 created_date: '2026-03-06 22:52'
+updated_date: '2026-03-30 16:54'
 labels:
   - agent-ready
 milestone: m-8
-dependencies:
-  - LINCE-26.2
+dependencies: []
 references:
   - agent-ready-skill/skills/agent-ready/SKILL.md
 parent_task_id: LINCE-26

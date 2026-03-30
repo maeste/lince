@@ -4,14 +4,13 @@ title: Implement terminal screenshot capture as PNG
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:34'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - media
   - screenshot
 milestone: m-4
-dependencies:
-  - LINCE-5
-  - LINCE-10
+dependencies: []
 references:
   - ccbot src/ccbot/screenshot.py pattern
   - Pillow ImageDraw.text() API

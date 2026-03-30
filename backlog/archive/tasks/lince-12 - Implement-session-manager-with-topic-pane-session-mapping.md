@@ -4,13 +4,12 @@ title: Implement session manager with topic-pane-session mapping
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:33'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - sessions
 milestone: m-2
-dependencies:
-  - LINCE-6
-  - LINCE-10
+dependencies: []
 references:
   - ccbot src/ccbot/session.py pattern
 priority: high

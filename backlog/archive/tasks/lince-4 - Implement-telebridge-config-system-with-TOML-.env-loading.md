@@ -4,12 +4,12 @@ title: Implement telebridge config system with TOML + .env loading
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:31'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - config
 milestone: m-0
-dependencies:
-  - LINCE-3
+dependencies: []
 references:
   - voxcode/src/voxcode/config.py
   - ccbot src/ccbot/config.py pattern

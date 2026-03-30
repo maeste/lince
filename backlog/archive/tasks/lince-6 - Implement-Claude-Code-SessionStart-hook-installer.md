@@ -4,13 +4,12 @@ title: Implement Claude Code SessionStart hook installer
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:31'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - hook
 milestone: m-1
-dependencies:
-  - LINCE-3
-  - LINCE-4
+dependencies: []
 references:
   - ccbot src/ccbot/hook.py pattern
   - ~/.claude/settings.json hook format

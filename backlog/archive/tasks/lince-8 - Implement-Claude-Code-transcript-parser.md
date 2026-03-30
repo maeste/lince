@@ -4,12 +4,12 @@ title: Implement Claude Code transcript parser
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:32'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - core
 milestone: m-1
-dependencies:
-  - LINCE-3
+dependencies: []
 references:
   - ccbot src/ccbot/transcript_parser.py pattern
   - Claude Code JSONL format documentation

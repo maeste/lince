@@ -4,13 +4,13 @@ title: Create Zellij layout with telebridge pane
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:36'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - zellij
   - layout
 milestone: m-6
-dependencies:
-  - LINCE-10
+dependencies: []
 references:
   - zellij-setup/three-pane.kdl
   - zellij-setup/zellij-aliases.sh

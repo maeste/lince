@@ -4,13 +4,12 @@ title: Implement Telegram voice message handler with VoxCode Transcriber
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:35'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - voice
 milestone: m-5
-dependencies:
-  - LINCE-10
-  - LINCE-19
+dependencies: []
 references:
   - voxcode/src/voxcode/transcriber.py
   - Transcriber.transcribe() API

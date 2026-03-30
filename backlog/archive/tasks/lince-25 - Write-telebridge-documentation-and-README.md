@@ -4,12 +4,12 @@ title: Write telebridge documentation and README
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:36'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - documentation
 milestone: m-6
-dependencies:
-  - LINCE-20
+dependencies: []
 priority: low
 ---
 

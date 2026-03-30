@@ -4,13 +4,12 @@ title: Implement Telegram photo forwarding to Claude Code
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:35'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - media
 milestone: m-4
-dependencies:
-  - LINCE-12
-  - LINCE-10
+dependencies: []
 priority: low
 ---
 

@@ -4,13 +4,12 @@ title: Implement interactive UI detection from pane capture
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:34'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - interactive-ui
 milestone: m-3
-dependencies:
-  - LINCE-5
-  - LINCE-11
+dependencies: []
 references:
   - ccbot src/ccbot/handlers/interactive_ui.py pattern
 priority: medium

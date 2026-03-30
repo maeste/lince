@@ -4,13 +4,12 @@ title: 'Implement session lifecycle: create, resume, topic sync'
 status: To Do
 assignee: []
 created_date: '2026-03-03 14:33'
+updated_date: '2026-03-30 16:53'
 labels:
   - telebridge
   - sessions
 milestone: m-2
-dependencies:
-  - LINCE-11
-  - LINCE-12
+dependencies: []
 priority: high
 ---
 
