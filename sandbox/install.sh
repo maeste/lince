@@ -92,8 +92,9 @@ echo -e "${GREEN}  ✓ Installed: $INSTALL_DST${NC}"
 # Install agents-defaults.toml in both search locations
 DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 if [ -f "$DEFAULTS_SRC" ]; then
-    cp "$DEFAULTS_SRC" "$HOME/.agent-sandbox/agents-defaults.toml"
-    echo -e "${GREEN}  ✓ Installed: ~/.agent-sandbox/agents-defaults.toml${NC}"
+    mkdir -p "$CONFIG_DIR"
+    cp "$DEFAULTS_SRC" "$CONFIG_DIR/agents-defaults.toml"
+    echo -e "${GREEN}  ✓ Installed: $CONFIG_DIR/agents-defaults.toml${NC}"
     cp "$DEFAULTS_SRC" "$HOME/.local/bin/agents-defaults.toml"
     echo -e "${GREEN}  ✓ Installed: ~/.local/bin/agents-defaults.toml${NC}"
 fi
