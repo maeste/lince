@@ -33,6 +33,7 @@ NC='\033[0m'
 INSTALL_SANDBOX=true
 SANDBOX_BACKEND="bwrap"   # bwrap | nono | both
 SELECTED_AGENTS=()
+INSTALL_VOXCODE=false
 USE_DEFAULTS=false
 
 # Available agents: key|display_name|description
@@ -277,6 +278,66 @@ select_agents() {
     fi
 }
 
+# ── TUI: VoxCode (voice input) ───────────────────────────────────────
+select_voxcode() {
+    echo ""
+    print_separator
+    echo -e "${BOLD}Step 4: Voice input (VoxCode)${NC}"
+    echo ""
+    echo -e "  VoxCode lets you speak to your agents — transcriptions are"
+    echo -e "  routed to the focused agent via the dashboard."
+    echo -e "  All audio processing happens locally (Whisper)."
+    echo ""
+    echo -e "  ${DIM}Requires: microphone, ~1GB disk (Whisper model), GPU recommended${NC}"
+    echo -e "  ${DIM}Installed from: https://github.com/RisorseArtificiali/voxcode${NC}"
+    echo ""
+
+    if command -v voxcode >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ VoxCode already installed${NC}"
+        INSTALL_VOXCODE=false
+        return
+    fi
+
+    echo -e "  ${GREEN}1)${NC} ${BOLD}Yes${NC} — install VoxCode (voice input)"
+    echo -e "  ${DIM}2)${NC} No  — skip for now (can install later)"
+    echo ""
+    read -p "  Choice [2]: " -n 1 -r
+    echo ""
+
+    case "${REPLY:-2}" in
+        1|y|Y)
+            # Check uv
+            if ! command -v uv >/dev/null 2>&1; then
+                echo ""
+                echo -e "  ${YELLOW}VoxCode requires 'uv' (Python package manager).${NC}"
+                echo -e "  ${DIM}Install with: curl -LsSf https://astral.sh/uv/install.sh | sh${NC}"
+                echo ""
+                if confirm "  Install uv now?"; then
+                    curl -LsSf https://astral.sh/uv/install.sh | sh
+                    export PATH="$HOME/.local/bin:$PATH"
+                    if command -v uv >/dev/null 2>&1; then
+                        echo -e "  ${GREEN}✓ uv installed${NC}"
+                    else
+                        echo -e "  ${RED}✗ uv installation failed. Skipping VoxCode.${NC}"
+                        INSTALL_VOXCODE=false
+                        return
+                    fi
+                else
+                    echo -e "  ${YELLOW}Skipping VoxCode (uv required).${NC}"
+                    INSTALL_VOXCODE=false
+                    return
+                fi
+            fi
+            INSTALL_VOXCODE=true
+            echo -e "  ${GREEN}✓${NC} VoxCode will be installed"
+            ;;
+        *)
+            INSTALL_VOXCODE=false
+            echo -e "  ${DIM}Skipped. Install later: https://github.com/RisorseArtificiali/voxcode${NC}"
+            ;;
+    esac
+}
+
 # ── TUI: Summary and confirm ────────────────────────────────────────
 confirm_installation() {
     echo ""
@@ -292,6 +353,10 @@ confirm_installation() {
     fi
 
     echo -e "  ${GREEN}✓${NC} lince-dashboard  ${DIM}(multi-agent TUI)${NC}"
+
+    if [ "$INSTALL_VOXCODE" = true ]; then
+        echo -e "  ${GREEN}✓${NC} voxcode          ${DIM}(voice input via Whisper)${NC}"
+    fi
 
     echo ""
     echo -e "  Agents:"
@@ -399,6 +464,36 @@ extract_agent_block() {
         }
         printing { print }
     ' "$file"
+}
+
+# ── Install VoxCode ──────────────────────────────────────────────────
+do_install_voxcode() {
+    if [ "$INSTALL_VOXCODE" = false ]; then
+        return
+    fi
+
+    echo ""
+    print_separator
+    echo -e "${BOLD}Installing VoxCode (voice input)...${NC}"
+    echo ""
+
+    local VOXCODE_DIR="$HOME/.local/share/voxcode"
+
+    if [ -d "$VOXCODE_DIR" ]; then
+        echo -e "  ${DIM}Updating existing clone...${NC}"
+        cd "$VOXCODE_DIR" && git pull --ff-only 2>/dev/null || true
+    else
+        echo -e "  ${DIM}Cloning voxcode...${NC}"
+        git clone https://github.com/RisorseArtificiali/voxcode.git "$VOXCODE_DIR"
+    fi
+
+    cd "$VOXCODE_DIR"
+    if bash install.sh; then
+        echo -e "${GREEN}✓ VoxCode installed${NC}"
+    else
+        echo -e "${RED}✗ VoxCode installation failed${NC}"
+        echo -e "  ${DIM}Dashboard will use the standard layout (no voice pane).${NC}"
+    fi
 }
 
 # ── Install sandbox ─────────────────────────────────────────────────
@@ -531,12 +626,14 @@ print_summary() {
         echo -e "  ${GREEN}✓${NC} agent-sandbox (${SANDBOX_BACKEND})"
     fi
     echo -e "  ${GREEN}✓${NC} lince-dashboard"
+    if command -v voxcode >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} voxcode (voice input)"
+    fi
 
     if [ ${#SELECTED_AGENTS[@]} -gt 0 ]; then
         echo ""
         echo -e "  Configured agents:"
         for agent in "${SELECTED_AGENTS[@]}"; do
-            # Find display name
             for entry in "${AGENTS[@]}"; do
                 IFS='|' read -r key name _ <<< "$entry"
                 if [ "$key" = "$agent" ]; then
@@ -559,9 +656,12 @@ print_summary() {
     echo ""
     echo -e "  ${DIM}Press 'n' in the dashboard to spawn an agent.${NC}"
     echo -e "  ${DIM}Press '?' for the full keybindings help.${NC}"
-    echo ""
-    echo -e "  ${YELLOW}Optional — Voice input:${NC}"
-    echo -e "  ${DIM}https://github.com/RisorseArtificiali/voxcode${NC}"
+
+    if ! command -v voxcode >/dev/null 2>&1; then
+        echo ""
+        echo -e "  ${YELLOW}Optional — Voice input:${NC}"
+        echo -e "  ${DIM}https://github.com/RisorseArtificiali/voxcode${NC}"
+    fi
     echo ""
 }
 
@@ -607,6 +707,7 @@ else
     select_sandbox_mode
     select_sandbox_backend
     select_agents
+    select_voxcode
     confirm_installation
 fi
 
@@ -615,5 +716,6 @@ check_prerequisites
 print_separator
 
 do_install_sandbox
+do_install_voxcode    # before dashboard so step 12 detects voxcode
 do_install_dashboard
 print_summary
