@@ -219,7 +219,8 @@ pub fn spawn_agent_custom(
     let project_dir = if custom_project_dir.is_empty() {
         launch_dir.unwrap_or(".").to_string()
     } else {
-        custom_project_dir
+        // The wizard UI may collapse $HOME to ~, but PathBuf treats ~ as literal.
+        crate::config::expand_tilde(&custom_project_dir)
     };
 
     spawn_inner(config, next_id, agents, custom_name, agent_type, profile, project_dir, None)

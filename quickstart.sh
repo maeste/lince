@@ -330,13 +330,13 @@ select_voxcode() {
         return
     fi
 
-    echo -e "  ${GREEN}1)${NC} ${BOLD}Yes${NC} — install VoxCode (voice input)"
+    echo -e "  ${GREEN}1)${NC} ${BOLD}Yes${NC} — install VoxCode (voice input) ${GREEN}[default]${NC}"
     echo -e "  ${DIM}2)${NC} No  — skip for now (can install later)"
     echo ""
-    read -p "  Choice [2]: " -n 1 -r
+    read -p "  Choice [1]: " -n 1 -r
     echo ""
 
-    case "${REPLY:-2}" in
+    case "${REPLY:-1}" in
         1|y|Y)
             # Check uv
             if ! command -v uv >/dev/null 2>&1; then
