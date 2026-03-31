@@ -96,6 +96,11 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        // Debug logging to /tmp/lince-debug.log
+        let _ = std::fs::OpenOptions::new()
+            .create(true).append(true).open("/tmp/lince-debug.log")
+            .and_then(|mut f| { use std::io::Write; f.write_all(b"\n=== LOAD START ===\n") });
+
         if let Some(raw_path) = configuration.get("config_path") {
             let path = config::expand_tilde(raw_path);
             let (cfg, err) = DashboardConfig::load(&path);
@@ -135,6 +140,9 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                let _ = std::fs::OpenOptions::new()
+                    .create(true).append(true).open("/tmp/lince-debug.log")
+                    .and_then(|mut f| { use std::io::Write; f.write_all(b"PermissionRequestResult: GRANTED\n") });
                 // Now that we have permissions, detect CWD via `pwd`.
                 config::run_typed_command(&["pwd"], CMD_GET_CWD);
                 // Detect available sandbox backends (agent-sandbox, nono).
@@ -198,6 +206,11 @@ impl ZellijPlugin for State {
             }
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
                 let cmd_type = context.get(config::CMD_TYPE_KEY).map(|s| s.as_str());
+                let debug_msg = format!("RunCommandResult: type={:?} exit={:?} stdout_len={} stderr_len={}\n",
+                    cmd_type, exit_code, stdout.len(), stderr.len());
+                let _ = std::fs::OpenOptions::new()
+                    .create(true).append(true).open("/tmp/lince-debug.log")
+                    .and_then(|mut f| { use std::io::Write; f.write_all(debug_msg.as_bytes()) });
                 match cmd_type {
                     Some(CMD_GET_CWD) if exit_code == Some(0) => {
                         let dir = String::from_utf8_lossy(&stdout).trim().to_string();

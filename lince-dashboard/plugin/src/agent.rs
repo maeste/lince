@@ -170,12 +170,38 @@ fn spawn_inner(
         cwd: Some(PathBuf::from(&project_dir)),
     };
 
+    // Log spawn details to /tmp/lince-debug.log for troubleshooting
+    let debug_msg = format!(
+        "spawn: path={:?} args={:?} cwd={:?} layout={:?}\n",
+        command.path, command.args, command.cwd, config.agent_layout
+    );
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/lince-debug.log")
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(debug_msg.as_bytes())
+        });
+
     match config.agent_layout {
         AgentLayout::Floating => {
+            let _ = std::fs::OpenOptions::new()
+                .create(true).append(true).open("/tmp/lince-debug.log")
+                .and_then(|mut f| { use std::io::Write; f.write_all(b"calling open_command_pane_floating...\n") });
             open_command_pane_floating(command, Some(default_agent_pane_coords()), BTreeMap::new());
+            let _ = std::fs::OpenOptions::new()
+                .create(true).append(true).open("/tmp/lince-debug.log")
+                .and_then(|mut f| { use std::io::Write; f.write_all(b"open_command_pane_floating returned OK\n") });
         }
         AgentLayout::Tiled => {
+            let _ = std::fs::OpenOptions::new()
+                .create(true).append(true).open("/tmp/lince-debug.log")
+                .and_then(|mut f| { use std::io::Write; f.write_all(b"calling open_command_pane...\n") });
             open_command_pane(command, BTreeMap::new());
+            let _ = std::fs::OpenOptions::new()
+                .create(true).append(true).open("/tmp/lince-debug.log")
+                .and_then(|mut f| { use std::io::Write; f.write_all(b"open_command_pane returned OK\n") });
         }
     }
 
