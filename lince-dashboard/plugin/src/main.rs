@@ -93,6 +93,27 @@ fn wrap_prev(current: usize, len: usize) -> usize {
     if len == 0 { 0 } else if current == 0 { len - 1 } else { current - 1 }
 }
 
+impl State {
+    /// Resolve the effective default agent type.
+    /// Returns `DEFAULT_AGENT_TYPE` if it exists in the loaded agent_types,
+    /// otherwise falls back to the first available key (sorted).
+    fn effective_default_agent_type(&self) -> &str {
+        if self.config.agent_types.contains_key(DEFAULT_AGENT_TYPE) {
+            return DEFAULT_AGENT_TYPE;
+        }
+        // Find first type whose base name matches the default (e.g. "claude-nono" matches "claude")
+        let mut keys: Vec<&String> = self.config.agent_types.keys().collect();
+        keys.sort();
+        for k in &keys {
+            if agent::agent_type_base_name(k) == agent::agent_type_base_name(DEFAULT_AGENT_TYPE) {
+                return k.as_str();
+            }
+        }
+        // Last resort: first available type
+        keys.first().map(|k| k.as_str()).unwrap_or(DEFAULT_AGENT_TYPE)
+    }
+}
+
 register_plugin!(State);
 
 impl ZellijPlugin for State {
@@ -209,8 +230,21 @@ impl ZellijPlugin for State {
                         if exit_code == Some(0) && !stdout.is_empty() {
                             let content = String::from_utf8_lossy(&stdout);
                             let (cfg, err) = DashboardConfig::parse_toml(&content);
+                            // Preserve async-loaded fields that config.toml doesn't contain.
+                            let prev_agent_types = std::mem::take(&mut self.config.agent_types);
+                            let prev_profiles = std::mem::take(&mut self.config.profiles_by_agent);
+                            let prev_details = std::mem::take(&mut self.config.profile_details_by_agent);
                             self.config = cfg;
                             self.config_error = err;
+                            if self.config.agent_types.is_empty() {
+                                self.config.agent_types = prev_agent_types;
+                            }
+                            if self.config.profiles_by_agent.is_empty() {
+                                self.config.profiles_by_agent = prev_profiles;
+                            }
+                            if self.config.profile_details_by_agent.is_empty() {
+                                self.config.profile_details_by_agent = prev_details;
+                            }
                         }
                         // Mark as loaded so timer doesn't retry
                         self.config_mtime = 1;
@@ -437,7 +471,8 @@ impl State {
 
         match bare {
             BareKey::Char('n') => {
-                let base = agent::agent_type_base_name(DEFAULT_AGENT_TYPE);
+                let effective_type = self.effective_default_agent_type();
+                let base = agent::agent_type_base_name(effective_type);
                 let default_name = format!("{}-{}", base, self.next_agent_id + 1);
                 self.name_prompt = Some(NamePromptState {
                     input: String::new(),
@@ -624,12 +659,13 @@ impl State {
                     self.sort_agents_by_dir();
                 } else {
                     // New agent mode: spawn.
+                    let effective_type = self.effective_default_agent_type().to_string();
                     match agent::spawn_agent_custom(
                         &self.config,
                         &mut self.next_agent_id,
                         &self.agents,
                         name,
-                        DEFAULT_AGENT_TYPE,
+                        &effective_type,
                         self.config.default_profile.clone(),
                         self.config
                             .default_project_dir

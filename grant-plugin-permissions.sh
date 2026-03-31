@@ -44,10 +44,17 @@ reset_permissions() {
 grant_permissions() {
     mkdir -p "$CACHE_DIR"
 
-    # If permissions.kdl already exists and contains our plugin, skip
+    # If permissions.kdl already exists and contains our plugin, ask to update
     if [ -f "$PERMS_FILE" ] && grep -q "lince-dashboard.wasm" "$PERMS_FILE" 2>/dev/null; then
-        echo "Permissions already granted for lince-dashboard plugin."
-        return 0
+        echo "Permissions already cached for lince-dashboard plugin."
+        read -p "Update with latest permissions? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Keeping existing permissions."
+            return 0
+        fi
+        # Remove old entry, keep other plugins' permissions
+        sed -i '/lince-dashboard\.wasm/,/^}/d' "$PERMS_FILE"
     fi
 
     # Append to existing file (preserve permissions for other plugins)

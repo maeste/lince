@@ -30,8 +30,7 @@ DIM='\033[2m'
 NC='\033[0m'
 
 # ── State ────────────────────────────────────────────────────────────
-INSTALL_SANDBOX=true
-SANDBOX_BACKEND="bwrap"   # bwrap | nono | both
+SELECTED_BACKENDS=()       # populated by select_backends(): "bwrap", "nono", "unsandboxed"
 SELECTED_AGENTS=()
 INSTALL_VOXCODE=false
 USE_DEFAULTS=false
@@ -45,6 +44,15 @@ AGENTS=(
 )
 # Track selection state (1=selected, 0=not)
 AGENT_SELECTED=(1 1 0 0)  # claude and codex on by default
+
+# Available backends: key|display_name|description|installed
+BACKENDS=(
+    "bwrap|bubblewrap (bwrap)|Same technology as Flatpak. Battle-tested, zero overhead."
+    "nono|nono|Landlock LSM (Linux) + Seatbelt (macOS). Newer, cross-platform."
+    "unsandboxed|Unsandboxed|Agents run directly on your system — no isolation."
+)
+# Track backend selection state (1=selected, 0=not)
+BACKEND_SELECTED=(1 0 0)  # bwrap on by default
 
 # ── Helpers ──────────────────────────────────────────────────────────
 confirm() {
@@ -70,146 +78,170 @@ print_separator() {
     echo -e "${DIM}────────────────────────────────────────────────────${NC}"
 }
 
-# ── TUI: Sandbox mode selection ──────────────────────────────────────
-select_sandbox_mode() {
-    echo ""
-    echo -e "${BOLD}Step 1: Sandbox mode${NC}"
-    echo ""
-    echo -e "  LINCE wraps your AI agents in a sandbox so they can code"
-    echo -e "  freely without reaching your SSH keys, credentials, or"
-    echo -e "  pushing to production."
-    echo ""
-    echo -e "  ${GREEN}1)${NC} ${BOLD}Sandboxed${NC} ${GREEN}(recommended)${NC}"
-    echo -e "     ${DIM}Agents run inside an isolated environment${NC}"
-    echo ""
-    echo -e "  ${YELLOW}2)${NC} ${BOLD}Dashboard only${NC} ${YELLOW}(no sandbox)${NC}"
-    echo -e "     ${DIM}Agents run directly on your system — no isolation${NC}"
-    echo ""
-    read -p "  Choice [1]: " -n 1 -r
-    echo ""
-
-    case "${REPLY:-1}" in
-        2)
-            # ── BIG WARNING ──────────────────────────────────
-            echo ""
-            echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
-            echo -e "${RED}${BOLD}║                    ⚠  WARNING  ⚠                    ║${NC}"
-            echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════════╣${NC}"
-            echo -e "${RED}${BOLD}║                                                      ║${NC}"
-            echo -e "${RED}${BOLD}║  Without sandboxing, AI agents have FULL ACCESS to:   ║${NC}"
-            echo -e "${RED}${BOLD}║                                                      ║${NC}"
-            echo -e "${RED}${BOLD}║    • Your SSH keys and GPG keys                      ║${NC}"
-            echo -e "${RED}${BOLD}║    • Cloud credentials (AWS, GCP, Azure)              ║${NC}"
-            echo -e "${RED}${BOLD}║    • Git push to any remote                          ║${NC}"
-            echo -e "${RED}${BOLD}║    • All files on your system                        ║${NC}"
-            echo -e "${RED}${BOLD}║    • Running processes and network                   ║${NC}"
-            echo -e "${RED}${BOLD}║                                                      ║${NC}"
-            echo -e "${RED}${BOLD}║  A single hallucinated command could:                ║${NC}"
-            echo -e "${RED}${BOLD}║    • Push untested code to production                ║${NC}"
-            echo -e "${RED}${BOLD}║    • Delete or modify critical files                 ║${NC}"
-            echo -e "${RED}${BOLD}║    • Leak credentials to third parties               ║${NC}"
-            echo -e "${RED}${BOLD}║                                                      ║${NC}"
-            echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
-            echo ""
-            echo -e "${RED}${BOLD}  Are you sure you want to proceed WITHOUT sandboxing?${NC}"
-            read -p "  Type 'yes' to confirm (anything else cancels): " -r
-            if [ "$REPLY" != "yes" ]; then
-                echo ""
-                echo -e "  ${GREEN}Good choice. Switching to sandboxed mode.${NC}"
-                INSTALL_SANDBOX=true
-                return
-            fi
-            # Second confirmation
-            echo ""
-            echo -e "${RED}  Final confirmation: you accept full responsibility for${NC}"
-            echo -e "${RED}  any damage caused by unsandboxed agents.${NC}"
-            read -p "  Type 'I understand' to proceed: " -r
-            if [ "$REPLY" != "I understand" ]; then
-                echo ""
-                echo -e "  ${GREEN}Switching to sandboxed mode.${NC}"
-                INSTALL_SANDBOX=true
-                return
-            fi
-            INSTALL_SANDBOX=false
-            echo ""
-            echo -e "  ${YELLOW}Dashboard-only mode selected. No sandbox will be installed.${NC}"
-            ;;
-        *)
-            INSTALL_SANDBOX=true
-            ;;
-    esac
-}
-
-# ── TUI: Sandbox backend selection ───────────────────────────────────
-select_sandbox_backend() {
-    if [ "$INSTALL_SANDBOX" = false ]; then
-        return
-    fi
-
+# ── TUI: Backend selection (multi-select) ───────────────────────────
+select_backends() {
     local OS_NAME
     OS_NAME="$(uname -s)"
 
     echo ""
-    print_separator
-    echo -e "${BOLD}Step 2: Sandbox backend${NC}"
+    echo -e "${BOLD}Step 1: Sandbox backends${NC}"
+    echo ""
+    echo -e "  LINCE wraps your AI agents in a sandbox so they can code"
+    echo -e "  freely without reaching your SSH keys, credentials, or"
+    echo -e "  pushing to production. Select which backends to configure."
     echo ""
 
+    # On macOS, bwrap is not available — deselect it and select nono
     if [ "$OS_NAME" = "Darwin" ]; then
-        echo -e "  macOS detected — using ${BOLD}nono${NC} (Seatbelt sandbox)."
-        echo -e "  ${DIM}bubblewrap is Linux-only.${NC}"
-        SANDBOX_BACKEND="nono"
+        BACKEND_SELECTED=(0 1 0)  # nono only
+        echo -e "  ${DIM}macOS detected — bubblewrap is Linux-only.${NC}"
         echo ""
-        if ! command -v nono >/dev/null 2>&1; then
-            echo -e "  ${YELLOW}nono not found.${NC} Install with: ${CYAN}brew install nono${NC}"
-            echo ""
-        fi
-        return
     fi
 
-    # Linux: offer choice
+    # Detect installed backends
     local has_bwrap=false has_nono=false
     command -v bwrap >/dev/null 2>&1 && has_bwrap=true
     command -v nono >/dev/null 2>&1 && has_nono=true
 
-    echo -e "  ${GREEN}1)${NC} ${BOLD}bubblewrap (bwrap)${NC} ${GREEN}— recommended for Linux${NC}"
-    echo -e "     ${DIM}Same technology as Flatpak. Battle-tested, zero overhead.${NC}"
-    if [ "$has_bwrap" = true ]; then
-        echo -e "     ${GREEN}✓ installed${NC}"
-    else
-        echo -e "     ${YELLOW}✗ not installed${NC} — ${DIM}sudo dnf install bubblewrap${NC}"
+    echo -e "  ${DIM}Toggle with number keys, press Enter when done:${NC}"
+    echo ""
+
+    while true; do
+        for i in "${!BACKENDS[@]}"; do
+            IFS='|' read -r key name desc <<< "${BACKENDS[$i]}"
+            # Color: unsandboxed in red, sandboxed in green
+            local color="$GREEN"
+            local tag="✓"
+            if [ "$key" = "unsandboxed" ]; then
+                color="$RED"
+                tag="!"
+            fi
+            # Installed status
+            local status=""
+            case "$key" in
+                bwrap)
+                    if [ "$has_bwrap" = true ]; then status=" ${GREEN}(installed)${NC}"
+                    else status=" ${YELLOW}(not installed — sudo dnf install bubblewrap)${NC}"; fi
+                    # Hide on macOS
+                    if [ "$OS_NAME" = "Darwin" ]; then
+                        echo -e "  ${DIM}[ ] $((i+1))) $name — Linux only${NC}"
+                        continue
+                    fi
+                    ;;
+                nono)
+                    if [ "$has_nono" = true ]; then status=" ${GREEN}(installed)${NC}"
+                    else status=" ${YELLOW}(not installed — cargo install nono-cli)${NC}"; fi
+                    ;;
+            esac
+
+            if [ "${BACKEND_SELECTED[$i]}" = "1" ]; then
+                echo -e "  ${color}[${tag}]${NC} ${BOLD}$((i+1))) $name${NC} ${DIM}— $desc${NC}${status}"
+            else
+                echo -e "  ${DIM}[ ] $((i+1))) $name — $desc${NC}${status}"
+            fi
+        done
+        echo ""
+        echo -e "  ${DIM}Press 1-${#BACKENDS[@]} to toggle, Enter to confirm${NC}"
+        read -p "  > " -n 1 -r
+        echo ""
+
+        case "$REPLY" in
+            [1-9])
+                local idx=$((REPLY - 1))
+                if [ $idx -lt ${#BACKENDS[@]} ]; then
+                    # On macOS, don't allow selecting bwrap
+                    IFS='|' read -r key _ _ <<< "${BACKENDS[$idx]}"
+                    if [ "$key" = "bwrap" ] && [ "$OS_NAME" = "Darwin" ]; then
+                        echo -e "  ${YELLOW}bubblewrap is not available on macOS${NC}"
+                    else
+                        if [ "${BACKEND_SELECTED[$idx]}" = "1" ]; then
+                            BACKEND_SELECTED[$idx]=0
+                        else
+                            BACKEND_SELECTED[$idx]=1
+                        fi
+                    fi
+                fi
+                ;;
+            "")
+                # Enter pressed — validate and confirm
+                local count=0
+                for sel in "${BACKEND_SELECTED[@]}"; do
+                    [ "$sel" = "1" ] && count=$((count + 1))
+                done
+                if [ $count -eq 0 ]; then
+                    echo -e "  ${RED}At least one backend must be selected.${NC}"
+                    echo ""
+                    continue
+                fi
+                break
+                ;;
+        esac
+
+        # Move cursor up to redraw
+        local lines_up=$(( ${#BACKENDS[@]} + 3 ))
+        echo -en "\033[${lines_up}A\033[J"
+    done
+
+    # Build selected backends list
+    SELECTED_BACKENDS=()
+    for i in "${!BACKENDS[@]}"; do
+        if [ "${BACKEND_SELECTED[$i]}" = "1" ]; then
+            IFS='|' read -r key _ _ <<< "${BACKENDS[$i]}"
+            SELECTED_BACKENDS+=("$key")
+        fi
+    done
+
+    # If ONLY unsandboxed selected, show big warning
+    if [ ${#SELECTED_BACKENDS[@]} -eq 1 ] && [ "${SELECTED_BACKENDS[0]}" = "unsandboxed" ]; then
+        echo ""
+        echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
+        echo -e "${RED}${BOLD}║                    ⚠  WARNING  ⚠                    ║${NC}"
+        echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════════╣${NC}"
+        echo -e "${RED}${BOLD}║                                                      ║${NC}"
+        echo -e "${RED}${BOLD}║  Without sandboxing, AI agents have FULL ACCESS to:   ║${NC}"
+        echo -e "${RED}${BOLD}║                                                      ║${NC}"
+        echo -e "${RED}${BOLD}║    • Your SSH keys and GPG keys                      ║${NC}"
+        echo -e "${RED}${BOLD}║    • Cloud credentials (AWS, GCP, Azure)              ║${NC}"
+        echo -e "${RED}${BOLD}║    • Git push to any remote                          ║${NC}"
+        echo -e "${RED}${BOLD}║    • All files on your system                        ║${NC}"
+        echo -e "${RED}${BOLD}║    • Running processes and network                   ║${NC}"
+        echo -e "${RED}${BOLD}║                                                      ║${NC}"
+        echo -e "${RED}${BOLD}║  A single hallucinated command could:                ║${NC}"
+        echo -e "${RED}${BOLD}║    • Push untested code to production                ║${NC}"
+        echo -e "${RED}${BOLD}║    • Delete or modify critical files                 ║${NC}"
+        echo -e "${RED}${BOLD}║    • Leak credentials to third parties               ║${NC}"
+        echo -e "${RED}${BOLD}║                                                      ║${NC}"
+        echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${RED}${BOLD}  Are you sure you want to proceed with ONLY unsandboxed?${NC}"
+        read -p "  Type 'yes' to confirm (anything else cancels): " -r
+        if [ "$REPLY" != "yes" ]; then
+            echo ""
+            echo -e "  ${GREEN}Good choice. Please re-select backends.${NC}"
+            # Reset to bwrap default and re-run
+            BACKEND_SELECTED=(1 0 0)
+            select_backends
+            return
+        fi
     fi
-    echo ""
 
-    echo -e "  ${CYAN}2)${NC} ${BOLD}nono${NC} ${CYAN}— Landlock LSM (Linux) + Seatbelt (macOS)${NC}"
-    echo -e "     ${DIM}Newer, supports both Linux and macOS. Uses kernel security modules.${NC}"
-    if [ "$has_nono" = true ]; then
-        echo -e "     ${GREEN}✓ installed${NC}"
-    else
-        echo -e "     ${YELLOW}✗ not installed${NC} — ${DIM}cargo install nono-cli${NC}"
-    fi
-    echo ""
+    echo -e "  ${GREEN}✓${NC} Backends: ${BOLD}${SELECTED_BACKENDS[*]}${NC}"
+}
 
-    echo -e "  ${BLUE}3)${NC} ${BOLD}Both${NC}"
-    echo -e "     ${DIM}Install support for both backends. Choose per-agent later.${NC}"
-    echo ""
-
-    read -p "  Choice [1]: " -n 1 -r
-    echo ""
-
-    case "${REPLY:-1}" in
-        2) SANDBOX_BACKEND="nono" ;;
-        3) SANDBOX_BACKEND="both" ;;
-        *) SANDBOX_BACKEND="bwrap" ;;
-    esac
-
-    echo -e "  ${GREEN}✓${NC} Backend: ${BOLD}$SANDBOX_BACKEND${NC}"
+# Helper: check if a backend is selected
+has_backend() {
+    local target="$1"
+    for b in "${SELECTED_BACKENDS[@]}"; do
+        [ "$b" = "$target" ] && return 0
+    done
+    return 1
 }
 
 # ── TUI: Agent selection ─────────────────────────────────────────────
 select_agents() {
     echo ""
     print_separator
-    echo -e "${BOLD}Step 3: Select agents to configure${NC}"
+    echo -e "${BOLD}Step 2: Select agents to configure${NC}"
     echo ""
     echo -e "  ${DIM}These are sandboxing wrappers and dashboard entries for each agent.${NC}"
     echo -e "  ${DIM}The agents themselves (claude, codex, gemini, etc.) must be${NC}"
@@ -282,7 +314,7 @@ select_agents() {
 select_voxcode() {
     echo ""
     print_separator
-    echo -e "${BOLD}Step 4: Voice input (VoxCode)${NC}"
+    echo -e "${BOLD}Step 3: Voice input (VoxCode)${NC}"
     echo ""
     echo -e "  VoxCode lets you speak to your agents — transcriptions are"
     echo -e "  routed to the focused agent via the dashboard."
@@ -345,12 +377,10 @@ confirm_installation() {
     echo -e "${BOLD}Installation summary${NC}"
     echo ""
 
-    if [ "$INSTALL_SANDBOX" = true ]; then
+    if has_backend bwrap || has_backend nono; then
         echo -e "  ${GREEN}✓${NC} agent-sandbox    ${DIM}(secure isolation for agents)${NC}"
-        echo -e "    Backend: ${BOLD}$SANDBOX_BACKEND${NC}"
-    else
-        echo -e "  ${RED}✗${NC} agent-sandbox    ${DIM}(SKIPPED — no sandboxing)${NC}"
     fi
+    echo -e "    Backends: ${BOLD}${SELECTED_BACKENDS[*]}${NC}"
 
     echo -e "  ${GREEN}✓${NC} lince-dashboard  ${DIM}(multi-agent TUI)${NC}"
 
@@ -363,15 +393,16 @@ confirm_installation() {
     for i in "${!AGENTS[@]}"; do
         IFS='|' read -r key name _ <<< "${AGENTS[$i]}"
         if [ "${AGENT_SELECTED[$i]}" = "1" ]; then
-            if [ "$INSTALL_SANDBOX" = true ]; then
-                case "$SANDBOX_BACKEND" in
-                    bwrap) echo -e "    ${GREEN}✓${NC} $name ${DIM}(sandboxed via bwrap)${NC}" ;;
-                    nono)  echo -e "    ${GREEN}✓${NC} $name ${DIM}(sandboxed via nono)${NC}" ;;
-                    both)  echo -e "    ${GREEN}✓${NC} $name ${DIM}(bwrap + nono variants)${NC}" ;;
-                esac
-            else
-                echo -e "    ${YELLOW}!${NC} $name ${DIM}(unsandboxed)${NC}"
-            fi
+            local variants=""
+            for b in "${SELECTED_BACKENDS[@]}"; do
+                [ -n "$variants" ] && variants="$variants, "
+                if [ "$b" = "unsandboxed" ]; then
+                    variants="${variants}${RED}unsandboxed${NC}"
+                else
+                    variants="${variants}${GREEN}${b}${NC}"
+                fi
+            done
+            echo -e "    ${GREEN}✓${NC} $name ${DIM}(${variants}${DIM})${NC}"
         fi
     done
 
@@ -397,52 +428,31 @@ generate_agent_defaults() {
     head -13 "$src" > "$dst"
 
     for agent in "${SELECTED_AGENTS[@]}"; do
-        echo "" >> "$dst"
+        for backend in "${SELECTED_BACKENDS[@]}"; do
+            echo "" >> "$dst"
 
-        if [ "$INSTALL_SANDBOX" = true ]; then
-            # Add sandboxed variant(s)
-            case "$SANDBOX_BACKEND" in
+            case "$backend" in
                 bwrap)
                     # Claude uses base "claude" (already bwrap), others use "<agent>-bwrap"
                     if [ "$agent" = "claude" ]; then
                         extract_agent_block "$src" "agents.claude" >> "$dst"
                     else
                         extract_agent_block "$src" "agents.${agent}-bwrap" >> "$dst"
-                        # If bwrap block doesn't exist, fall back to base
-                        if ! grep -q "\[agents\.${agent}-bwrap\]" "$src"; then
-                            extract_agent_block "$src" "agents.${agent}" >> "$dst"
-                        fi
                     fi
                     ;;
                 nono)
                     extract_agent_block "$src" "agents.${agent}-nono" >> "$dst"
-                    # If nono block doesn't exist, fall back to base
-                    if ! grep -q "\[agents\.${agent}-nono\]" "$src"; then
+                    ;;
+                unsandboxed)
+                    # Claude has an explicit unsandboxed variant; others use the base name
+                    if [ "$agent" = "claude" ]; then
+                        extract_agent_block "$src" "agents.claude-unsandboxed" >> "$dst"
+                    else
                         extract_agent_block "$src" "agents.${agent}" >> "$dst"
                     fi
                     ;;
-                both)
-                    # Include bwrap variant
-                    if [ "$agent" = "claude" ]; then
-                        extract_agent_block "$src" "agents.claude" >> "$dst"
-                    else
-                        extract_agent_block "$src" "agents.${agent}-bwrap" >> "$dst"
-                        if ! grep -q "\[agents\.${agent}-bwrap\]" "$src"; then
-                            extract_agent_block "$src" "agents.${agent}" >> "$dst"
-                        fi
-                    fi
-                    # Include nono variant
-                    extract_agent_block "$src" "agents.${agent}-nono" >> "$dst"
-                    ;;
             esac
-        else
-            # Unsandboxed: use base agent or unsandboxed variant
-            if [ "$agent" = "claude" ]; then
-                extract_agent_block "$src" "agents.claude-unsandboxed" >> "$dst"
-            else
-                extract_agent_block "$src" "agents.${agent}" >> "$dst"
-            fi
-        fi
+        done
     done
 }
 
@@ -451,12 +461,14 @@ extract_agent_block() {
     local file="$1"
     local section="$2"
 
-    # Use awk to extract from [section] to next [agents.*] or EOF
-    # Also captures sub-tables like [agents.codex.env_vars]
-    awk -v sec="[$section]" '
+    # Use awk to extract from [section] to next [agents.*] or EOF.
+    # Also captures sub-tables like [agents.codex.env_vars].
+    # We match the exact section header and any sub-table whose name
+    # starts with "section." (e.g. agents.codex.env_vars for agents.codex).
+    awk -v sec="[$section]" -v secpfx="[$section." '
         BEGIN { printing=0 }
         /^\[agents\./ {
-            if ($0 == sec || (printing && index($0, sec ".") == 1)) {
+            if ($0 == sec || (printing && index($0, secpfx) == 1)) {
                 printing=1
             } else if (printing) {
                 printing=0
@@ -498,7 +510,8 @@ do_install_voxcode() {
 
 # ── Install sandbox ─────────────────────────────────────────────────
 do_install_sandbox() {
-    if [ "$INSTALL_SANDBOX" = false ]; then
+    # Only install agent-sandbox if bwrap backend is selected
+    if ! has_backend bwrap; then
         return
     fi
 
@@ -584,25 +597,21 @@ check_prerequisites() {
     fi
 
     # Sandbox backends
-    if [ "$INSTALL_SANDBOX" = true ]; then
-        case "$SANDBOX_BACKEND" in
-            bwrap|both)
-                if command -v bwrap >/dev/null 2>&1; then
-                    echo -e "  ${GREEN}✓${NC} bubblewrap"
-                else
-                    warnings+=("bubblewrap not found")
-                    echo -e "  ${YELLOW}✗${NC} bubblewrap — ${DIM}sudo dnf install bubblewrap${NC}"
-                fi
-                ;;&
-            nono|both)
-                if command -v nono >/dev/null 2>&1; then
-                    echo -e "  ${GREEN}✓${NC} nono"
-                else
-                    warnings+=("nono not found")
-                    echo -e "  ${YELLOW}✗${NC} nono — ${DIM}cargo install nono-cli${NC}"
-                fi
-                ;;
-        esac
+    if has_backend bwrap; then
+        if command -v bwrap >/dev/null 2>&1; then
+            echo -e "  ${GREEN}✓${NC} bubblewrap"
+        else
+            warnings+=("bubblewrap not found")
+            echo -e "  ${YELLOW}✗${NC} bubblewrap — ${DIM}sudo dnf install bubblewrap${NC}"
+        fi
+    fi
+    if has_backend nono; then
+        if command -v nono >/dev/null 2>&1; then
+            echo -e "  ${GREEN}✓${NC} nono"
+        else
+            warnings+=("nono not found")
+            echo -e "  ${YELLOW}✗${NC} nono — ${DIM}cargo install nono-cli${NC}"
+        fi
     fi
 
     if [ ${#warnings[@]} -gt 0 ]; then
@@ -622,10 +631,16 @@ print_summary() {
     echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════${NC}"
     echo ""
 
-    if [ "$INSTALL_SANDBOX" = true ]; then
-        echo -e "  ${GREEN}✓${NC} agent-sandbox (${SANDBOX_BACKEND})"
-    fi
     echo -e "  ${GREEN}✓${NC} lince-dashboard"
+    if has_backend bwrap; then
+        echo -e "  ${GREEN}✓${NC} agent-sandbox (bwrap)"
+    fi
+    if has_backend nono; then
+        echo -e "  ${GREEN}✓${NC} nono sandbox"
+    fi
+    if has_backend unsandboxed; then
+        echo -e "  ${RED}!${NC} unsandboxed mode"
+    fi
     if command -v voxcode >/dev/null 2>&1; then
         echo -e "  ${GREEN}✓${NC} voxcode (voice input)"
     fi
@@ -637,11 +652,7 @@ print_summary() {
             for entry in "${AGENTS[@]}"; do
                 IFS='|' read -r key name _ <<< "$entry"
                 if [ "$key" = "$agent" ]; then
-                    if [ "$INSTALL_SANDBOX" = true ]; then
-                        echo -e "    ${GREEN}✓${NC} $name (sandboxed)"
-                    else
-                        echo -e "    ${YELLOW}!${NC} $name (unsandboxed)"
-                    fi
+                    echo -e "    ${GREEN}✓${NC} $name ${DIM}(${SELECTED_BACKENDS[*]})${NC}"
                     break
                 fi
             done
@@ -694,8 +705,7 @@ done
 print_banner
 
 if [ "$USE_DEFAULTS" = true ]; then
-    INSTALL_SANDBOX=true
-    SANDBOX_BACKEND="bwrap"
+    SELECTED_BACKENDS=("bwrap")
     for i in "${!AGENTS[@]}"; do AGENT_SELECTED[$i]=1; done
     SELECTED_AGENTS=()
     for i in "${!AGENTS[@]}"; do
@@ -704,8 +714,7 @@ if [ "$USE_DEFAULTS" = true ]; then
     done
     echo -e "  ${DIM}Using defaults: all agents, bwrap sandbox${NC}"
 else
-    select_sandbox_mode
-    select_sandbox_backend
+    select_backends
     select_agents
     select_voxcode
     confirm_installation
