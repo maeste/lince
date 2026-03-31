@@ -1,8 +1,8 @@
 # LINCE
 
-**Linux Intelligent Native Coding Environment**
+**Linux Intelligent Native Coding Environment** — [lince.sh](https://lince.sh)
 
-A toolkit that turns your Linux terminal into a multi-agent engineering workstation — spawn parallel Claude Code agents, track their status in real time, relay voice commands, all from a single TUI dashboard running in Zellij.
+A toolkit that turns your terminal into a multi-agent engineering workstation — spawn parallel AI coding agents, track their status in real time, relay voice commands, all from a single TUI dashboard running in Zellij.
 
 ## Demo
 
@@ -137,10 +137,6 @@ An [agentskills.io](https://agentskills.io)-compliant skill that lets any AI cod
 | [VoxCode](https://github.com/RisorseArtificiali/voxcode) | Voice input for AI agents — local Whisper transcription, integrates with the dashboard via Zellij pipes |
 | [VoxTTS](https://github.com/RisorseArtificiali/voxtts) | Text-to-Speech with local GPU/CPU engines (Kokoro, Piper) |
 | [Agent Ready Skill](https://github.com/RisorseArtificiali/agent-ready-skill) | Assess any project's readiness for agentic coding (agentskills.io) |
-
-## Backlog.md Integration
-
-Both the dashboard and single-agent setups work with [Backlog.md](https://github.com/backlog-md/backlog) — a markdown-native task manager that lives in your repo and integrates with Claude via MCP. Install it following the [Backlog.md documentation](https://github.com/backlog-md/backlog). When Claude has the Backlog.md MCP server configured, it can create tasks, update progress, and check what's next — all from within the sandboxed session.
 
 ## License
 
