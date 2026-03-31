@@ -16,6 +16,7 @@ const PIPE_CLAUDE_STATUS: &str = "claude-status";
 const PIPE_LINCE_STATUS: &str = "lince-status";
 const PIPE_VOXCODE_TEXT: &str = "voxcode-text";
 const CMD_GET_CWD: &str = "get_cwd";
+const CMD_LOAD_CONFIG: &str = "load_config";
 
 use crate::types::{
     AgentInfo, AgentStatus, NamePromptState, SavedAgentInfo,
@@ -96,18 +97,11 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
-        // Debug logging to /tmp/lince-debug.log
-        let _ = std::fs::OpenOptions::new()
-            .create(true).append(true).open("/tmp/lince-debug.log")
-            .and_then(|mut f| { use std::io::Write; f.write_all(b"\n=== LOAD START ===\n") });
-
         if let Some(raw_path) = configuration.get("config_path") {
             let path = config::expand_tilde(raw_path);
-            let (cfg, err) = DashboardConfig::load(&path);
-            self.config = cfg;
-            self.config_error = err;
-            self.config_mtime = config::get_file_mtime(&path);
             self.config_path = Some(path);
+            // Config will be loaded async via run_command after permissions are granted.
+            // Direct std::fs calls fail in WASI sandbox.
         }
         subscribe(&[
             EventType::Key,
@@ -131,6 +125,11 @@ impl ZellijPlugin for State {
         // permissions for local file plugins, so run_command may already work.
         config::run_typed_command(&["pwd"], CMD_GET_CWD);
         sandbox_backend::detect_backend_async();
+        // Load config async (std::fs fails in WASI sandbox)
+        if let Some(ref path) = self.config_path {
+            let script = format!("cat {} 2>/dev/null", config::shell_path_expr(path));
+            config::run_typed_command(&["sh", "-c", &script], CMD_LOAD_CONFIG);
+        }
         self.init_kicked = true;
 
         // Always start timer: serves both file-polling and config hot-reload
@@ -177,14 +176,13 @@ impl ZellijPlugin for State {
                     }
                 }
 
-                // Config hot-reload check
-                if let Some(ref path) = self.config_path {
-                    let new_mtime = config::get_file_mtime(path);
-                    if new_mtime != self.config_mtime && new_mtime > 0 {
-                        self.config_mtime = new_mtime;
-                        let p = path.clone(); // clone only when reload needed
-                        self.reload_config(&p);
-                        needs_render = true;
+                // Config hot-reload: re-read via async run_command (std::fs unavailable in WASI).
+                // Only re-load if we haven't loaded yet (config_mtime == 0).
+                // Full hot-reload on every timer tick would be wasteful.
+                if self.config_mtime == 0 {
+                    if let Some(ref path) = self.config_path {
+                        let script = format!("cat {} 2>/dev/null", config::shell_path_expr(path));
+                        config::run_typed_command(&["sh", "-c", &script], CMD_LOAD_CONFIG);
                     }
                 }
 
@@ -206,12 +204,18 @@ impl ZellijPlugin for State {
             }
             Event::RunCommandResult(exit_code, stdout, stderr, context) => {
                 let cmd_type = context.get(config::CMD_TYPE_KEY).map(|s| s.as_str());
-                let debug_msg = format!("RunCommandResult: type={:?} exit={:?} stdout_len={} stderr_len={}\n",
-                    cmd_type, exit_code, stdout.len(), stderr.len());
-                let _ = std::fs::OpenOptions::new()
-                    .create(true).append(true).open("/tmp/lince-debug.log")
-                    .and_then(|mut f| { use std::io::Write; f.write_all(debug_msg.as_bytes()) });
                 match cmd_type {
+                    Some(CMD_LOAD_CONFIG) => {
+                        if exit_code == Some(0) && !stdout.is_empty() {
+                            let content = String::from_utf8_lossy(&stdout);
+                            let (cfg, err) = DashboardConfig::parse_toml(&content);
+                            self.config = cfg;
+                            self.config_error = err;
+                        }
+                        // Mark as loaded so timer doesn't retry
+                        self.config_mtime = 1;
+                        true
+                    }
                     Some(CMD_GET_CWD) if exit_code == Some(0) => {
                         let dir = String::from_utf8_lossy(&stdout).trim().to_string();
                         if !dir.is_empty() {
@@ -878,30 +882,6 @@ impl State {
         }
     }
 
-    /// Reload config from disk, applying all fields except sandbox_command (LINCE-51).
-    fn reload_config(&mut self, path: &str) {
-        let (new_cfg, err) = DashboardConfig::load(path);
-        if let Some(e) = err {
-            self.config_error = Some(format!("Config reload error: {}", e));
-            self.status_message = Some("Config reload failed".to_string());
-            return;
-        }
-        // Preserve fields that are not hot-reloadable or are populated at runtime.
-        let sandbox_command = std::mem::take(&mut self.config.sandbox_command);
-        let profiles_by_agent = std::mem::take(&mut self.config.profiles_by_agent);
-        let profile_details_by_agent = std::mem::take(&mut self.config.profile_details_by_agent);
-        let agent_types = std::mem::take(&mut self.config.agent_types);
-        self.config = new_cfg;
-        self.config.sandbox_command = sandbox_command;
-        // Merge back auto-discovered profiles (they aren't in the config file).
-        self.config.merge_profiles(&profiles_by_agent, &profile_details_by_agent);
-        // Preserve async-loaded agent types across hot-reload.
-        if self.config.agent_types.is_empty() {
-            self.config.agent_types = agent_types;
-        }
-        self.config_error = None;
-        self.status_message = Some("Config reloaded".to_string());
-    }
 
     /// Handle a "claude-status" pipe message (LINCE-42, LINCE-48, LINCE-53).
     fn handle_status_message(&mut self, payload: &str) {

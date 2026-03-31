@@ -220,16 +220,6 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Return the modification time (Unix seconds) of a file, or 0 if unavailable.
-pub fn get_file_mtime(path: &str) -> u64 {
-    std::fs::metadata(path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// Expand leading `~` to the value of `$HOME`.
 pub fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('~') {
@@ -252,7 +242,7 @@ pub fn collapse_tilde(path: &str) -> String {
 
 /// Convert a path that may start with `~` into a shell expression using `$HOME`.
 /// Used for `run_command` scripts since the WASI sandbox lacks `$HOME` in its env.
-fn shell_path_expr(path: &str) -> String {
+pub fn shell_path_expr(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('~') {
         format!("\"$HOME{}\"", shell_escape(rest))
     } else {
@@ -552,33 +542,18 @@ impl DashboardConfig {
     /// 3. Introduce a syntax error in the TOML and reload — a yellow
     ///    warning line should appear in the dashboard render output.
     /// 4. Remove the file entirely — plugin should start with defaults.
-    pub fn load(path: &str) -> (Self, Option<String>) {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Missing config file is normal — silently use defaults.
-                return (DashboardConfig::default(), None);
-            }
-            Err(e) => {
-                return (
-                    DashboardConfig::default(),
-                    Some(format!("Failed to read config '{}': {}", path, e)),
-                );
-            }
-        };
-
-        match toml::from_str::<DashboardConfigFile>(&content) {
-            Ok(file) => {
-                let config = file.dashboard;
-                // Profile discovery happens async — see discover_profiles_async().
-                (config, None)
-            }
+    /// Parse config from TOML string content. Used by async config loading
+    /// (run_command cat) since std::fs is unavailable in WASI sandbox.
+    pub fn parse_toml(content: &str) -> (Self, Option<String>) {
+        match toml::from_str::<DashboardConfigFile>(content.trim()) {
+            Ok(file) => (file.dashboard, None),
             Err(e) => (
                 DashboardConfig::default(),
-                Some(format!("Failed to parse config '{}': {}", path, e)),
+                Some(format!("Config parse error: {}", e)),
             ),
         }
     }
+
 
     /// Merge discovered per-agent-type profiles, deduplicating.
     pub fn merge_profiles(
