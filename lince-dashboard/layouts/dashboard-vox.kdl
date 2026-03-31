@@ -29,6 +29,7 @@ layout {
         pane split_direction="horizontal" {
             pane size="60%" {
                 plugin location="file:~/.config/zellij/plugins/lince-dashboard.wasm" {
+                    _allow_exec_host_cmd true
                     config_path "~/.config/lince-dashboard/config.toml"
                 }
             }
