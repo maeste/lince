@@ -1,50 +1,575 @@
 #!/usr/bin/env bash
 #
 # LINCE Quickstart Installer
-# 
-# Interactive installer for LINCE modules. Can be run in three modes:
-#   - Interactive: ./quickstart.sh (shows menu)
-#   - Mini:        ./quickstart.sh --mini (sandbox + dashboard)
-#   - Full:        ./quickstart.sh --full (same as mini — voice modules are separate repos)
-#   - Non-interactive: Add --yes to auto-confirm prompts
+#
+# Interactive TUI installer for LINCE — sandbox + dashboard for AI coding agents.
+#
+# Usage:
+#   ./quickstart.sh              # Interactive TUI
+#   ./quickstart.sh --defaults   # Install with defaults (all agents, bwrap, sandbox)
+#   ./quickstart.sh --help       # Show help
 #
 # Exit codes:
 #   0 - Success
-#   1 - Error (missing prerequisites, etc.)
+#   1 - Error
 #   2 - Cancelled by user
 #
 
 set -e
 
-# Colors
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── Colors & formatting ──────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
-# Paths
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODULES=("sandbox" "lince-dashboard")
+# ── State ────────────────────────────────────────────────────────────
+INSTALL_SANDBOX=true
+SANDBOX_BACKEND="bwrap"   # bwrap | nono | both
+SELECTED_AGENTS=()
+USE_DEFAULTS=false
 
-# Options
-AUTO_YES=false
-MODE="interactive"
+# Available agents: key|display_name|description
+AGENTS=(
+    "claude|Claude Code|Anthropic's AI coding agent"
+    "codex|OpenAI Codex|OpenAI's coding agent (CLI)"
+    "gemini|Google Gemini CLI|Google's AI coding agent"
+    "opencode|OpenCode|Open-source coding agent"
+)
+# Track selection state (1=selected, 0=not)
+AGENT_SELECTED=(1 1 0 0)  # claude and codex on by default
 
-# Parse arguments
+# ── Helpers ──────────────────────────────────────────────────────────
+confirm() {
+    local prompt="$1"
+    read -p "$prompt (y/n): " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]]
+}
+
+print_banner() {
+    echo ""
+    echo -e "${CYAN}${BOLD}"
+    echo "  ╦  ╦╔╗╔╔═╗╔═╗"
+    echo "  ║  ║║║║║  ║╣ "
+    echo "  ╩═╝╩╝╚╝╚═╝╚═╝"
+    echo -e "${NC}"
+    echo -e "  ${BOLD}Secure Multi-Agent Coding Workstation${NC}"
+    echo -e "  ${DIM}https://lince.sh${NC}"
+    echo ""
+}
+
+print_separator() {
+    echo -e "${DIM}────────────────────────────────────────────────────${NC}"
+}
+
+# ── TUI: Sandbox mode selection ──────────────────────────────────────
+select_sandbox_mode() {
+    echo ""
+    echo -e "${BOLD}Step 1: Sandbox mode${NC}"
+    echo ""
+    echo -e "  LINCE wraps your AI agents in a sandbox so they can code"
+    echo -e "  freely without reaching your SSH keys, credentials, or"
+    echo -e "  pushing to production."
+    echo ""
+    echo -e "  ${GREEN}1)${NC} ${BOLD}Sandboxed${NC} ${GREEN}(recommended)${NC}"
+    echo -e "     ${DIM}Agents run inside an isolated environment${NC}"
+    echo ""
+    echo -e "  ${YELLOW}2)${NC} ${BOLD}Dashboard only${NC} ${YELLOW}(no sandbox)${NC}"
+    echo -e "     ${DIM}Agents run directly on your system — no isolation${NC}"
+    echo ""
+    read -p "  Choice [1]: " -n 1 -r
+    echo ""
+
+    case "${REPLY:-1}" in
+        2)
+            # ── BIG WARNING ──────────────────────────────────
+            echo ""
+            echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
+            echo -e "${RED}${BOLD}║                    ⚠  WARNING  ⚠                    ║${NC}"
+            echo -e "${RED}${BOLD}╠══════════════════════════════════════════════════════╣${NC}"
+            echo -e "${RED}${BOLD}║                                                      ║${NC}"
+            echo -e "${RED}${BOLD}║  Without sandboxing, AI agents have FULL ACCESS to:   ║${NC}"
+            echo -e "${RED}${BOLD}║                                                      ║${NC}"
+            echo -e "${RED}${BOLD}║    • Your SSH keys and GPG keys                      ║${NC}"
+            echo -e "${RED}${BOLD}║    • Cloud credentials (AWS, GCP, Azure)              ║${NC}"
+            echo -e "${RED}${BOLD}║    • Git push to any remote                          ║${NC}"
+            echo -e "${RED}${BOLD}║    • All files on your system                        ║${NC}"
+            echo -e "${RED}${BOLD}║    • Running processes and network                   ║${NC}"
+            echo -e "${RED}${BOLD}║                                                      ║${NC}"
+            echo -e "${RED}${BOLD}║  A single hallucinated command could:                ║${NC}"
+            echo -e "${RED}${BOLD}║    • Push untested code to production                ║${NC}"
+            echo -e "${RED}${BOLD}║    • Delete or modify critical files                 ║${NC}"
+            echo -e "${RED}${BOLD}║    • Leak credentials to third parties               ║${NC}"
+            echo -e "${RED}${BOLD}║                                                      ║${NC}"
+            echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
+            echo ""
+            echo -e "${RED}${BOLD}  Are you sure you want to proceed WITHOUT sandboxing?${NC}"
+            read -p "  Type 'yes' to confirm (anything else cancels): " -r
+            if [ "$REPLY" != "yes" ]; then
+                echo ""
+                echo -e "  ${GREEN}Good choice. Switching to sandboxed mode.${NC}"
+                INSTALL_SANDBOX=true
+                return
+            fi
+            # Second confirmation
+            echo ""
+            echo -e "${RED}  Final confirmation: you accept full responsibility for${NC}"
+            echo -e "${RED}  any damage caused by unsandboxed agents.${NC}"
+            read -p "  Type 'I understand' to proceed: " -r
+            if [ "$REPLY" != "I understand" ]; then
+                echo ""
+                echo -e "  ${GREEN}Switching to sandboxed mode.${NC}"
+                INSTALL_SANDBOX=true
+                return
+            fi
+            INSTALL_SANDBOX=false
+            echo ""
+            echo -e "  ${YELLOW}Dashboard-only mode selected. No sandbox will be installed.${NC}"
+            ;;
+        *)
+            INSTALL_SANDBOX=true
+            ;;
+    esac
+}
+
+# ── TUI: Sandbox backend selection ───────────────────────────────────
+select_sandbox_backend() {
+    if [ "$INSTALL_SANDBOX" = false ]; then
+        return
+    fi
+
+    local OS_NAME
+    OS_NAME="$(uname -s)"
+
+    echo ""
+    print_separator
+    echo -e "${BOLD}Step 2: Sandbox backend${NC}"
+    echo ""
+
+    if [ "$OS_NAME" = "Darwin" ]; then
+        echo -e "  macOS detected — using ${BOLD}nono${NC} (Seatbelt sandbox)."
+        echo -e "  ${DIM}bubblewrap is Linux-only.${NC}"
+        SANDBOX_BACKEND="nono"
+        echo ""
+        if ! command -v nono >/dev/null 2>&1; then
+            echo -e "  ${YELLOW}nono not found.${NC} Install with: ${CYAN}brew install nono${NC}"
+            echo ""
+        fi
+        return
+    fi
+
+    # Linux: offer choice
+    local has_bwrap=false has_nono=false
+    command -v bwrap >/dev/null 2>&1 && has_bwrap=true
+    command -v nono >/dev/null 2>&1 && has_nono=true
+
+    echo -e "  ${GREEN}1)${NC} ${BOLD}bubblewrap (bwrap)${NC} ${GREEN}— recommended for Linux${NC}"
+    echo -e "     ${DIM}Same technology as Flatpak. Battle-tested, zero overhead.${NC}"
+    if [ "$has_bwrap" = true ]; then
+        echo -e "     ${GREEN}✓ installed${NC}"
+    else
+        echo -e "     ${YELLOW}✗ not installed${NC} — ${DIM}sudo dnf install bubblewrap${NC}"
+    fi
+    echo ""
+
+    echo -e "  ${CYAN}2)${NC} ${BOLD}nono${NC} ${CYAN}— Landlock LSM (Linux) + Seatbelt (macOS)${NC}"
+    echo -e "     ${DIM}Newer, supports both Linux and macOS. Uses kernel security modules.${NC}"
+    if [ "$has_nono" = true ]; then
+        echo -e "     ${GREEN}✓ installed${NC}"
+    else
+        echo -e "     ${YELLOW}✗ not installed${NC} — ${DIM}cargo install nono-cli${NC}"
+    fi
+    echo ""
+
+    echo -e "  ${BLUE}3)${NC} ${BOLD}Both${NC}"
+    echo -e "     ${DIM}Install support for both backends. Choose per-agent later.${NC}"
+    echo ""
+
+    read -p "  Choice [1]: " -n 1 -r
+    echo ""
+
+    case "${REPLY:-1}" in
+        2) SANDBOX_BACKEND="nono" ;;
+        3) SANDBOX_BACKEND="both" ;;
+        *) SANDBOX_BACKEND="bwrap" ;;
+    esac
+
+    echo -e "  ${GREEN}✓${NC} Backend: ${BOLD}$SANDBOX_BACKEND${NC}"
+}
+
+# ── TUI: Agent selection ─────────────────────────────────────────────
+select_agents() {
+    echo ""
+    print_separator
+    echo -e "${BOLD}Step 3: Select agents to configure${NC}"
+    echo ""
+    echo -e "  ${DIM}These are sandboxing wrappers and dashboard entries for each agent.${NC}"
+    echo -e "  ${DIM}The agents themselves (claude, codex, gemini, etc.) must be${NC}"
+    echo -e "  ${DIM}installed separately — that is outside the scope of this installer.${NC}"
+    echo ""
+    echo -e "  ${DIM}Toggle with number keys, press Enter when done:${NC}"
+    echo ""
+
+    while true; do
+        for i in "${!AGENTS[@]}"; do
+            IFS='|' read -r key name desc <<< "${AGENTS[$i]}"
+            if [ "${AGENT_SELECTED[$i]}" = "1" ]; then
+                echo -e "  ${GREEN}[x]${NC} ${BOLD}$((i+1))) $name${NC} ${DIM}— $desc${NC}"
+            else
+                echo -e "  ${DIM}[ ] $((i+1))) $name — $desc${NC}"
+            fi
+        done
+        echo ""
+        echo -e "  ${DIM}Press 1-${#AGENTS[@]} to toggle, Enter to confirm, 'a' for all, 'n' for none${NC}"
+        read -p "  > " -n 1 -r
+        echo ""
+
+        case "$REPLY" in
+            [1-9])
+                local idx=$((REPLY - 1))
+                if [ $idx -lt ${#AGENTS[@]} ]; then
+                    if [ "${AGENT_SELECTED[$idx]}" = "1" ]; then
+                        AGENT_SELECTED[$idx]=0
+                    else
+                        AGENT_SELECTED[$idx]=1
+                    fi
+                fi
+                ;;
+            a|A)
+                for i in "${!AGENTS[@]}"; do AGENT_SELECTED[$i]=1; done
+                ;;
+            n|N)
+                for i in "${!AGENTS[@]}"; do AGENT_SELECTED[$i]=0; done
+                ;;
+            "")
+                # Enter pressed — confirm selection
+                break
+                ;;
+        esac
+
+        # Move cursor up to redraw (number of agents + 2 lines for prompt)
+        local lines_up=$(( ${#AGENTS[@]} + 3 ))
+        echo -en "\033[${lines_up}A\033[J"
+    done
+
+    # Build selected agents list
+    SELECTED_AGENTS=()
+    for i in "${!AGENTS[@]}"; do
+        if [ "${AGENT_SELECTED[$i]}" = "1" ]; then
+            IFS='|' read -r key _ _ <<< "${AGENTS[$i]}"
+            SELECTED_AGENTS+=("$key")
+        fi
+    done
+
+    if [ ${#SELECTED_AGENTS[@]} -eq 0 ]; then
+        echo -e "  ${YELLOW}No agents selected. The dashboard will be installed${NC}"
+        echo -e "  ${YELLOW}but no agent types will be pre-configured.${NC}"
+        echo -e "  ${DIM}You can add agents later via /lince-setup or config.toml.${NC}"
+    else
+        echo -e "  ${GREEN}✓${NC} Selected: ${BOLD}${SELECTED_AGENTS[*]}${NC}"
+    fi
+}
+
+# ── TUI: Summary and confirm ────────────────────────────────────────
+confirm_installation() {
+    echo ""
+    print_separator
+    echo -e "${BOLD}Installation summary${NC}"
+    echo ""
+
+    if [ "$INSTALL_SANDBOX" = true ]; then
+        echo -e "  ${GREEN}✓${NC} agent-sandbox    ${DIM}(secure isolation for agents)${NC}"
+        echo -e "    Backend: ${BOLD}$SANDBOX_BACKEND${NC}"
+    else
+        echo -e "  ${RED}✗${NC} agent-sandbox    ${DIM}(SKIPPED — no sandboxing)${NC}"
+    fi
+
+    echo -e "  ${GREEN}✓${NC} lince-dashboard  ${DIM}(multi-agent TUI)${NC}"
+
+    echo ""
+    echo -e "  Agents:"
+    for i in "${!AGENTS[@]}"; do
+        IFS='|' read -r key name _ <<< "${AGENTS[$i]}"
+        if [ "${AGENT_SELECTED[$i]}" = "1" ]; then
+            if [ "$INSTALL_SANDBOX" = true ]; then
+                case "$SANDBOX_BACKEND" in
+                    bwrap) echo -e "    ${GREEN}✓${NC} $name ${DIM}(sandboxed via bwrap)${NC}" ;;
+                    nono)  echo -e "    ${GREEN}✓${NC} $name ${DIM}(sandboxed via nono)${NC}" ;;
+                    both)  echo -e "    ${GREEN}✓${NC} $name ${DIM}(bwrap + nono variants)${NC}" ;;
+                esac
+            else
+                echo -e "    ${YELLOW}!${NC} $name ${DIM}(unsandboxed)${NC}"
+            fi
+        fi
+    done
+
+    echo ""
+    if ! confirm "  Proceed with installation?"; then
+        echo "  Cancelled."
+        exit 2
+    fi
+}
+
+# ── Generate filtered agents-defaults.toml ───────────────────────────
+generate_agent_defaults() {
+    local src="$SCRIPT_DIR/lince-dashboard/agents-defaults.toml"
+    local dst="$1"
+
+    if [ ! -f "$src" ]; then
+        echo -e "  ${YELLOW}⚠ agents-defaults.toml not found — using empty config${NC}"
+        echo "# No agent types configured. Add agents via /lince-setup or edit this file." > "$dst"
+        return
+    fi
+
+    # Start with header
+    head -13 "$src" > "$dst"
+
+    for agent in "${SELECTED_AGENTS[@]}"; do
+        echo "" >> "$dst"
+
+        if [ "$INSTALL_SANDBOX" = true ]; then
+            # Add sandboxed variant(s)
+            case "$SANDBOX_BACKEND" in
+                bwrap)
+                    # Claude uses base "claude" (already bwrap), others use "<agent>-bwrap"
+                    if [ "$agent" = "claude" ]; then
+                        extract_agent_block "$src" "agents.claude" >> "$dst"
+                    else
+                        extract_agent_block "$src" "agents.${agent}-bwrap" >> "$dst"
+                        # If bwrap block doesn't exist, fall back to base
+                        if ! grep -q "\[agents\.${agent}-bwrap\]" "$src"; then
+                            extract_agent_block "$src" "agents.${agent}" >> "$dst"
+                        fi
+                    fi
+                    ;;
+                nono)
+                    extract_agent_block "$src" "agents.${agent}-nono" >> "$dst"
+                    # If nono block doesn't exist, fall back to base
+                    if ! grep -q "\[agents\.${agent}-nono\]" "$src"; then
+                        extract_agent_block "$src" "agents.${agent}" >> "$dst"
+                    fi
+                    ;;
+                both)
+                    # Include bwrap variant
+                    if [ "$agent" = "claude" ]; then
+                        extract_agent_block "$src" "agents.claude" >> "$dst"
+                    else
+                        extract_agent_block "$src" "agents.${agent}-bwrap" >> "$dst"
+                        if ! grep -q "\[agents\.${agent}-bwrap\]" "$src"; then
+                            extract_agent_block "$src" "agents.${agent}" >> "$dst"
+                        fi
+                    fi
+                    # Include nono variant
+                    extract_agent_block "$src" "agents.${agent}-nono" >> "$dst"
+                    ;;
+            esac
+        else
+            # Unsandboxed: use base agent or unsandboxed variant
+            if [ "$agent" = "claude" ]; then
+                extract_agent_block "$src" "agents.claude-unsandboxed" >> "$dst"
+            else
+                extract_agent_block "$src" "agents.${agent}" >> "$dst"
+            fi
+        fi
+    done
+}
+
+# Extract a TOML block from [agents.X] to the next [agents.Y] or EOF
+extract_agent_block() {
+    local file="$1"
+    local section="$2"
+
+    # Use awk to extract from [section] to next [agents.*] or EOF
+    # Also captures sub-tables like [agents.codex.env_vars]
+    awk -v sec="[$section]" '
+        BEGIN { printing=0 }
+        /^\[agents\./ {
+            if ($0 == sec || (printing && index($0, sec ".") == 1)) {
+                printing=1
+            } else if (printing) {
+                printing=0
+            }
+        }
+        printing { print }
+    ' "$file"
+}
+
+# ── Install sandbox ─────────────────────────────────────────────────
+do_install_sandbox() {
+    if [ "$INSTALL_SANDBOX" = false ]; then
+        return
+    fi
+
+    echo ""
+    print_separator
+    echo -e "${BOLD}Installing agent-sandbox...${NC}"
+    echo ""
+
+    cd "$SCRIPT_DIR/sandbox"
+    if bash install.sh; then
+        echo -e "${GREEN}✓ agent-sandbox installed${NC}"
+    else
+        echo -e "${RED}✗ agent-sandbox installation failed${NC}"
+        if ! confirm "Continue anyway?"; then exit 1; fi
+    fi
+}
+
+# ── Install dashboard ───────────────────────────────────────────────
+do_install_dashboard() {
+    echo ""
+    print_separator
+    echo -e "${BOLD}Installing lince-dashboard...${NC}"
+    echo ""
+
+    cd "$SCRIPT_DIR/lince-dashboard"
+    if bash install.sh; then
+        echo -e "${GREEN}✓ lince-dashboard installed${NC}"
+    else
+        echo -e "${RED}✗ lince-dashboard installation failed${NC}"
+        if ! confirm "Continue anyway?"; then exit 1; fi
+    fi
+
+    # Overwrite agents-defaults.toml with filtered version
+    local defaults_dst="$HOME/.config/lince-dashboard/agents-defaults.toml"
+    if [ ${#SELECTED_AGENTS[@]} -gt 0 ]; then
+        echo ""
+        echo -e "${CYAN}Configuring selected agents...${NC}"
+        generate_agent_defaults "$defaults_dst"
+        echo -e "${GREEN}✓ Agent defaults written: $defaults_dst${NC}"
+        echo -e "  ${DIM}Configured: ${SELECTED_AGENTS[*]}${NC}"
+    fi
+}
+
+# ── Check prerequisites ─────────────────────────────────────────────
+check_prerequisites() {
+    echo -e "${BOLD}Checking prerequisites...${NC}"
+    echo ""
+
+    local warnings=()
+
+    # Python
+    if command -v python3 >/dev/null 2>&1; then
+        local pyver
+        pyver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+        echo -e "  ${GREEN}✓${NC} Python $pyver"
+    else
+        warnings+=("Python 3.11+ not found")
+        echo -e "  ${YELLOW}✗${NC} Python 3.11+ not found"
+    fi
+
+    # Git
+    if command -v git >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} git"
+    else
+        warnings+=("git not found")
+        echo -e "  ${RED}✗${NC} git not found"
+    fi
+
+    # Zellij
+    if command -v zellij >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} zellij $(zellij --version 2>/dev/null | awk '{print $2}')"
+    else
+        warnings+=("zellij not found (required for dashboard)")
+        echo -e "  ${YELLOW}✗${NC} zellij not found — needed for dashboard"
+    fi
+
+    # Rust (for WASM build)
+    if command -v rustc >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} rustc $(rustc --version 2>/dev/null | awk '{print $2}')"
+    else
+        warnings+=("Rust not found (required to build dashboard plugin)")
+        echo -e "  ${YELLOW}✗${NC} rustc not found — needed to build dashboard"
+    fi
+
+    # Sandbox backends
+    if [ "$INSTALL_SANDBOX" = true ]; then
+        case "$SANDBOX_BACKEND" in
+            bwrap|both)
+                if command -v bwrap >/dev/null 2>&1; then
+                    echo -e "  ${GREEN}✓${NC} bubblewrap"
+                else
+                    warnings+=("bubblewrap not found")
+                    echo -e "  ${YELLOW}✗${NC} bubblewrap — ${DIM}sudo dnf install bubblewrap${NC}"
+                fi
+                ;;&
+            nono|both)
+                if command -v nono >/dev/null 2>&1; then
+                    echo -e "  ${GREEN}✓${NC} nono"
+                else
+                    warnings+=("nono not found")
+                    echo -e "  ${YELLOW}✗${NC} nono — ${DIM}cargo install nono-cli${NC}"
+                fi
+                ;;
+        esac
+    fi
+
+    if [ ${#warnings[@]} -gt 0 ]; then
+        echo ""
+        echo -e "  ${YELLOW}${#warnings[@]} warning(s). Install missing tools for full functionality.${NC}"
+        if ! confirm "  Continue with installation?"; then
+            exit 2
+        fi
+    fi
+}
+
+# ── Summary ──────────────────────────────────────────────────────────
+print_summary() {
+    echo ""
+    echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}${BOLD}  Installation Complete${NC}"
+    echo -e "${BLUE}${BOLD}════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    if [ "$INSTALL_SANDBOX" = true ]; then
+        echo -e "  ${GREEN}✓${NC} agent-sandbox (${SANDBOX_BACKEND})"
+    fi
+    echo -e "  ${GREEN}✓${NC} lince-dashboard"
+
+    if [ ${#SELECTED_AGENTS[@]} -gt 0 ]; then
+        echo ""
+        echo -e "  Configured agents:"
+        for agent in "${SELECTED_AGENTS[@]}"; do
+            # Find display name
+            for entry in "${AGENTS[@]}"; do
+                IFS='|' read -r key name _ <<< "$entry"
+                if [ "$key" = "$agent" ]; then
+                    if [ "$INSTALL_SANDBOX" = true ]; then
+                        echo -e "    ${GREEN}✓${NC} $name (sandboxed)"
+                    else
+                        echo -e "    ${YELLOW}!${NC} $name (unsandboxed)"
+                    fi
+                    break
+                fi
+            done
+        done
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Get started:${NC}"
+    echo ""
+    echo -e "    ${CYAN}source ~/.bashrc${NC}"
+    echo -e "    ${CYAN}zd${NC}"
+    echo ""
+    echo -e "  ${DIM}Press 'n' in the dashboard to spawn an agent.${NC}"
+    echo -e "  ${DIM}Press '?' for the full keybindings help.${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Optional — Voice input:${NC}"
+    echo -e "  ${DIM}https://github.com/RisorseArtificiali/voxcode${NC}"
+    echo ""
+}
+
+# ── Parse arguments ──────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --mini)
-            MODE="mini"
-            shift
-            ;;
-        --full)
-            MODE="full"
-            shift
-            ;;
-        --yes)
-            AUTO_YES=true
+        --defaults)
+            USE_DEFAULTS=true
             shift
             ;;
         --help|-h)
@@ -53,225 +578,42 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --mini     Install sandbox + lince-dashboard only"
-            echo "  --full     Install all modules"
-            echo "  --yes      Auto-confirm all prompts"
-            echo "  --help     Show this help message"
+            echo "  --defaults   Install with defaults (all agents, bwrap sandbox)"
+            echo "  --help       Show this help"
             echo ""
-            echo "Examples:"
-            echo "  $0              # Interactive menu"
-            echo "  $0 --mini       # Mini install (non-interactive)"
-            echo "  $0 --full --yes  # Full install (non-interactive)"
             exit 0
             ;;
         *)
             echo -e "${RED}Unknown option: $1${NC}"
-            echo "Use --help for usage information"
             exit 1
             ;;
     esac
 done
 
-# Helper functions
-confirm() {
-    if [ "$AUTO_YES" = true ]; then
-        return 0
-    fi
-    read -p "$1 (y/n): " -n 1 -r
-    echo
-    [[ $REPLY =~ ^[Yy]$ ]]
-}
+# ── Main ─────────────────────────────────────────────────────────────
+print_banner
 
-log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
-
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-log_step() {
-    echo -e "${CYAN}[STEP]${NC} $1"
-}
-
-# Banner
-echo -e "${BLUE}================================================${NC}"
-echo -e "${BLUE}   LINCE Quickstart Installer${NC}"
-echo -e "${BLUE}================================================${NC}"
-echo ""
-
-# Check prerequisites
-log_step "Checking prerequisites..."
-
-MISSING_PREREQ=()
-
-if ! command -v bash >/dev/null 2>&1; then
-    MISSING_PREREQ+=("bash")
-fi
-
-if [ ${#MISSING_PREREQ[@]} -gt 0 ]; then
-    log_error "Missing prerequisites:"
-    for prereq in "${MISSING_PREREQ[@]}"; do
-        echo "  - $prereq"
+if [ "$USE_DEFAULTS" = true ]; then
+    INSTALL_SANDBOX=true
+    SANDBOX_BACKEND="bwrap"
+    for i in "${!AGENTS[@]}"; do AGENT_SELECTED[$i]=1; done
+    SELECTED_AGENTS=()
+    for i in "${!AGENTS[@]}"; do
+        IFS='|' read -r key _ _ <<< "${AGENTS[$i]}"
+        SELECTED_AGENTS+=("$key")
     done
-    exit 1
+    echo -e "  ${DIM}Using defaults: all agents, bwrap sandbox${NC}"
+else
+    select_sandbox_mode
+    select_sandbox_backend
+    select_agents
+    confirm_installation
 fi
 
-log_info "Found: bash"
-echo ""
+print_separator
+check_prerequisites
+print_separator
 
-# Determine which modules to install based on mode
-case $MODE in
-    mini)
-        MODULES_TO_INSTALL=("sandbox" "lince-dashboard")
-        ;;
-    full)
-        MODULES_TO_INSTALL=("${MODULES[@]}")
-        ;;
-    interactive)
-        # Show menu
-        echo "Select your setup:"
-        echo ""
-        echo "  1) Install  (sandbox + lince-dashboard)"
-        echo "  2) Exit"
-        echo ""
-        
-        read -p "Choice: " -n 1 -r CHOICE
-        echo ""
-        
-        case $CHOICE in
-            1)
-                MODULES_TO_INSTALL=("sandbox" "lince-dashboard")
-                ;;
-            2|*)
-                echo "Exiting."
-                exit 0
-                ;;
-        esac
-        ;;
-esac
-
-echo ""
-log_info "Installing: ${MODULES_TO_INSTALL[*]}"
-echo ""
-
-# Check dependencies for selected modules
-log_step "Checking module dependencies..."
-
-check_prerequisite() {
-    if ! command -v "$1" >/dev/null 2>&1; then
-        log_warn "Missing: $1 (required for $2)"
-        if confirm "Continue anyway?"; then
-            return 1
-        else
-            exit 2
-        fi
-    fi
-    return 0
-}
-
-# Sandbox has no module dependencies
-# lince-dashboard requires: zellij, rust (for WASM)
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " lince-dashboard " ]]; then
-    check_prerequisite "zellij" "lince-dashboard" || true
-fi
-
-
-echo ""
-
-# Install modules in order (respecting dependencies)
-# Order: sandbox -> lince-dashboard
-
-INSTALL_ORDER=(
-    "sandbox:sandbox/install.sh"
-    "lince-dashboard:lince-dashboard/install.sh"
-)
-
-TOTAL=${#MODULES_TO_INSTALL[@]}
-CURRENT=0
-
-for module in "${MODULES_TO_INSTALL[@]}"; do
-    CURRENT=$((CURRENT + 1))
-    
-    # Find install script
-    SCRIPT_PATH=""
-    for entry in "${INSTALL_ORDER[@]}"; do
-        key="${entry%%:*}"
-        value="${entry##*:}"
-        if [ "$key" = "$module" ]; then
-            SCRIPT_PATH="$SCRIPT_DIR/$value"
-            break
-        fi
-    done
-    
-    if [ -z "$SCRIPT_PATH" ] || [ ! -f "$SCRIPT_PATH" ]; then
-        log_warn "No install script for $module, skipping"
-        continue
-    fi
-    
-    echo -e "${BLUE}--- Installing $module ($CURRENT/$TOTAL) ---${NC}"
-    
-    if bash "$SCRIPT_PATH"; then
-        log_info "$module installed successfully"
-    else
-        log_error "Failed to install $module"
-        if ! confirm "Continue with remaining modules?"; then
-            exit 1
-        fi
-    fi
-    echo ""
-done
-
-# Final verification
-log_step "Verifying installation..."
-
-INSTALLED=()
-
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " sandbox " ]]; then
-    if command -v agent-sandbox >/dev/null 2>&1; then
-        INSTALLED+=("agent-sandbox")
-    fi
-fi
-
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " lince-dashboard " ]]; then
-    if [ -f "$HOME/.config/zellij/plugins/lince-dashboard.wasm" ]; then
-        INSTALLED+=("lince-dashboard")
-    fi
-fi
-
-
-# Summary
-echo ""
-echo -e "${BLUE}================================================${NC}"
-echo -e "${BLUE}   Installation Complete${NC}"
-echo -e "${BLUE}================================================${NC}"
-echo ""
-echo -e "${GREEN}Installed modules:${NC}"
-for mod in "${INSTALLED[@]}"; do
-    echo "  - $mod"
-done
-echo ""
-
-# Usage instructions
-echo -e "${GREEN}Usage:${NC}"
-echo ""
-
-if [[ " ${MODULES_TO_INSTALL[*]} " =~ " lince-dashboard " ]]; then
-    echo "  # Start the dashboard:"
-    echo "  source ~/.bashrc"
-    echo "  zd"
-    echo ""
-fi
-
-echo -e "${YELLOW}Optional — Voice input:${NC}"
-echo "  Install VoxCode for voice-controlled coding:"
-echo "  https://github.com/RisorseArtificiali/voxcode"
-echo ""
-echo -e "${YELLOW}For detailed documentation, see:${NC}"
-echo "  - README.md (main docs)"
-echo "  - QUICKSTART.md (step-by-step guide)"
-echo ""
+do_install_sandbox
+do_install_dashboard
+print_summary
