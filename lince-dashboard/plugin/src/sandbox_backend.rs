@@ -33,53 +33,6 @@ impl SandboxBackend {
             SandboxBackend::None => "none",
         }
     }
-
-    /// Whether this backend provides any sandboxing at all.
-    pub fn is_sandboxed(&self) -> bool {
-        !matches!(self, SandboxBackend::None)
-    }
-}
-
-/// Features that vary by sandbox backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxFeature {
-    /// Configuration diff/merge (agent-sandbox diff/merge).
-    ConfigDiff,
-    /// Rollback changes (nono undo / agent-sandbox snapshot-restore).
-    Rollback,
-    /// Learning mode (agent-sandbox learn / nono learn).
-    Learn,
-    /// Credential proxy (agent-sandbox credential proxy).
-    ProxyCredentials,
-    /// Filesystem snapshot (agent-sandbox snapshot).
-    Snapshot,
-}
-
-impl SandboxBackend {
-    /// Check if this backend supports a specific feature.
-    pub fn supports_feature(&self, feature: &SandboxFeature) -> bool {
-        matches!(
-            (self, feature),
-            // agent-sandbox supports all features
-            (SandboxBackend::AgentSandbox, _)
-            // nono supports rollback and learn
-            | (SandboxBackend::Nono, SandboxFeature::Rollback)
-            | (SandboxBackend::Nono, SandboxFeature::Learn)
-        )
-    }
-
-    /// Build the pane title pattern used for pane reconciliation.
-    ///
-    /// For agent-sandbox, the pane title contains "agent-sandbox".
-    /// For nono, the pane title contains "nono".
-    /// For none, we fall back to the agent-specific pattern from config.
-    pub fn default_pane_title_pattern(&self) -> &str {
-        match self {
-            SandboxBackend::AgentSandbox => "agent-sandbox",
-            SandboxBackend::Nono => "nono",
-            SandboxBackend::None => "",
-        }
-    }
 }
 
 /// Configuration for how the dashboard selects the sandbox backend.
@@ -144,52 +97,5 @@ impl DetectedBackends {
             }
         }
         result
-    }
-
-    /// Whether the OS is macOS.
-    pub fn is_macos(&self) -> bool {
-        self.os == "Darwin"
-    }
-
-    /// Resolve the effective backend for a given config preference.
-    ///
-    /// NOTE: Keep auto-detection priority in sync with
-    /// `sandbox/agent-sandbox` `resolve_backend()`.
-    pub fn resolve(&self, config: &BackendConfig) -> SandboxBackend {
-        match config {
-            BackendConfig::AgentSandbox => {
-                if self.has_agent_sandbox {
-                    SandboxBackend::AgentSandbox
-                } else {
-                    SandboxBackend::None
-                }
-            }
-            BackendConfig::Nono => {
-                if self.has_nono {
-                    SandboxBackend::Nono
-                } else {
-                    SandboxBackend::None
-                }
-            }
-            BackendConfig::Auto => {
-                if self.is_macos() {
-                    // On macOS, agent-sandbox (bwrap) is not available
-                    if self.has_nono {
-                        SandboxBackend::Nono
-                    } else {
-                        SandboxBackend::None
-                    }
-                } else {
-                    // On Linux, prefer agent-sandbox, fall back to nono
-                    if self.has_agent_sandbox {
-                        SandboxBackend::AgentSandbox
-                    } else if self.has_nono {
-                        SandboxBackend::Nono
-                    } else {
-                        SandboxBackend::None
-                    }
-                }
-            }
-        }
     }
 }

@@ -33,20 +33,20 @@ pub fn focus_agent(
 
     if agent_layout.is_tiled() {
         // Tiled panes are always visible — just switch terminal focus.
-        focus_terminal_pane(pid, false);
+        focus_terminal_pane(pid, false, true);
     } else {
         hide_agent_panes(all_agents, Some(&agent.id), agent_layout);
 
         match focus_mode {
             FocusMode::Floating => {
-                show_pane_with_id(PaneId::Terminal(pid), true);
-                focus_terminal_pane(pid, true);
+                show_pane_with_id(PaneId::Terminal(pid), true, true);
+                focus_terminal_pane(pid, true, true);
                 change_floating_panes_coordinates(vec![
                     (PaneId::Terminal(pid), crate::agent::default_agent_pane_coords()),
                 ]);
             }
             FocusMode::Replace => {
-                focus_terminal_pane(pid, false);
+                focus_terminal_pane(pid, false, true);
             }
         }
     }

@@ -179,9 +179,8 @@ pub struct DashboardConfig {
     /// any `[agents.<name>]` sections from the user's `config.toml`.
     #[serde(default)]
     pub agent_types: HashMap<String, AgentTypeConfig>,
-    /// Global sandbox backend preference.
-    /// Individual agent types can override this with their own `sandbox_backend` field.
-    /// Defaults to `Auto` (auto-detect based on OS and available tools).
+    /// Global sandbox backend preference (parsed from config, not yet wired to resolution).
+    #[allow(dead_code)]
     #[serde(default)]
     pub sandbox_backend: BackendConfig,
 }

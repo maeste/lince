@@ -9,7 +9,7 @@ name = "lince-dashboard"
 path = "src/main.rs"
 
 [dependencies]
-zellij-tile = "0.42.2"
+zellij-tile = "0.44.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -18,3 +18,4 @@ toml = "0.8"
 opt-level = "s"
 lto = true
 strip = true
+codegen-units = 1

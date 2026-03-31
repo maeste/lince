@@ -46,6 +46,13 @@ struct State {
     agent_types_loaded: bool,
     /// Detected sandbox backends (populated async after permissions granted).
     detected_backends: Option<DetectedBackends>,
+    /// Whether the init sequence (CWD detection + backend detection) has been kicked off.
+    /// Zellij >= 0.44 may auto-grant permissions without emitting PermissionRequestResult.
+    init_kicked: bool,
+    /// Number of CWD retry attempts via Timer fallback.
+    cwd_retries: u8,
+    /// Stop retrying CWD after max attempts.
+    cwd_retry_exhausted: bool,
 }
 
 impl Default for State {
@@ -69,6 +76,9 @@ impl Default for State {
             pending_restore: None,
             agent_types_loaded: false,
             detected_backends: None,
+            init_kicked: false,
+            cwd_retries: 0,
+            cwd_retry_exhausted: false,
         }
     }
 }
@@ -112,6 +122,12 @@ impl ZellijPlugin for State {
             PermissionType::WriteToStdin,
         ]);
 
+        // Eagerly try to init right away — Zellij >= 0.44 auto-grants
+        // permissions for local file plugins, so run_command may already work.
+        config::run_typed_command(&["pwd"], CMD_GET_CWD);
+        sandbox_backend::detect_backend_async();
+        self.init_kicked = true;
+
         // Always start timer: serves both file-polling and config hot-reload
         set_timeout(5.0);
     }
@@ -123,6 +139,7 @@ impl ZellijPlugin for State {
                 config::run_typed_command(&["pwd"], CMD_GET_CWD);
                 // Detect available sandbox backends (agent-sandbox, nono).
                 sandbox_backend::detect_backend_async();
+                self.init_kicked = true;
                 true
             }
             Event::Key(key) => self.handle_key(key),
@@ -135,6 +152,22 @@ impl ZellijPlugin for State {
             }
             Event::Timer(_elapsed) => {
                 let mut needs_render = false;
+
+                // Fallback: if PermissionRequestResult never fired (Zellij >= 0.44
+                // auto-grants local plugins without emitting the event), retry init.
+                if !self.init_kicked {
+                    self.init_kicked = true;
+                    config::run_typed_command(&["pwd"], CMD_GET_CWD);
+                    sandbox_backend::detect_backend_async();
+                } else if self.launch_dir.is_none() && !self.cwd_retry_exhausted {
+                    // CWD command was sent but no result yet — retry a few times
+                    self.cwd_retries += 1;
+                    if self.cwd_retries <= 3 {
+                        config::run_typed_command(&["pwd"], CMD_GET_CWD);
+                    } else {
+                        self.cwd_retry_exhausted = true;
+                    }
+                }
 
                 // Config hot-reload check
                 if let Some(ref path) = self.config_path {
