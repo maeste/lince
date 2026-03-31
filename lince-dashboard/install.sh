@@ -96,6 +96,27 @@ fi
 
 cp "$WASM_SRC" "$WASM_DST"
 echo -e "${GREEN}  ✓ Installed: $WASM_DST${NC}"
+
+# Pre-grant Zellij permissions so the plugin works without interactive prompt.
+# Zellij caches granted permissions in ~/.cache/zellij/permissions.kdl.
+PERMS_CACHE="$HOME/.cache/zellij/permissions.kdl"
+mkdir -p "$HOME/.cache/zellij"
+if [ -f "$PERMS_CACHE" ] && grep -q "lince-dashboard.wasm" "$PERMS_CACHE" 2>/dev/null; then
+    echo -e "${GREEN}  ✓ Plugin permissions already cached${NC}"
+else
+    cat >> "$PERMS_CACHE" << PERMSEOF
+"${WASM_DST}" {
+    RunCommands
+    ReadApplicationState
+    ReadCliPipes
+    WriteToStdin
+    ChangeApplicationState
+    OpenTerminalsOrPlugins
+    MessageAndLaunchOtherPlugins
+}
+PERMSEOF
+    echo -e "${GREEN}  ✓ Plugin permissions pre-granted${NC}"
+fi
 echo ""
 
 # ── Step 5: Install layouts ───────────────────────────────────────────

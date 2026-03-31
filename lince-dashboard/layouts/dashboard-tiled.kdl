@@ -36,7 +36,6 @@ layout {
             }
             pane size="40%" {
                 plugin location="file:~/.config/zellij/plugins/lince-dashboard.wasm" {
-                    _allow_exec_host_cmd true
                     config_path "~/.config/lince-dashboard/config.toml"
                 }
             }
