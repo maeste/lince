@@ -604,6 +604,44 @@ check_prerequisites() {
             warnings+=("bubblewrap not found")
             echo -e "  ${YELLOW}✗${NC} bubblewrap — ${DIM}sudo dnf install bubblewrap${NC}"
         fi
+
+        # Check unprivileged user namespaces (required by bubblewrap)
+        local userns_ok=true
+        local userns_clone
+        userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null)
+        if [ "$userns_clone" = "0" ]; then
+            userns_ok=false
+        fi
+        # Ubuntu 24.04+ uses AppArmor as a second layer blocking user namespaces
+        local apparmor_userns
+        apparmor_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)
+        if [ "$apparmor_userns" = "1" ]; then
+            userns_ok=false
+        fi
+
+        if [ "$userns_ok" = true ]; then
+            echo -e "  ${GREEN}✓${NC} unprivileged user namespaces"
+        else
+            echo ""
+            echo -e "  ${YELLOW}✗ Unprivileged user namespaces are restricted.${NC}"
+            echo -e "  ${DIM}  bubblewrap needs them to create sandboxes.${NC}"
+            echo ""
+            if confirm "  Fix automatically? (requires sudo)"; then
+                local sysctl_file="/etc/sysctl.d/50-bubblewrap.conf"
+                {
+                    echo "kernel.unprivileged_userns_clone=1"
+                    echo "kernel.apparmor_restrict_unprivileged_userns=0"
+                } | sudo tee "$sysctl_file" >/dev/null
+                sudo sysctl --system >/dev/null 2>&1
+                echo -e "  ${GREEN}✓ User namespaces enabled${NC}"
+                echo -e "  ${DIM}  Persisted in $sysctl_file${NC}"
+            else
+                warnings+=("unprivileged user namespaces restricted — bwrap will fail")
+                echo -e "  ${YELLOW}  To fix manually:${NC}"
+                echo -e "  ${CYAN}  sudo sysctl kernel.unprivileged_userns_clone=1${NC}"
+                echo -e "  ${CYAN}  sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0${NC}"
+            fi
+        fi
     fi
     if has_backend nono; then
         if command -v nono >/dev/null 2>&1; then
