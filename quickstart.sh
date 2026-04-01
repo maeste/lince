@@ -47,9 +47,9 @@ AGENT_SELECTED=(1 1 0 0)  # claude and codex on by default
 
 # Available backends: key|display_name|description|installed
 BACKENDS=(
-    "bwrap|bubblewrap (bwrap)|Same technology as Flatpak. Battle-tested, zero overhead."
-    "nono|nono|Landlock LSM (Linux) + Seatbelt (macOS). Newer, cross-platform."
-    "unsandboxed|Unsandboxed|Agents run directly on your system — no isolation."
+    "bwrap|bubblewrap (bwrap)|Built-in sandbox. Same technology as Flatpak. Minimal, zero dependencies."
+    "nono|nono (nono.sh)|External sandbox with network isolation. Landlock (Linux) + Seatbelt (macOS)."
+    "unsandboxed|Unsandboxed|No isolation — agent runs with full host access."
 )
 # Track backend selection state (1=selected, 0=not)
 BACKEND_SELECTED=(1 0 0)  # bwrap on by default
@@ -86,9 +86,13 @@ select_backends() {
     echo ""
     echo -e "${BOLD}Step 1: Sandbox backends${NC}"
     echo ""
-    echo -e "  LINCE wraps your AI agents in a sandbox so they can code"
+    echo -e "  LINCE can wrap each AI agent in a sandbox so it can code"
     echo -e "  freely without reaching your SSH keys, credentials, or"
-    echo -e "  pushing to production. Select which backends to configure."
+    echo -e "  pushing to production."
+    echo ""
+    echo -e "  ${DIM}These are NOT mutually exclusive — select all the backends${NC}"
+    echo -e "  ${DIM}you want available. When you spawn an agent, you pick one${NC}"
+    echo -e "  ${DIM}backend for that agent. Different agents can use different backends.${NC}"
     echo ""
 
     # On macOS, bwrap is not available — deselect it and select nono
@@ -121,7 +125,7 @@ select_backends() {
             case "$key" in
                 bwrap)
                     if [ "$has_bwrap" = true ]; then status=" ${GREEN}(installed)${NC}"
-                    else status=" ${YELLOW}(not installed — sudo dnf install bubblewrap)${NC}"; fi
+                    else status=" ${YELLOW}(not installed)${NC}"; fi
                     # Hide on macOS
                     if [ "$OS_NAME" = "Darwin" ]; then
                         echo -e "  ${DIM}[ ] $((i+1))) $name — Linux only${NC}"
@@ -588,12 +592,13 @@ check_prerequisites() {
         echo -e "  ${YELLOW}✗${NC} zellij not found — needed for dashboard"
     fi
 
-    # Rust (for WASM build)
-    if command -v rustc >/dev/null 2>&1; then
-        echo -e "  ${GREEN}✓${NC} rustc $(rustc --version 2>/dev/null | awk '{print $2}')"
+    # Rustup (distro rustc alone cannot provide wasm32 targets needed for dashboard)
+    if command -v rustup >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} rustup $(rustup --version 2>/dev/null | awk '{print $2}')"
     else
-        warnings+=("Rust not found (required to build dashboard plugin)")
-        echo -e "  ${YELLOW}✗${NC} rustc not found — needed to build dashboard"
+        warnings+=("rustup not found (required to build dashboard WASM plugin)")
+        echo -e "  ${YELLOW}✗${NC} rustup not found — needed to build dashboard"
+        echo -e "      ${DIM}Install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
     fi
 
     # Sandbox backends
@@ -602,7 +607,7 @@ check_prerequisites() {
             echo -e "  ${GREEN}✓${NC} bubblewrap"
         else
             warnings+=("bubblewrap not found")
-            echo -e "  ${YELLOW}✗${NC} bubblewrap — ${DIM}sudo dnf install bubblewrap${NC}"
+            echo -e "  ${YELLOW}✗${NC} bubblewrap — ${DIM}install via your package manager (dnf/apt/pacman)${NC}"
         fi
 
         # Check unprivileged user namespaces (required by bubblewrap)
