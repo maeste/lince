@@ -613,13 +613,13 @@ check_prerequisites() {
         # Check unprivileged user namespaces (required by bubblewrap)
         local userns_ok=true
         local userns_clone
-        userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null)
+        userns_clone=$(sysctl -n kernel.unprivileged_userns_clone 2>/dev/null || true)
         if [ "$userns_clone" = "0" ]; then
             userns_ok=false
         fi
         # Ubuntu 24.04+ uses AppArmor as a second layer blocking user namespaces
         local apparmor_userns
-        apparmor_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null)
+        apparmor_userns=$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)
         if [ "$apparmor_userns" = "1" ]; then
             userns_ok=false
         fi
