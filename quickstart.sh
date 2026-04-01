@@ -598,7 +598,7 @@ check_prerequisites() {
     else
         warnings+=("rustup not found (required to build dashboard WASM plugin)")
         echo -e "  ${YELLOW}✗${NC} rustup not found — needed to build dashboard"
-        echo -e "      ${DIM}Install: RUSTUP_INIT_SKIP_PATH_CHECK=yes curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
+        echo -e "      ${DIM}Install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | RUSTUP_INIT_SKIP_PATH_CHECK=yes sh${NC}"
     fi
 
     # Sandbox backends
