@@ -108,9 +108,17 @@ else
 fi
 PERMS_CACHE="$PERMS_CACHE_DIR/permissions.kdl"
 mkdir -p "$PERMS_CACHE_DIR"
-if [ -f "$PERMS_CACHE" ] && grep -q "lince-dashboard.wasm" "$PERMS_CACHE" 2>/dev/null; then
+# Check that permissions are actually granted (not just an empty entry).
+# Zellij may create the file with a plugin name but no permissions inside.
+if [ -f "$PERMS_CACHE" ] && grep -q "lince-dashboard.wasm" "$PERMS_CACHE" 2>/dev/null \
+   && grep -q "ReadApplicationState" "$PERMS_CACHE" 2>/dev/null; then
     echo -e "${GREEN}  ✓ Plugin permissions already cached${NC}"
 else
+    # Remove any stale empty entry before writing
+    if [ -f "$PERMS_CACHE" ]; then
+        sed -i.bak '/lince-dashboard\.wasm/,/^}/d' "$PERMS_CACHE"
+        rm -f "${PERMS_CACHE}.bak"
+    fi
     cat >> "$PERMS_CACHE" << PERMSEOF
 "${WASM_DST}" {
     RunCommands
@@ -316,6 +324,7 @@ echo -e "${BLUE}================================================${NC}"
 echo ""
 echo -e "${GREEN}Installed:${NC}"
 echo "  Plugin:   $WASM_DST"
+echo "  Perms:    $PERMS_CACHE"
 echo "  Layouts:  $LAYOUT_DIR/dashboard.kdl"
 echo "  Config:   $CONFIG_DST"
 echo "  Hooks:    ~/.local/bin/claude-status-hook.sh"
