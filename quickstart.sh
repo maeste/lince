@@ -566,6 +566,9 @@ check_prerequisites() {
 
     local warnings=()
 
+    local OS_NAME
+    OS_NAME="$(uname -s)"
+
     # Python
     if command -v python3 >/dev/null 2>&1; then
         local pyver
@@ -574,6 +577,12 @@ check_prerequisites() {
     else
         warnings+=("Python 3.11+ not found")
         echo -e "  ${YELLOW}✗${NC} Python 3.11+ not found"
+        if [ "$OS_NAME" = "Darwin" ]; then
+            echo -e "      ${DIM}Install: brew install python@3.11${NC}"
+        else
+            echo -e "      ${DIM}# Fedora/RHEL: sudo dnf install python3.11${NC}"
+            echo -e "      ${DIM}# Ubuntu/Debian: sudo apt install python3.11${NC}"
+        fi
     fi
 
     # Git
@@ -599,6 +608,34 @@ check_prerequisites() {
         warnings+=("rustup not found (required to build dashboard WASM plugin)")
         echo -e "  ${YELLOW}✗${NC} rustup not found — needed to build dashboard"
         echo -e "      ${DIM}Install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | RUSTUP_INIT_SKIP_PATH_CHECK=yes sh${NC}"
+    fi
+
+    # jq
+    if command -v jq >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} jq"
+    else
+        warnings+=("jq not found")
+        echo -e "  ${YELLOW}✗${NC} jq not found"
+        if [ "$OS_NAME" = "Darwin" ]; then
+            echo -e "      ${DIM}Install: brew install jq${NC}"
+        else
+            echo -e "      ${DIM}# Fedora/RHEL: sudo dnf install jq${NC}"
+            echo -e "      ${DIM}# Ubuntu/Debian: sudo apt install jq${NC}"
+        fi
+    fi
+
+    # Node.js
+    if command -v node >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓${NC} node $(node --version 2>/dev/null)"
+    else
+        warnings+=("Node.js not found")
+        echo -e "  ${YELLOW}✗${NC} node not found"
+        if [ "$OS_NAME" = "Darwin" ]; then
+            echo -e "      ${DIM}Install: brew install node${NC}"
+        else
+            echo -e "      ${DIM}# Fedora/RHEL: sudo dnf install nodejs${NC}"
+            echo -e "      ${DIM}# Ubuntu/Debian: sudo apt install nodejs${NC}"
+        fi
     fi
 
     # Sandbox backends
@@ -759,7 +796,9 @@ if [ "$USE_DEFAULTS" = true ]; then
 else
     select_backends
     select_agents
-    select_voxcode
+    if [ "$(uname -s)" != "Darwin" ]; then
+        select_voxcode
+    fi
     confirm_installation
 fi
 

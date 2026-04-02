@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+#
+# LINCE Installer — thin wrapper
+# https://lince.sh
+#
+# Usage:
+#   curl -sSL https://lince.sh/install | bash                    (interactive)
+#   curl -sSL https://lince.sh/install | bash -s -- --defaults   (non-interactive, sane defaults)
+#
+# This script:
+#   1. Prints banner and detects OS
+#   2. Checks basic prerequisites (python3, git, cc)
+#   3. Clones the lince repo to ~/.local/share/lince
+#   4. Delegates everything else to quickstart.sh
+#
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+echo ""
+echo -e "${CYAN}${BOLD}"
+echo "  ╦  ╦╔╗╔╔═╗╔═╗"
+echo "  ║  ║║║║║  ║╣ "
+echo "  ╩═╝╩╝╚╝╚═╝╚═╝"
+echo -e "${NC}"
+echo -e "  ${BOLD}Secure Multi-Agent Coding Workstation${NC}"
+echo -e "  https://lince.sh"
+echo ""
+
+# ── OS Detection ─────────────────────────────────────────────────────
+OS_NAME="$(uname -s)"
+ARCH="$(uname -m)"
+
+case "$OS_NAME" in
+  Linux)
+    echo -e "${GREEN}[*] Platform: Linux ($ARCH)${NC}"
+    ;;
+  Darwin)
+    echo -e "${YELLOW}[*] Platform: macOS ($ARCH) — experimental support${NC}"
+    echo "    Sandbox via nono (Seatbelt). Some features may need validation."
+    echo "    See: https://github.com/RisorseArtificiali/lince/issues/19"
+    ;;
+  *)
+    echo -e "${RED}[!] Unsupported OS: $OS_NAME${NC}"
+    echo "    LINCE currently supports Linux and macOS."
+    echo "    Windows: https://github.com/RisorseArtificiali/lince/issues/22"
+    exit 1
+    ;;
+esac
+echo ""
+
+# ── Helper functions ─────────────────────────────────────────────────
+check_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# ── Prerequisites ────────────────────────────────────────────────────
+echo -e "${BLUE}[1/2] Checking prerequisites...${NC}"
+
+MISSING=()
+
+# Python 3.11+
+if check_cmd python3; then
+  PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+  PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
+  PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
+  if [ "$PY_MAJOR" -ge 3 ] && [ "$PY_MINOR" -ge 11 ]; then
+    echo -e "  ${GREEN}✓${NC} Python $PY_VER"
+  else
+    MISSING+=("Python >= 3.11 (found $PY_VER)")
+    echo -e "  ${YELLOW}✗${NC} Python $PY_VER is too old (need 3.11+)"
+    echo "    Install:"
+    if [ "$OS_NAME" = "Darwin" ]; then
+      echo "      brew install python@3.11"
+    else
+      echo "      # Fedora/RHEL:"
+      echo "      sudo dnf install python3.11"
+      echo "      # Ubuntu/Debian:"
+      echo "      sudo apt install python3.11"
+    fi
+  fi
+else
+  MISSING+=("Python >= 3.11")
+  echo -e "  ${YELLOW}✗${NC} python3 not found"
+  echo "    Install:"
+  if [ "$OS_NAME" = "Darwin" ]; then
+    echo "      brew install python@3.11"
+  else
+    echo "      # Fedora/RHEL:"
+    echo "      sudo dnf install python3.11"
+    echo "      # Ubuntu/Debian:"
+    echo "      sudo apt install python3.11"
+  fi
+fi
+
+# Git
+if check_cmd git; then
+  echo -e "  ${GREEN}✓${NC} git"
+else
+  MISSING+=("git")
+fi
+
+# jq
+if check_cmd jq; then
+  echo -e "  ${GREEN}✓${NC} jq"
+else
+  MISSING+=("jq")
+  echo -e "  ${YELLOW}✗${NC} jq not found"
+  echo "    Install:"
+  if [ "$OS_NAME" = "Darwin" ]; then
+    echo "      brew install jq"
+  else
+    echo "      # Fedora/RHEL:"
+    echo "      sudo dnf install jq"
+    echo "      # Ubuntu/Debian:"
+    echo "      sudo apt install jq"
+  fi
+fi
+
+# Node.js
+if check_cmd node; then
+  echo -e "  ${GREEN}✓${NC} node $(node --version 2>/dev/null)"
+else
+  MISSING+=("Node.js")
+  echo -e "  ${YELLOW}✗${NC} node not found"
+  echo "    Install:"
+  if [ "$OS_NAME" = "Darwin" ]; then
+    echo "      brew install node"
+  else
+    echo "      # Fedora/RHEL:"
+    echo "      sudo dnf install nodejs"
+    echo "      # Ubuntu/Debian:"
+    echo "      sudo apt install nodejs"
+  fi
+fi
+
+# Zellij
+if check_cmd zellij; then
+  echo -e "  ${GREEN}✓${NC} zellij $(zellij --version 2>/dev/null | awk '{print $2}')"
+else
+  MISSING+=("zellij (>= 0.40)")
+  echo -e "  ${YELLOW}✗${NC} zellij not found"
+  echo ""
+  echo "    Install Zellij:"
+  if [ "$OS_NAME" = "Darwin" ]; then
+    echo "      brew install zellij"
+  else
+    echo "      mkdir -p ~/.local/bin && curl -L https://github.com/zellij-org/zellij/releases/latest/download/zellij-x86_64-unknown-linux-musl.tar.gz | tar xz && mv zellij ~/.local/bin/"
+    echo "      # Or via cargo:"
+    echo "      cargo install --locked zellij"
+  fi
+  echo ""
+fi
+
+# Sandbox backend
+if [ "$OS_NAME" = "Linux" ]; then
+  if check_cmd bwrap; then
+    echo -e "  ${GREEN}✓${NC} bubblewrap"
+  else
+    MISSING+=("bubblewrap")
+    echo -e "  ${YELLOW}✗${NC} bubblewrap not found"
+    echo "    Install: sudo dnf install bubblewrap  (or: sudo apt install bubblewrap)"
+  fi
+elif [ "$OS_NAME" = "Darwin" ]; then
+  if check_cmd nono; then
+    echo -e "  ${GREEN}✓${NC} nono"
+  else
+    MISSING+=("nono")
+    echo -e "  ${YELLOW}✗${NC} nono not found"
+    echo "    Install: brew install nono"
+    echo "    See: https://github.com/nicholasgasior/nono"
+  fi
+fi
+
+# C linker (required by Rust/cargo to compile native code)
+if check_cmd cc; then
+  echo -e "  ${GREEN}✓${NC} cc (C linker)"
+else
+  MISSING+=("C compiler/linker (cc)")
+  echo -e "  ${YELLOW}✗${NC} cc not found"
+  if [ "$OS_NAME" = "Darwin" ]; then
+    echo "    Install: xcode-select --install"
+  else
+    echo "    Install:"
+    echo "      # Fedora/RHEL:"
+    echo "      sudo dnf install gcc"
+    echo "      # Ubuntu/Debian:"
+    echo "      sudo apt install build-essential"
+  fi
+fi
+
+# Rustup (for dashboard WASM build — distro rustc alone cannot provide wasm32 targets)
+if check_cmd rustup; then
+  echo -e "  ${GREEN}✓${NC} rustup $(rustup --version 2>/dev/null | awk '{print $2}')"
+else
+  MISSING+=("rustup (for building dashboard WASM plugin)")
+  echo -e "  ${YELLOW}✗${NC} rustup not found"
+  echo "    Install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | RUSTUP_INIT_SKIP_PATH_CHECK=yes sh"
+fi
+
+echo ""
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+  echo -e "${YELLOW}Missing prerequisites:${NC}"
+  for m in "${MISSING[@]}"; do
+    echo "  - $m"
+  done
+  echo ""
+  echo "Install the missing prerequisites and re-run this script."
+  exit 1
+fi
+
+# ── Clone / update LINCE ─────────────────────────────────────────────
+INSTALL_DIR="$HOME/.local/share/lince"
+
+echo -e "${BLUE}[2/2] Fetching LINCE...${NC}"
+
+if [ -d "$INSTALL_DIR/.git" ]; then
+  echo "  Updating existing installation at $INSTALL_DIR..."
+  git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
+else
+  if [ -d "$INSTALL_DIR" ]; then
+    echo -e "  ${YELLOW}Directory exists but is not a git repo — removing and re-cloning${NC}"
+    rm -rf "$INSTALL_DIR"
+  fi
+  echo "  Cloning to $INSTALL_DIR..."
+  git clone https://github.com/RisorseArtificiali/lince.git "$INSTALL_DIR"
+fi
+echo ""
+
+# ── Delegate to quickstart.sh ────────────────────────────────────────
+QUICKSTART="$INSTALL_DIR/quickstart.sh"
+
+if [ ! -f "$QUICKSTART" ]; then
+  echo -e "${RED}[!] quickstart.sh not found at $QUICKSTART${NC}"
+  echo "    The lince repo may be outdated. Try removing $INSTALL_DIR and re-running."
+  exit 1
+fi
+
+echo -e "${CYAN}Handing off to quickstart.sh...${NC}"
+echo ""
+
+# When piped through curl | bash, stdin is the script itself, not the
+# terminal. We need to give quickstart.sh access to the real terminal
+# for interactive prompts.
+if [ -t 0 ]; then
+  # Already running in a terminal — just exec
+  exec bash "$QUICKSTART" "$@"
+else
+  # Piped (curl | bash) — run quickstart with stdin from /dev/tty
+  bash "$QUICKSTART" "$@" < /dev/tty
+fi

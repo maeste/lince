@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LINCE - Secure Multi-Agent Coding Workstation</title>
+  <meta name="description" content="Sandbox, orchestrate, and voice-control multiple AI coding agents from one terminal. Vendor-independent. Linux &amp; macOS.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Space Grotesk', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Consolas', 'monospace'],
+          },
+          colors: {
+            bg: '#0a0a0a',
+            surface: '#141414',
+            border: '#2a2a2a',
+            muted: '#888',
+            accent: '#4ade80',
+            'accent-dim': '#22543d',
+            cyan: '#22d3ee',
+            amber: '#fbbf24',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background: #0a0a0a; color: #e5e5e5; }
+    .glow { text-shadow: 0 0 20px rgba(74,222,128,0.3); }
+    .cmd-box { background: #141414; border: 1px solid #2a2a2a; }
+    .cmd-box:hover { border-color: #4ade80; }
+    .feature-card { background: #141414; border: 1px solid #2a2a2a; transition: border-color 0.2s; }
+    .feature-card:hover { border-color: #555; }
+    .copy-btn { transition: opacity 0.2s; }
+    .copy-btn:hover { opacity: 1; }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+    .cursor-blink { animation: blink 1s step-end infinite; }
+    ::selection { background: #22543d; color: #4ade80; }
+  </style>
+</head>
+<body class="font-sans antialiased">
+
+  <!-- Nav -->
+  <nav class="sticky top-0 z-50 border-b border-border bg-bg/90 backdrop-blur-sm">
+    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+      <a href="#" class="text-xl font-bold tracking-tight">
+        <span class="text-accent">lince</span><span class="text-muted">.sh</span>
+      </a>
+      <div class="flex gap-6 text-sm text-muted">
+        <a href="#features" class="hover:text-white transition-colors">Features</a>
+        <a href="#sandbox" class="hover:text-white transition-colors">Sandbox</a>
+        <a href="#install" class="hover:text-white transition-colors">Install</a>
+        <a href="#repos" class="hover:text-white transition-colors">Repos</a>
+        <a href="https://github.com/RisorseArtificiali/lince" class="hover:text-white transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="max-w-5xl mx-auto px-6 pt-24 pb-16">
+    <div class="max-w-3xl">
+      <p class="text-accent font-mono text-sm mb-4 tracking-wider uppercase">Secure multi-agent workstation</p>
+      <h1 class="text-4xl sm:text-5xl font-bold leading-tight mb-6">
+        Your agents should be<br>
+        <span class="text-accent glow">sandboxed, orchestrated,</span><br>
+        and <span class="text-accent glow">vendor-independent.</span>
+      </h1>
+      <p class="text-lg text-muted leading-relaxed mb-8 max-w-2xl">
+        LINCE turns your terminal into a multi-agent engineering workstation.
+        Run Claude, Codex, Gemini, or any coding agent in parallel &mdash; each one
+        sandboxed, monitored, and controllable by voice. No vendor lock-in.
+      </p>
+
+      <!-- Install command -->
+      <div class="cmd-box rounded-lg p-4 font-mono text-sm flex items-center gap-3 mb-4 max-w-lg group cursor-pointer" onclick="copyInstall(this)">
+        <span class="text-accent select-none">$</span>
+        <code class="text-white flex-1">curl -sSL https://lince.sh/install | bash</code>
+        <button class="copy-btn opacity-50 text-muted text-xs" title="Copy">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+      <p class="text-xs text-muted">Linux (fully supported) &middot; macOS (experimental) &middot; <a href="https://github.com/RisorseArtificiali/lince/issues/22" class="text-accent hover:underline">Windows (planned)</a></p>
+    </div>
+  </section>
+
+  <!-- Problem -->
+  <section class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-20">
+      <h2 class="text-2xl font-bold mb-10">Why LINCE?</h2>
+      <div class="grid sm:grid-cols-2 gap-6">
+        <div class="feature-card rounded-lg p-6">
+          <div class="text-2xl mb-3">&#x1f6e1;</div>
+          <h3 class="font-semibold mb-2">Agents need sandboxing</h3>
+          <p class="text-sm text-muted leading-relaxed">AI coding agents get full terminal access. Without isolation, one bad command can reach your SSH keys, cloud credentials, or git push to production. LINCE lets you sandbox each agent with multiple backends &mdash; and choose per-agent at runtime.</p>
+        </div>
+        <div class="feature-card rounded-lg p-6">
+          <div class="text-2xl mb-3">&#x1f3af;</div>
+          <h3 class="font-semibold mb-2">Orchestrate, don't babysit</h3>
+          <p class="text-sm text-muted leading-relaxed">Run 8+ agents in parallel across different projects. The TUI dashboard shows real-time status, token usage, and active tools. Spawn, focus, hide, kill agents with single keystrokes.</p>
+        </div>
+        <div class="feature-card rounded-lg p-6">
+          <div class="text-2xl mb-3">&#x1f399;</div>
+          <h3 class="font-semibold mb-2">Whisper to any agent</h3>
+          <p class="text-sm text-muted leading-relaxed">Speak and your words are transcribed locally via Whisper, then routed to whichever agent has focus. No audio leaves your machine. Works with any agent, not just one vendor.</p>
+        </div>
+        <div class="feature-card rounded-lg p-6">
+          <div class="text-2xl mb-3">&#x1f310;</div>
+          <h3 class="font-semibold mb-2">No vendor lock-in</h3>
+          <p class="text-sm text-muted leading-relaxed">Your workflow and security should not depend on a single vendor. LINCE supports Claude Code, Codex, Gemini, OpenCode, Aider, Amp &mdash; and any custom agent via config. Switch freely.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features / Dashboard -->
+  <section id="features" class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-20">
+      <h2 class="text-2xl font-bold mb-4">The Dashboard</h2>
+      <p class="text-muted mb-8 max-w-2xl">A Zellij WASM plugin that acts as your command center. Config-driven &mdash; add new agent types with TOML, no code changes.</p>
+
+      <!-- Dashboard screenshot with hover detail -->
+      <div class="rounded-lg mb-8 overflow-hidden border border-border relative group">
+        <img src="assets/dashboard.png" alt="LINCE Dashboard - showing multiple agents running in parallel with status, sandbox, and profile columns" class="w-full rounded-lg transition-opacity duration-300 group-hover:opacity-0" loading="lazy">
+        <img src="assets/dashboard-detail.png" alt="LINCE Dashboard - detailed view showing agent info panel and Claude Code interaction" class="w-full rounded-lg absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100" loading="lazy">
+      </div>
+
+      <div class="grid sm:grid-cols-3 gap-4 text-sm">
+        <div class="feature-card rounded-lg p-4">
+          <h4 class="font-semibold mb-1">Multi-agent</h4>
+          <p class="text-muted">8+ agents in parallel. Claude, Codex, Gemini, OpenCode, or custom.</p>
+        </div>
+        <div class="feature-card rounded-lg p-4">
+          <h4 class="font-semibold mb-1">Session persistence</h4>
+          <p class="text-muted">Save and restore your agent constellation across sessions.</p>
+        </div>
+        <div class="feature-card rounded-lg p-4">
+          <h4 class="font-semibold mb-1">Voice relay</h4>
+          <p class="text-muted">VoxCode transcriptions piped directly to the focused agent.</p>
+        </div>
+        <div class="feature-card rounded-lg p-4">
+          <h4 class="font-semibold mb-1">Sandbox isolation</h4>
+          <p class="text-muted">Choose a sandbox backend per agent at launch &mdash; or run unsandboxed when you need full host access.</p>
+        </div>
+        <div class="feature-card rounded-lg p-4">
+          <h4 class="font-semibold mb-1">Swimlane grouping</h4>
+          <p class="text-muted">Agents auto-grouped by project directory when working across repos.</p>
+        </div>
+        <div class="feature-card rounded-lg p-4">
+          <h4 class="font-semibold mb-1">Config-driven</h4>
+          <p class="text-muted">Add agents via TOML. No code changes, no recompilation.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section id="install" class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-20">
+      <h2 class="text-2xl font-bold mb-8">Install</h2>
+
+      <div class="grid sm:grid-cols-2 gap-8">
+        <!-- Quick install -->
+        <div>
+          <h3 class="font-semibold mb-3">One-liner</h3>
+          <div class="cmd-box rounded-lg p-4 font-mono text-sm mb-3">
+            <span class="text-accent">$</span> curl -sSL https://lince.sh/install | bash
+          </div>
+          <p class="text-sm text-muted">Interactive wizard: detects your OS, installs prerequisites, sets up sandbox + dashboard. Offers optional VoxCode voice input.</p>
+        </div>
+
+        <!-- Manual -->
+        <div>
+          <h3 class="font-semibold mb-3">Manual</h3>
+          <div class="cmd-box rounded-lg p-4 font-mono text-sm space-y-1 mb-3">
+            <div><span class="text-accent">$</span> git clone https://github.com/RisorseArtificiali/lince</div>
+            <div><span class="text-accent">$</span> cd lince/sandbox && ./install.sh</div>
+            <div><span class="text-accent">$</span> cd ../lince-dashboard && ./install.sh</div>
+            <div><span class="text-accent">$</span> source ~/.bashrc && zd</div>
+          </div>
+          <p class="text-sm text-muted">Clone, install sandbox + dashboard, launch. See <a href="https://github.com/RisorseArtificiali/lince/blob/main/QUICKSTART.md" class="text-accent hover:underline">QUICKSTART.md</a> for details.</p>
+        </div>
+      </div>
+
+      <!-- Platform support -->
+      <div class="mt-10 grid sm:grid-cols-3 gap-4 text-sm">
+        <div class="feature-card rounded-lg p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-accent font-bold">&#10003;</span>
+            <h4 class="font-semibold">Linux</h4>
+          </div>
+          <p class="text-muted">Fully supported. Tested on Fedora, Ubuntu, Arch.</p>
+        </div>
+        <div class="feature-card rounded-lg p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-amber font-bold">&#x26A0;</span>
+            <h4 class="font-semibold">macOS</h4>
+          </div>
+          <p class="text-muted">Experimental. Sandbox via <a href="https://nono.sh" class="text-accent hover:underline">nono</a> (Seatbelt). <a href="https://github.com/RisorseArtificiali/lince/issues/19" class="text-accent hover:underline">Looking for testers.</a></p>
+        </div>
+        <div class="feature-card rounded-lg p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-muted font-bold">&#x2014;</span>
+            <h4 class="font-semibold">Windows</h4>
+          </div>
+          <p class="text-muted">Planned. WSL2 likely works today. <a href="https://github.com/RisorseArtificiali/lince/issues/22" class="text-accent hover:underline">Tracking issue.</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architecture -->
+  <section class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-20">
+      <h2 class="text-2xl font-bold mb-8">How it works</h2>
+      <div class="cmd-box rounded-lg p-6 font-mono text-xs sm:text-sm leading-loose overflow-x-auto">
+<pre>
+You speak    <span class="text-muted">───></span>  <span class="text-cyan">VoxCode</span>      <span class="text-muted">───></span>  Whisper transcribes locally
+                                     │
+                              <span class="text-accent">Dashboard</span>  <span class="text-muted"><───</span>  routes to focused agent
+                                     │
+                            <span class="text-amber">agent-sandbox</span>  <span class="text-muted"><───</span>  isolates execution
+                              <span class="text-muted">├── bwrap</span>  ┐
+                              <span class="text-muted">├── nono</span>   ├── <span class="text-muted">choose per agent</span>
+                              <span class="text-muted">└── none</span>   ┘
+                              ┌──────┼──────┐
+                         <span class="text-white">Claude</span>   <span class="text-white">Codex</span>   <span class="text-white">Gemini</span>   <span class="text-muted">...any agent</span>
+                              │      │      │
+                           project/ project/ project/
+</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sandbox Backends -->
+  <section id="sandbox" class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-20">
+      <h2 class="text-2xl font-bold mb-4">Sandbox Backends</h2>
+      <p class="text-muted mb-8 max-w-2xl">The installer configures which backends are available. Each time you launch an agent, you choose which one to use.</p>
+
+      <div class="grid sm:grid-cols-3 gap-6">
+        <div class="feature-card rounded-lg p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-accent font-bold">&#10003;</span>
+            <h3 class="font-semibold">bubblewrap</h3>
+          </div>
+          <p class="text-xs font-mono text-muted mb-3">Linux only</p>
+          <p class="text-sm text-muted leading-relaxed">Same technology as Flatpak. LINCE's built-in sandbox &mdash; minimal by design, zero external dependencies. Battle-tested, zero overhead.</p>
+        </div>
+        <div class="feature-card rounded-lg p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-accent font-bold">&#10003;</span>
+            <h3 class="font-semibold">nono</h3>
+          </div>
+          <p class="text-xs font-mono text-muted mb-3">Linux &amp; macOS</p>
+          <p class="text-sm text-muted leading-relaxed">Newer alternative. Integration with <a href="https://nono.sh" class="text-accent hover:underline">nono.sh</a>, an external project focused on security including network isolation. Uses Landlock on Linux, Seatbelt on macOS. Brings some additional dependencies.</p>
+        </div>
+        <div class="feature-card rounded-lg p-6">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-muted font-bold">&#x26A0;</span>
+            <h3 class="font-semibold">Unsandboxed</h3>
+          </div>
+          <p class="text-xs font-mono text-muted mb-3">Any platform</p>
+          <p class="text-sm text-muted leading-relaxed">No isolation. The agent runs directly on your system with full host access. Use for trusted tasks where you need unrestricted access to the host environment.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Repos -->
+  <section id="repos" class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-20">
+      <h2 class="text-2xl font-bold mb-8">Repositories</h2>
+      <div class="grid sm:grid-cols-2 gap-4">
+        <a href="https://github.com/RisorseArtificiali/lince" class="feature-card rounded-lg p-5 block group">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-accent font-mono text-sm">core</span>
+            <h3 class="font-semibold group-hover:text-accent transition-colors">lince</h3>
+          </div>
+          <p class="text-sm text-muted">Sandbox + Dashboard + Hooks. The multi-agent orchestration platform.</p>
+        </a>
+        <a href="https://github.com/RisorseArtificiali/voxcode" class="feature-card rounded-lg p-5 block group">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-cyan font-mono text-sm">voice</span>
+            <h3 class="font-semibold group-hover:text-cyan transition-colors">voxcode</h3>
+          </div>
+          <p class="text-sm text-muted">Voice input for AI agents. Local Whisper transcription, Zellij pipe integration.</p>
+        </a>
+        <a href="https://github.com/RisorseArtificiali/voxtts" class="feature-card rounded-lg p-5 block group">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-amber font-mono text-sm">audio</span>
+            <h3 class="font-semibold group-hover:text-amber transition-colors">voxtts</h3>
+          </div>
+          <p class="text-sm text-muted">Text-to-Speech with local GPU/CPU engines. Kokoro and Piper TTS.</p>
+        </a>
+        <a href="https://github.com/RisorseArtificiali/agent-ready-skill" class="feature-card rounded-lg p-5 block group">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="text-muted font-mono text-sm">skill</span>
+            <h3 class="font-semibold group-hover:text-white transition-colors">agent-ready-skill</h3>
+          </div>
+          <p class="text-sm text-muted">Assess any project's readiness for agentic coding. agentskills.io compliant.</p>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-10 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-muted">
+      <p>&copy; 2026 <a href="https://github.com/RisorseArtificiali" class="hover:text-white transition-colors">RisorseArtificiali</a>. MIT License.</p>
+      <div class="flex gap-6">
+        <a href="https://github.com/RisorseArtificiali/lince" class="hover:text-white transition-colors">GitHub</a>
+        <a href="https://github.com/RisorseArtificiali/lince/blob/main/QUICKSTART.md" class="hover:text-white transition-colors">Docs</a>
+        <a href="https://github.com/RisorseArtificiali/lince/issues" class="hover:text-white transition-colors">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    function copyInstall(el) {
+      navigator.clipboard.writeText('curl -sSL https://lince.sh/install | bash');
+      const btn = el.querySelector('.copy-btn');
+      btn.textContent = 'Copied!';
+      setTimeout(() => {
+        btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      }, 2000);
+    }
+  </script>
+</body>
+</html>
