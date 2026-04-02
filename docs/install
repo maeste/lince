@@ -223,17 +223,12 @@ INSTALL_DIR="$HOME/.local/share/lince"
 
 echo -e "${BLUE}[2/2] Fetching LINCE...${NC}"
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-  echo "  Updating existing installation at $INSTALL_DIR..."
-  git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
-else
-  if [ -d "$INSTALL_DIR" ]; then
-    echo -e "  ${YELLOW}Directory exists but is not a git repo — removing and re-cloning${NC}"
-    rm -rf "$INSTALL_DIR"
-  fi
-  echo "  Cloning to $INSTALL_DIR..."
-  git clone https://github.com/RisorseArtificiali/lince.git "$INSTALL_DIR"
+if [ -d "$INSTALL_DIR" ]; then
+  echo -e "  ${DIM}Removing previous clone at $INSTALL_DIR...${NC}"
+  rm -rf "$INSTALL_DIR"
 fi
+echo "  Cloning to $INSTALL_DIR..."
+git clone https://github.com/RisorseArtificiali/lince.git "$INSTALL_DIR"
 echo ""
 
 # ── Delegate to quickstart.sh ────────────────────────────────────────
@@ -251,10 +246,20 @@ echo ""
 # When piped through curl | bash, stdin is the script itself, not the
 # terminal. We need to give quickstart.sh access to the real terminal
 # for interactive prompts.
+#
+# After successful installation, clean up the temporary clone.
+cleanup_clone() {
+  if [ -d "$INSTALL_DIR" ]; then
+    echo ""
+    echo -e "${DIM}Cleaning up temporary clone ($INSTALL_DIR)...${NC}"
+    rm -rf "$INSTALL_DIR"
+  fi
+}
+
 if [ -t 0 ]; then
-  # Already running in a terminal — just exec
-  exec bash "$QUICKSTART" "$@"
+  # Already running in a terminal — just exec (can't cleanup after exec)
+  bash "$QUICKSTART" "$@" && cleanup_clone
 else
   # Piped (curl | bash) — run quickstart with stdin from /dev/tty
-  bash "$QUICKSTART" "$@" < /dev/tty
+  bash "$QUICKSTART" "$@" < /dev/tty && cleanup_clone
 fi

@@ -496,19 +496,27 @@ do_install_voxcode() {
     local VOXCODE_DIR="$HOME/.local/share/voxcode"
 
     if [ -d "$VOXCODE_DIR" ]; then
-        echo -e "  ${DIM}Updating existing clone...${NC}"
-        cd "$VOXCODE_DIR" && git pull --ff-only 2>/dev/null || true
-    else
-        echo -e "  ${DIM}Cloning voxcode...${NC}"
-        git clone https://github.com/RisorseArtificiali/voxcode.git "$VOXCODE_DIR"
+        echo -e "  ${DIM}Removing previous clone...${NC}"
+        rm -rf "$VOXCODE_DIR"
     fi
+    echo -e "  ${DIM}Cloning voxcode...${NC}"
+    git clone https://github.com/RisorseArtificiali/voxcode.git "$VOXCODE_DIR"
 
     cd "$VOXCODE_DIR"
+    local voxcode_ok=false
     if bash install.sh; then
         echo -e "${GREEN}✓ VoxCode installed${NC}"
+        voxcode_ok=true
     else
         echo -e "${RED}✗ VoxCode installation failed${NC}"
         echo -e "  ${DIM}Dashboard will use the standard layout (no voice pane).${NC}"
+    fi
+
+    # Clean up temporary clone
+    cd "$SCRIPT_DIR"
+    if [ "$voxcode_ok" = true ] && [ -d "$VOXCODE_DIR" ]; then
+        echo -e "  ${DIM}Cleaning up voxcode clone...${NC}"
+        rm -rf "$VOXCODE_DIR"
     fi
 }
 
