@@ -98,9 +98,16 @@ cp "$WASM_SRC" "$WASM_DST"
 echo -e "${GREEN}  ✓ Installed: $WASM_DST${NC}"
 
 # Pre-grant Zellij permissions so the plugin works without interactive prompt.
-# Zellij caches granted permissions in ~/.cache/zellij/permissions.kdl.
-PERMS_CACHE="$HOME/.cache/zellij/permissions.kdl"
-mkdir -p "$HOME/.cache/zellij"
+# Zellij cache location differs by OS:
+#   Linux: ~/.cache/zellij/permissions.kdl
+#   macOS: ~/Library/Caches/org.Zellij-Contributors.Zellij/permissions.kdl
+if [ "$(uname -s)" = "Darwin" ]; then
+    PERMS_CACHE_DIR="$HOME/Library/Caches/org.Zellij-Contributors.Zellij"
+else
+    PERMS_CACHE_DIR="$HOME/.cache/zellij"
+fi
+PERMS_CACHE="$PERMS_CACHE_DIR/permissions.kdl"
+mkdir -p "$PERMS_CACHE_DIR"
 if [ -f "$PERMS_CACHE" ] && grep -q "lince-dashboard.wasm" "$PERMS_CACHE" 2>/dev/null; then
     echo -e "${GREEN}  ✓ Plugin permissions already cached${NC}"
 else

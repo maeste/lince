@@ -18,7 +18,11 @@
 
 set -e
 
-CACHE_DIR="$HOME/.cache/zellij"
+if [ "$(uname -s)" = "Darwin" ]; then
+    CACHE_DIR="$HOME/Library/Caches/org.Zellij-Contributors.Zellij"
+else
+    CACHE_DIR="$HOME/.cache/zellij"
+fi
 PERMS_FILE="$CACHE_DIR/permissions.kdl"
 PLUGIN_WASM="$HOME/.config/zellij/plugins/lince-dashboard.wasm"
 
