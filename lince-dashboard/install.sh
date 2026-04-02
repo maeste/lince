@@ -230,8 +230,28 @@ else
 fi
 echo ""
 
-# ── Step 10: Install lince-setup skill ────────────────────────────────
-echo -e "${GREEN}[10/12] Installing lince-setup skill...${NC}"
+# ── Step 10: Install nono profiles ────────────────────────────────────
+echo -e "${GREEN}[10/13] Installing nono sandbox profiles...${NC}"
+
+NONO_PROFILES_SRC="$SCRIPT_DIR/nono-profiles"
+NONO_PROFILES_DST="$HOME/.config/nono/profiles"
+
+if [ -d "$NONO_PROFILES_SRC" ]; then
+    mkdir -p "$NONO_PROFILES_DST"
+    count=0
+    for profile in "$NONO_PROFILES_SRC"/lince-*.json; do
+        [ -f "$profile" ] || continue
+        cp "$profile" "$NONO_PROFILES_DST/"
+        count=$((count + 1))
+    done
+    echo -e "${GREEN}  ✓ Installed $count nono profiles to $NONO_PROFILES_DST${NC}"
+else
+    echo -e "${YELLOW}  ⚠ nono-profiles/ not found — skipping${NC}"
+fi
+echo ""
+
+# ── Step 11: Install lince-setup skill ────────────────────────────────
+echo -e "${GREEN}[11/13] Installing lince-setup skill...${NC}"
 
 SKILL_SRC="$SCRIPT_DIR/skills/lince-setup"
 SKILL_DST="$HOME/.claude/skills/lince-setup"
@@ -245,8 +265,8 @@ else
 fi
 echo ""
 
-# ── Step 11: Shell aliases ────────────────────────────────────────────
-echo -e "${GREEN}[11/12] Setting up shell aliases...${NC}"
+# ── Step 12: Shell aliases ────────────────────────────────────────────
+echo -e "${GREEN}[12/13] Setting up shell aliases...${NC}"
 
 ALIAS_LINES='alias zd="zellij --layout dashboard"
 alias z="zellij"
@@ -267,8 +287,8 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 echo ""
 
-# ── Step 12: VoxCode layout selection ─────────────────────────────────
-echo -e "${GREEN}[12/12] VoxCode layout configuration...${NC}"
+# ── Step 13: VoxCode layout selection ─────────────────────────────────
+echo -e "${GREEN}[13/13] VoxCode layout configuration...${NC}"
 
 if command -v voxcode >/dev/null 2>&1; then
     echo -e "${GREEN}  ✓ voxcode detected${NC}"
@@ -331,6 +351,7 @@ echo "  Hooks:    ~/.local/bin/claude-status-hook.sh"
 echo "            ~/.local/bin/codex-status-hook.sh"
 echo "  Wrapper:  ~/.local/bin/lince-agent-wrapper"
 echo "  Defaults: ~/.config/lince-dashboard/agents-defaults.toml"
+echo "  Nono:     ~/.config/nono/profiles/lince-*.json"
 echo "  Skill:    ~/.claude/skills/lince-setup/"
 echo ""
 echo -e "${GREEN}Sandbox backend:${NC}"

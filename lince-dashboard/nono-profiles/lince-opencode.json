@@ -1,0 +1,40 @@
+{
+  "extends": "opencode",
+  "description": "LINCE sandbox profile for OpenCode",
+  "filesystem": {
+    "allow": [
+      "$WORKDIR",
+      "$HOME/.local/share/opencode"
+    ],
+    "read": [
+      "$HOME/.local/lib",
+      "$HOME/.config/opencode"
+    ]
+  },
+  "environment": {
+    "passthrough": [
+      "TERM",
+      "COLORTERM",
+      "TERM_PROGRAM",
+      "LANG",
+      "LC_ALL",
+      "EDITOR",
+      "VISUAL",
+      "ZELLIJ",
+      "ZELLIJ_SESSION_NAME",
+      "LINCE_AGENT_ID"
+    ]
+  },
+  "security": {
+    "allowed_commands": [
+      "git",
+      "python3",
+      "node",
+      "cargo",
+      "npm",
+      "go",
+      "make"
+    ],
+    "signal_mode": "allow_same_sandbox"
+  }
+}

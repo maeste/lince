@@ -1,0 +1,40 @@
+{
+  "extends": "codex",
+  "description": "LINCE sandbox profile for OpenAI Codex",
+  "filesystem": {
+    "allow": [
+      "$WORKDIR",
+      "$HOME/.codex"
+    ],
+    "read": [
+      "$HOME/.local/lib"
+    ]
+  },
+  "environment": {
+    "passthrough": [
+      "TERM",
+      "COLORTERM",
+      "TERM_PROGRAM",
+      "LANG",
+      "LC_ALL",
+      "EDITOR",
+      "VISUAL",
+      "ZELLIJ",
+      "ZELLIJ_SESSION_NAME",
+      "LINCE_AGENT_ID",
+      "OPENAI_API_KEY"
+    ]
+  },
+  "security": {
+    "allowed_commands": [
+      "git",
+      "python3",
+      "node",
+      "cargo",
+      "npm",
+      "go",
+      "make"
+    ],
+    "signal_mode": "allow_same_sandbox"
+  }
+}

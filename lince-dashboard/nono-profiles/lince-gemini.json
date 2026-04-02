@@ -1,0 +1,40 @@
+{
+  "extends": "default",
+  "description": "LINCE sandbox profile for Google Gemini CLI",
+  "filesystem": {
+    "allow": [
+      "$WORKDIR",
+      "$HOME/.gemini"
+    ],
+    "read": [
+      "$HOME/.local/lib"
+    ]
+  },
+  "environment": {
+    "passthrough": [
+      "TERM",
+      "COLORTERM",
+      "TERM_PROGRAM",
+      "LANG",
+      "LC_ALL",
+      "EDITOR",
+      "VISUAL",
+      "ZELLIJ",
+      "ZELLIJ_SESSION_NAME",
+      "LINCE_AGENT_ID",
+      "GEMINI_API_KEY"
+    ]
+  },
+  "security": {
+    "allowed_commands": [
+      "git",
+      "python3",
+      "node",
+      "cargo",
+      "npm",
+      "go",
+      "make"
+    ],
+    "signal_mode": "allow_same_sandbox"
+  }
+}
