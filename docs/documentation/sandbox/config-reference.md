@@ -1,0 +1,311 @@
+# Configuration Reference
+
+## Overview
+
+The sandbox is configured through a single TOML file. It is searched in order:
+
+1. `./.agent-sandbox/config.toml` -- project-local override (takes priority)
+2. `~/.agent-sandbox/config.toml` -- global fallback
+
+Create the file with `agent-sandbox init`. No inline defaults exist; the sandbox refuses to start without a real config file. Project-local configs let you set different profiles, extra writable directories, or security settings per repository.
+
+---
+
+## [sandbox]
+
+General sandbox behavior and filesystem exposure.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `extra_rw` | list of strings | `[]` | Extra directories the agent can write to (besides the current project) |
+| `ro_dirs` | list of strings | `["~/project"]` | Directories the agent can read but not write |
+| `persist_toolchains` | bool | `true` | Persist build-tool caches (cargo registry, npm cache, go modules) between sessions |
+| `auto_expose_path` | bool | `true` | Auto-detect `$PATH` entries under `$HOME` and expose them read-only |
+| `home_ro_dirs` | list of strings | `[".config/gcloud"]` | Additional home subdirectories to expose read-only (relative to `$HOME`) |
+| `default_profile` | string | `""` | Default provider profile when `-P` is not specified. Set to a profile name defined in `[*.profiles.*]`. Leave empty to run without a profile |
+| `backend` | string | `"auto"` | Sandbox backend: `"agent-sandbox"` (bubblewrap), `"nono"` (Landlock/Seatbelt), or `"auto"` (prefers agent-sandbox on Linux, nono on macOS) |
+
+```toml
+[sandbox]
+extra_rw = []
+ro_dirs = ["~/project"]
+persist_toolchains = true
+auto_expose_path = true
+home_ro_dirs = [".config/gcloud"]
+default_profile = "zai"
+backend = "auto"
+```
+
+---
+
+## [claude]
+
+Legacy section for Claude Code configuration. Still works for backward compatibility. Prefer `[agents.claude]` for new setups.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `config_dir` | string | `"~/.agent-sandbox/claude-config"` | Sandbox's isolated copy of Claude's config directory |
+| `use_real_config` | bool | `false` | Use real `~/.claude` and `~/.claude.json` directly instead of an isolated copy. Disables `diff`/`merge` |
+
+```toml
+[claude]
+config_dir = "~/.agent-sandbox/claude-config"
+use_real_config = false
+```
+
+---
+
+## [agents.\<name\>]
+
+Per-agent configuration. Defines how to run a specific AI coding agent inside the sandbox. Overrides defaults from `agents-defaults.toml`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `command` | string | (required) | Binary name to execute |
+| `default_args` | list of strings | `[]` | Default CLI arguments passed to the agent |
+| `env` | table | `{}` | Extra environment variables to set inside the sandbox |
+| `home_ro_dirs` | list of strings | `[]` | Home subdirectories to bind read-only |
+| `home_rw_dirs` | list of strings | `[]` | Home subdirectories to bind read-write |
+| `bwrap_conflict` | bool | `false` | Agent uses bwrap internally (triggers inner-sandbox disabling) |
+| `disable_inner_sandbox_args` | list of strings | `[]` | Arguments injected to disable the agent's own sandbox when `bwrap_conflict` is true |
+
+```toml
+[agents.codex]
+command = "codex"
+default_args = ["--full-auto"]
+env = {}
+home_ro_dirs = []
+home_rw_dirs = [".codex"]
+bwrap_conflict = true
+disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+```
+
+Shipped defaults (in `agents-defaults.toml`): `claude`, `codex`, `gemini`, `aider`, `opencode`, `amp`, `bash`.
+
+---
+
+## [git]
+
+Git configuration sanitization for the sandbox.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `strip_sections` | list of strings | `['credential', 'url ".*"']` | Regex patterns matched against `.gitconfig` section headers to strip. Removes credential helpers and URL rewrite rules |
+
+### [git.overrides]
+
+Git config values forced in the sanitized gitconfig.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `"push.default"` | string | `"nothing"` | Forces bare `git push` to do nothing |
+
+```toml
+[git]
+strip_sections = ['credential', 'url ".*"']
+
+[git.overrides]
+"push.default" = "nothing"
+```
+
+---
+
+## [env]
+
+Environment variable isolation. All host env vars are cleared; only those listed here pass through.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `passthrough` | list of strings | `["TERM", "COLORTERM", "TERM_PROGRAM", "LANG", "LC_ALL", "EDITOR", "VISUAL", "ZELLIJ", "ZELLIJ_SESSION_NAME", "LINCE_AGENT_ID"]` | Host environment variables passed into the sandbox. API keys should go in profiles, not here |
+
+### [env.extra]
+
+Static environment variables set inside every sandbox run, regardless of profile.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| *(any key)* | string | -- | `KEY = "value"` pairs injected via `--setenv` |
+
+```toml
+[env]
+passthrough = ["TERM", "COLORTERM", "TERM_PROGRAM", "LANG", "LC_ALL", "EDITOR", "VISUAL"]
+
+[env.extra]
+# MY_CUSTOM_VAR = "value"
+```
+
+---
+
+## [logging]
+
+Session transcript logging via the `script` command.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `false` | Enable transcript logging by default (overridable with `--log` / `--no-log`) |
+| `dir` | string | `"~/.agent-sandbox/logs"` | Directory for log files |
+
+Logs are saved as `YYYY-MM-DD_HHMMSS_projectname.log` with full ANSI colors. View with `cat` (colors preserved) or pipe through `col -b` for plain text.
+
+```toml
+[logging]
+enabled = false
+dir = "~/.agent-sandbox/logs"
+```
+
+---
+
+## [snapshot]
+
+Filesystem snapshot configuration.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `auto_project` | bool | `false` | Auto-snapshot the project directory before each sandbox run. Off by default (can be slow for large repos) |
+| `auto_config` | bool | `true` | Auto-snapshot the agent config directory before each run. Config dirs are small, so this is essentially free |
+| `max_project_snapshots` | int | `3` | Maximum project snapshots to keep (oldest pruned first) |
+| `max_config_snapshots` | int | `5` | Maximum agent config snapshots to keep |
+| `project_exclude` | list of strings | `[".git", "node_modules", "target", "__pycache__", ".venv", "build", "dist"]` | Directories excluded from project snapshots |
+
+Snapshots are stored in `~/.agent-sandbox/snapshots/` using rsync `--link-dest` for hardlink-based deduplication. Unchanged files share disk blocks with the previous snapshot.
+
+```toml
+[snapshot]
+auto_project = false
+auto_config = true
+max_project_snapshots = 3
+max_config_snapshots = 5
+project_exclude = [".git", "node_modules", "target", "__pycache__", ".venv", "build", "dist"]
+```
+
+---
+
+## [security]
+
+Security features and hardening options.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `unshare_pid` | bool | `true` | PID namespace: hide host processes from the sandbox |
+| `new_session` | bool | `false` | New terminal session: prevents terminal escape-sequence attacks. May interfere with Ctrl+C propagation |
+| `block_git_push` | bool | `true` | Block `git push` via a wrapper script placed first in `$PATH` |
+| `credential_proxy` | bool | `false` | Credential proxy: intercept API calls and inject credentials on the host side so API keys never enter the sandbox |
+
+```toml
+[security]
+unshare_pid = true
+new_session = false
+block_git_push = true
+credential_proxy = false
+```
+
+---
+
+## [credential_proxy]
+
+Optional configuration for the credential proxy (only relevant when `[security].credential_proxy = true`).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `blocked_hosts` | list of strings | `["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]` | Extra hosts to block. Cloud metadata endpoints are always blocked |
+
+```toml
+[credential_proxy]
+blocked_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]
+```
+
+---
+
+## Profiles
+
+Profiles store provider credentials and agent-specific overrides so API keys live in the TOML file instead of your shell environment. Two naming formats are supported:
+
+**Namespaced (recommended)**:
+```toml
+[claude.profiles.vertex]
+description = "Vertex AI"
+[claude.profiles.vertex.env]
+CLAUDE_CODE_USE_VERTEX = "1"
+ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
+ANTHROPIC_VERTEX_REGION = "us-east5"
+
+[codex.profiles.default]
+description = "Default OpenAI key"
+[codex.profiles.default.env]
+OPENAI_API_KEY = "sk-..."
+```
+
+**Legacy (still works, mapped to `claude`)**:
+```toml
+[profiles.vertex]
+description = "Vertex AI"
+[profiles.vertex.env]
+CLAUDE_CODE_USE_VERTEX = "1"
+```
+
+### Profile keys
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `description` | string | Human-readable label (shown in the run banner) |
+| `env` | table | Environment variables injected via `--setenv` |
+| `env_unset` | list of strings | Environment variables to explicitly unset inside the sandbox |
+| `default_args` | list of strings | Override the agent's `default_args` when this profile is active |
+
+### Interaction with the -P flag
+
+- `default_profile` in `[sandbox]` sets the profile used when `-P` is omitted.
+- `-P <name>` overrides the default for that invocation.
+- Profile env vars are injected via bwrap `--setenv` and do not need to exist in the host shell.
+- If a profile defines `default_args`, those replace the base agent `default_args`.
+
+### Security note
+
+API keys live in the TOML file. Set restrictive permissions:
+
+```bash
+chmod 600 ~/.agent-sandbox/config.toml
+```
+
+---
+
+## Directory Layout
+
+After initialization, `~/.agent-sandbox/` contains:
+
+```
+~/.agent-sandbox/
+├── config.toml             # Sandbox configuration
+├── claude-config/          # Isolated copy of ~/.claude (writable by agent)
+│   ├── settings.json
+│   ├── CLAUDE.md
+│   ├── projects/
+│   └── ...
+├── gitconfig               # Sanitized .gitconfig (read-only in sandbox)
+├── bin/
+│   └── git                 # Wrapper that blocks git push
+├── toolchains/             # Persistent build caches
+│   ├── cargo/
+│   │   ├── registry/       # Cargo crate downloads (writable)
+│   │   └── git/            # Cargo git checkouts (writable)
+│   ├── npm-cache/          # npm download cache (writable)
+│   └── go/                 # Go module cache (writable)
+├── snapshots/              # Filesystem snapshots
+│   ├── projects/           # Project dir snapshots (by project hash)
+│   │   └── a1b2c3d4e5f6/
+│   │       └── 20260326T120000/
+│   └── configs/            # Agent config snapshots (by agent name)
+│       └── claude/
+│           └── 20260326T120000/
+├── proxy.pid               # Credential proxy PID file (when running)
+└── logs/                   # Session transcripts (if logging enabled)
+    └── 2025-01-15_143022_myrepo.log
+```
+
+---
+
+## See Also
+
+- [CLI Reference](sandbox/cli-reference.md) -- command synopsis, flags, and usage examples
+- [Security Model](sandbox/security-model.md) -- threat model, defense layers, credential proxy details
+- [Cheatsheet](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/CHEATSHEET.md) -- quick-reference card

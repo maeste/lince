@@ -122,9 +122,13 @@ Dashboard:       Status updates in real-time (Running → INPUT → Idle)
 
 The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that manages multiple AI coding agents (Claude Code, Codex, Gemini, OpenCode, and any custom agent). Spawn agents, monitor status, show/hide panes, relay voice input, persist sessions. Agent types are fully config-driven — add new agents via TOML or use the `/lince-setup` skill. See [lince-dashboard/README.md](lince-dashboard/README.md).
 
+Documentation: [Usage Guide](https://lince.sh/documentation/#/dashboard/usage-guide) | [Configuration](https://lince.sh/documentation/#/dashboard/config-reference) | [Agent Examples](https://lince.sh/documentation/#/dashboard/agent-examples)
+
 ### [sandbox/](sandbox/)
 
 Bubblewrap-based sandbox for running AI coding agents safely. Restricts filesystem access, blocks git push, isolates environment variables, and hides host processes — with near-zero overhead. Supports any agent via `--agent` flag (`agent-sandbox run -a codex`, `-a gemini`, etc.). Used by the dashboard to spawn every agent.
+
+Documentation: [CLI Reference](https://lince.sh/documentation/#/sandbox/cli-reference) | [Configuration](https://lince.sh/documentation/#/sandbox/config-reference) | [Security Model](https://lince.sh/documentation/#/sandbox/security-model)
 
 ### `/lince-setup` skill (bundled with lince-dashboard)
 

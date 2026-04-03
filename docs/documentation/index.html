@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>LINCE Documentation</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Documentation for LINCE — the secure multi-agent coding workstation.">
+  <link rel="stylesheet" href="//cdn.jsdelivr.net/npm/docsify@4/lib/themes/dark.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body {
+      background: #0a0a0a !important;
+      font-family: 'Space Grotesk', system-ui, sans-serif;
+    }
+    code, pre, .token { font-family: 'JetBrains Mono', Consolas, monospace !important; }
+
+    /* Sidebar */
+    .sidebar {
+      background: #141414 !important;
+      border-right: 1px solid #2a2a2a !important;
+    }
+    .sidebar ul li a { color: #888 !important; font-size: 14px; }
+    .sidebar ul li a:hover { color: #4ade80 !important; }
+    .sidebar ul li.active > a { color: #4ade80 !important; font-weight: 600; }
+    .sidebar-nav > ul > li > p {
+      color: #e5e5e5 !important;
+      font-weight: 600;
+      font-size: 0.8em;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 15px 0 5px 0;
+    }
+    .app-name-link { color: #4ade80 !important; font-weight: 700; }
+    .search input {
+      background: #1a1a1a !important;
+      color: #e5e5e5 !important;
+      border: 1px solid #2a2a2a !important;
+      border-radius: 4px !important;
+    }
+    .search .matching-post { background: #141414 !important; }
+
+    /* Content area */
+    .markdown-section { color: #e5e5e5 !important; }
+    .markdown-section h1,
+    .markdown-section h2,
+    .markdown-section h3,
+    .markdown-section h4 { color: #fff !important; }
+    .markdown-section h1 { border-bottom: 1px solid #2a2a2a; padding-bottom: 10px; }
+    .markdown-section a { color: #4ade80 !important; }
+    .markdown-section a:hover { text-decoration: underline; }
+
+    /* Code */
+    .markdown-section code {
+      background: #1a1a1a !important;
+      color: #4ade80 !important;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 0.9em;
+    }
+    .markdown-section pre {
+      background: #1a1a1a !important;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 16px !important;
+    }
+    .markdown-section pre > code {
+      color: #e5e5e5 !important;
+      background: transparent !important;
+      padding: 0;
+    }
+
+    /* Tables */
+    .markdown-section table { border-collapse: collapse; width: 100%; }
+    .markdown-section table th {
+      background: #1a1a1a !important;
+      color: #4ade80 !important;
+      text-align: left;
+      padding: 8px 12px;
+      border: 1px solid #2a2a2a;
+      font-weight: 600;
+    }
+    .markdown-section table td {
+      padding: 8px 12px;
+      border: 1px solid #2a2a2a;
+      color: #e5e5e5;
+    }
+    .markdown-section table tr:nth-child(odd) td { background: #141414; }
+    .markdown-section table tr:nth-child(even) td { background: #0f0f0f; }
+
+    /* Blockquote */
+    .markdown-section blockquote {
+      border-left: 3px solid #4ade80 !important;
+      color: #888 !important;
+      background: #141414 !important;
+    }
+
+    /* GitHub corner — hide the oversized default */
+    .github-corner { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="app">Loading...</div>
+  <script>
+    window.$docsify = {
+      name: '<span style="color:#4ade80">lince</span><span style="color:#888">.sh</span>',
+      nameLink: 'https://lince.sh',
+      repo: '',
+      loadSidebar: true,
+      alias: {
+        '/.*/_sidebar.md': '/_sidebar.md',
+      },
+      subMaxLevel: 2,
+      auto2top: true,
+      homepage: 'README.md',
+      notFoundPage: true,
+      search: {
+        placeholder: 'Search docs...',
+        noData: 'No results.',
+        paths: 'auto',
+      },
+      themeColor: '#4ade80',
+    }
+  </script>
+  <script src="//cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/prism-bash.min.js"></script>
+  <script src="//cdn.jsdelivr.net/npm/prismjs@1/components/prism-toml.min.js"></script>
+</body>
+</html>

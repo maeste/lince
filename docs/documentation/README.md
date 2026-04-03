@@ -1,0 +1,27 @@
+# LINCE Documentation
+
+LINCE (Linux Intelligent Native Coding Environment) turns your terminal into a multi-agent engineering workstation. Run Claude Code, Codex, Gemini, or any AI coding agent in parallel -- each one sandboxed, monitored, and controllable by voice.
+
+## Sandbox (agent-sandbox)
+
+Bubblewrap-based sandbox for running AI coding agents safely. Restricts filesystem access, blocks git push, isolates environment variables, and hides host processes -- with near-zero overhead.
+
+- [CLI Reference](sandbox/cli-reference.md) -- all commands and flags
+- [Configuration Reference](sandbox/config-reference.md) -- every TOML config option
+- [Security Model](sandbox/security-model.md) -- threat model, defense layers, what's blocked
+
+## Dashboard (lince-dashboard)
+
+Multi-agent TUI dashboard for Zellij. Spawn, monitor, and switch between multiple agents from one terminal pane.
+
+- [Usage Guide](dashboard/usage-guide.md) -- keybindings, wizard, features
+- [Configuration Reference](dashboard/config-reference.md) -- dashboard and agent type config
+- [Agent Examples](dashboard/agent-examples.md) -- defaults, custom agents, advanced setups
+
+## Quick Links
+
+- [Getting Started](https://github.com/RisorseArtificiali/lince/blob/main/QUICKSTART.md)
+- [GitHub Repository](https://github.com/RisorseArtificiali/lince)
+- [Cheat Sheet](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/CHEATSHEET.md)
+- [Multi-Agent Guide](https://github.com/RisorseArtificiali/lince/blob/main/lince-dashboard/MULTI-AGENT-GUIDE.md)
+- [nono Integration](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/docs/nono-integration.md)
