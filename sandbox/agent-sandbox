@@ -1203,6 +1203,7 @@ def human_size(n: int) -> str:
 
 
 _home_path_dirs_cache: list[Path] | None = None
+_home_path_entries_cache: list[Path] | None = None
 
 
 def detect_home_path_dirs() -> list[Path]:
@@ -1225,6 +1226,35 @@ def detect_home_path_dirs() -> list[Path]:
             result.append(top)
     _home_path_dirs_cache = sorted(result)
     return _home_path_dirs_cache
+
+
+def detect_home_path_entries() -> list[Path]:
+    """Return all $PATH entries under $HOME, preserving the original deep paths (cached).
+
+    Unlike detect_home_path_dirs() which collapses to top-level dirs (for mounting),
+    this returns every original host PATH entry under $HOME.  Used to add deep
+    subdirectories like ~/Applications/apache-maven-3.9.14/bin to the sandbox PATH
+    when their top-level parent is already mounted read-only.
+    """
+    global _home_path_entries_cache
+    if _home_path_entries_cache is not None:
+        return _home_path_entries_cache
+    home = Path.home()
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for entry in os.environ.get("PATH", "").split(":"):
+        if not entry:
+            continue
+        p = Path(entry).resolve()
+        try:
+            p.relative_to(home)
+        except ValueError:
+            continue
+        if p not in seen and p.is_dir():
+            seen.add(p)
+            result.append(p)
+    _home_path_entries_cache = result
+    return _home_path_entries_cache
 
 
 # ---------------------------------------------------------------------------
@@ -1503,7 +1533,9 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
         path_parts.append(str(SANDBOX_DIR / "bin"))
     path_parts += ["/usr/local/bin", "/usr/bin", "/bin"]
     if sandbox.get("auto_expose_path", True):
-        for p in detect_home_path_dirs():
+        home_top_dirs = detect_home_path_dirs()
+        mounted_tops = set(home_top_dirs)
+        for p in home_top_dirs:
             # Add bin-like directories from home
             path_parts.append(str(p))
             # Also add common bin subdirectories
@@ -1511,6 +1543,20 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                 sp = p / sub
                 if sp.is_dir() and str(sp) not in path_parts:
                     path_parts.append(str(sp))
+        # Also add deeper host PATH entries that fall under mounted
+        # top-level dirs (e.g. ~/Applications/apache-maven-3.9.14/bin).
+        home_p = Path.home()
+        for entry in detect_home_path_entries():
+            entry_str = str(entry)
+            if entry_str in path_parts:
+                continue
+            try:
+                rel = entry.relative_to(home_p)
+            except ValueError:
+                continue
+            top = home_p / rel.parts[0]
+            if top in mounted_tops:
+                path_parts.append(entry_str)
     cmd += ["--setenv", "PATH", ":".join(dict.fromkeys(path_parts))]
 
     # Toolchain env vars
@@ -1713,10 +1759,15 @@ def cmd_init(args) -> None:
 
     # Auto-detected PATH dirs
     home_dirs = detect_home_path_dirs()
+    home_entries = detect_home_path_entries()
     if home_dirs:
         print(f"\n  Auto-detected PATH dirs under $HOME ({len(home_dirs)}):")
         for d in home_dirs:
+            # Show deep PATH entries under this top-level dir
+            deep = [e for e in home_entries if e != d and str(e).startswith(str(d) + "/")]
             print(f"    ro  {d}")
+            for de in deep:
+                print(f"        + {de}  (deep PATH entry)")
 
     # Create default config.toml if none exists
     config_created = False
@@ -2132,7 +2183,10 @@ def cmd_status(args) -> None:
 
     # Auto-detected PATH dirs
     home_dirs = detect_home_path_dirs()
-    print(f"  home PATH dirs  {len(home_dirs)} detected")
+    home_entries = detect_home_path_entries()
+    deep_count = len(home_entries) - len(home_dirs)
+    extra = f" (+{deep_count} deep)" if deep_count > 0 else ""
+    print(f"  home PATH dirs  {len(home_dirs)} detected{extra}")
 
     # Profiles — collect from all agent types (legacy + namespaced)
     default_prof = config_data.get("sandbox", {}).get("default_profile", "") or None
@@ -3797,12 +3851,26 @@ def build_learn_bwrap_cmd(
         path_parts.append(str(SANDBOX_DIR / "bin"))
     path_parts += ["/usr/local/bin", "/usr/bin", "/bin"]
     if sandbox.get("auto_expose_path", True):
-        for p in detect_home_path_dirs():
+        home_top_dirs = detect_home_path_dirs()
+        mounted_tops = set(home_top_dirs)
+        for p in home_top_dirs:
             path_parts.append(str(p))
             for sub in ("bin",):
                 sp = p / sub
                 if sp.is_dir() and str(sp) not in path_parts:
                     path_parts.append(str(sp))
+        home_p = Path.home()
+        for entry in detect_home_path_entries():
+            entry_str = str(entry)
+            if entry_str in path_parts:
+                continue
+            try:
+                rel = entry.relative_to(home_p)
+            except ValueError:
+                continue
+            top = home_p / rel.parts[0]
+            if top in mounted_tops:
+                path_parts.append(entry_str)
     cmd += ["--setenv", "PATH", ":".join(dict.fromkeys(path_parts))]
 
     # Toolchain env vars
