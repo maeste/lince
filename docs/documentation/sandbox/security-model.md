@@ -59,7 +59,7 @@ Nine layers of defense, most enabled by default:
 | Read/write project directory | Agent needs to edit your code | `--bind $PWD $PWD` (writable) |
 | Read other projects | Agent may reference sibling repos | `--ro-bind ~/project ~/project` (configurable) |
 | Network access | Needed for API calls, pip, npm, git clone | No `--unshare-net` |
-| Build tools | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected |
+| Build tools | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected (including deep subdirectories) |
 | Agent config | Settings, MCP servers, skills | Isolated copy in `~/.agent-sandbox/claude-config` |
 | Package caches | cargo, npm, go can download dependencies | Persistent writable dirs for registry/cache subdirectories |
 | Filesystem snapshots | Undo agent damage to project or config | rsync hardlink-based snapshots with interactive restore |
@@ -86,7 +86,7 @@ agent-sandbox builds a [bubblewrap](https://github.com/containers/bubblewrap) co
     ├── .cargo/             read-only   (binaries), writable (registry cache)
     ├── project/            read-only   (sibling repos visible)
     │   └── myrepo/         WRITABLE    (your current project)
-    └── ...other PATH dirs  read-only   (auto-detected)
+    └── ...other PATH dirs  read-only   (auto-detected, deep subdirs included)
 ```
 
 Environment variables are cleared (`--clearenv`) and only an explicit whitelist is injected. This prevents leaking `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, or any other secret from your shell.

@@ -11,7 +11,10 @@ ro_dirs = ["~/project"]
 # Persist build tool caches between sessions
 persist_toolchains = true
 
-# Auto-detect PATH entries under $HOME and expose read-only
+# Auto-detect PATH entries under $HOME and expose read-only.
+# Top-level dirs are mounted, and any deeper subdirectories explicitly
+# in the host PATH are also added to the sandbox PATH (e.g.
+# ~/Applications/apache-maven-3.9.14/bin).
 auto_expose_path = true
 
 # Extra home subdirectories to expose read-only (relative to $HOME)

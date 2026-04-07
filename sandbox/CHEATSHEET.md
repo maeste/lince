@@ -64,7 +64,7 @@ Quick reference for what the sandbox blocks and what it lets through.
 | Variable | Access | Notes |
 |----------|--------|-------|
 | `TERM`, `LANG`, `EDITOR` | **Passed through** | Basic shell env |
-| `PATH` | **Set by sandbox** | Includes sandbox bin, system, and detected home tools |
+| `PATH` | **Set by sandbox** | Includes sandbox bin, system, detected home tools, and deep subdirectories explicitly in host PATH |
 | `ANTHROPIC_API_KEY` | **From profile only** | Not inherited from shell |
 | `AWS_SECRET_ACCESS_KEY` | **Blocked** | Never passed |
 | `GITHUB_TOKEN`, `GH_TOKEN` | **Blocked** | Never passed |

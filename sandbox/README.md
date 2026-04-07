@@ -32,7 +32,7 @@ Claude Code's `--dangerously-skip-permissions` flag removes all confirmation pro
 | **Read/write project directory** | Claude needs to edit your code | `--bind $PWD $PWD` (writable) |
 | **Read other projects** | Claude may need to reference sibling repos | `--ro-bind ~/project ~/project` (read-only, configurable) |
 | **Network access** | Needed for Anthropic API, pip, npm, git clone | No `--unshare-net` |
-| **Build tools** | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected |
+| **Build tools** | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected (including deep subdirectories) |
 | **Claude config** | Settings, MCP servers, skills | Isolated copy in `~/.agent-sandbox/claude-config` |
 | **Package caches** | `cargo build` can download crates, npm can cache | Persistent writable dirs for registry/cache subdirectories |
 | **Filesystem snapshots** | Undo agent damage to project or config dirs | rsync hardlink-based snapshots with interactive restore |
@@ -57,7 +57,7 @@ agent-sandbox builds a [bubblewrap](https://github.com/containers/bubblewrap) co
     ├── .cargo/             read-only   (binaries), writable (registry cache)
     ├── project/            read-only   (sibling repos visible)
     │   └── myrepo/         WRITABLE    (your current project)
-    └── ...other PATH dirs  read-only   (auto-detected)
+    └── ...other PATH dirs  read-only   (auto-detected, deep subdirs included)
 ```
 
 ## Sandbox Backends
@@ -143,11 +143,15 @@ echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/99-userns.con
 
 ### Claude can't find a tool (node, python, etc.)
 
+The sandbox auto-detects `$HOME` directories from your host `$PATH` and exposes them read-only. It also includes any deeper subdirectories that are explicitly in your host PATH — for example, if your shell has `~/Applications/apache-maven-3.9.14/bin` in `$PATH`, the sandbox will mount `~/Applications` read-only and add the deep `bin` path to the sandbox PATH automatically.
+
 If the tool is installed under `$HOME` but not in your `$PATH`, add its directory to `home_ro_dirs` in the config:
 ```toml
 [sandbox]
 home_ro_dirs = [".nvm", ".pyenv"]
 ```
+
+Note: `home_ro_dirs` only mounts the filesystem — it does not add entries to PATH. For the tool to be found, either add its `bin` directory to your host shell PATH (preferred — the sandbox will pick it up automatically) or use the full path inside the sandbox.
 
 ### Ctrl+C doesn't work
 
