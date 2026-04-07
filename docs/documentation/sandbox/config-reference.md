@@ -20,8 +20,8 @@ General sandbox behavior and filesystem exposure.
 | `extra_rw` | list of strings | `[]` | Extra directories the agent can write to (besides the current project) |
 | `ro_dirs` | list of strings | `["~/project"]` | Directories the agent can read but not write |
 | `persist_toolchains` | bool | `true` | Persist build-tool caches (cargo registry, npm cache, go modules) between sessions |
-| `auto_expose_path` | bool | `true` | Auto-detect `$PATH` entries under `$HOME` and expose them read-only |
-| `home_ro_dirs` | list of strings | `[".config/gcloud"]` | Additional home subdirectories to expose read-only (relative to `$HOME`) |
+| `auto_expose_path` | bool | `true` | Auto-detect `$PATH` entries under `$HOME` and expose them read-only. Top-level dirs are mounted, and deeper subdirectories explicitly in the host PATH are also added to the sandbox PATH (e.g. `~/Applications/apache-maven-3.9.14/bin`) |
+| `home_ro_dirs` | list of strings | `[".config/gcloud"]` | Additional home subdirectories to expose read-only (relative to `$HOME`). Note: this only mounts the filesystem — it does not add entries to PATH. Add the tool's `bin` directory to your host shell PATH for automatic sandbox PATH inclusion |
 | `default_profile` | string | `""` | Default provider profile when `-P` is not specified. Set to a profile name defined in `[*.profiles.*]`. Leave empty to run without a profile |
 | `backend` | string | `"auto"` | Sandbox backend: `"agent-sandbox"` (bubblewrap), `"nono"` (Landlock/Seatbelt), or `"auto"` (prefers agent-sandbox on Linux, nono on macOS) |
 
