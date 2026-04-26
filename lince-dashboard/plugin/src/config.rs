@@ -439,17 +439,17 @@ pub fn discover_profiles_async(sandbox_config_path: Option<&str>, launch_dir: Op
 /// `type=load_agent_defaults`.
 ///
 /// The shell reads the defaults file first, then (separated by NUL) any
-/// `[agents.*]` sections from the user's config.toml so they can be merged.
-pub fn load_agent_defaults_async(sandbox_config_path: Option<&str>) {
+/// `[agents.*]` sections from the user's dashboard config.toml so they can
+/// be merged.  User entries override defaults (full replacement per key).
+pub fn load_agent_defaults_async(_sandbox_config_path: Option<&str>) {
     let defaults_path = "\"$HOME/.config/lince-dashboard/agents-defaults.toml\"";
+    let user_cfg_path = "\"$HOME/.config/lince-dashboard/config.toml\"";
 
-    let raw_cfg = sandbox_config_path.unwrap_or("~/.agent-sandbox/config.toml");
-    let cfg_expr = shell_path_expr(raw_cfg);
-
-    // Output defaults first, then NUL, then user config (which may contain [agents.*]).
+    // Output defaults first, then NUL, then user dashboard config (which may
+    // contain [agents.*]).
     let script = format!(
         "cat {} 2>/dev/null ; printf '\\0' ; cat {} 2>/dev/null",
-        defaults_path, cfg_expr
+        defaults_path, user_cfg_path
     );
 
     run_typed_command(&["sh", "-c", &script], CMD_LOAD_AGENT_DEFAULTS);

@@ -64,3 +64,27 @@ sandbox_backend = "auto"
 # bwrap_conflict = false
 # disable_inner_sandbox_args = []
 
+# Zai (cc-mirror) agent types
+[agents.zai]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "claude-status"
+display_name = "Zai"
+short_label = "ZAI"
+color = "blue"
+sandboxed = true
+has_native_hooks = true
+home_ro_dirs = ["~/.cc-mirror/zai/config/"]
+profiles = ["__discover__"]
+
+[agents.zai-unsandboxed]
+command = ["zai"]
+pane_title_pattern = "zai"
+status_pipe_name = "claude-status"
+display_name = "Zai (unsandboxed)"
+short_label = "ZAU"
+color = "blue"
+sandboxed = false
+has_native_hooks = true
+profiles = ["__discover__"]
+
