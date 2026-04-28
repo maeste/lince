@@ -185,6 +185,7 @@ pub struct AgentInfo {
     pub current_tool: Option<String>,
     pub started_at: Option<u64>,
     pub last_error: Option<String>,
+    pub exit_code: Option<i32>,
     pub group: Option<String>,
     pub running_subagents: u32,
     pub model: Option<String>,
