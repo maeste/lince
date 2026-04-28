@@ -63,4 +63,3 @@ sandbox_backend = "auto"
 # home_rw_dirs = []
 # bwrap_conflict = false
 # disable_inner_sandbox_args = []
-
