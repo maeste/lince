@@ -207,6 +207,18 @@ impl AgentInfo {
             self.running_subagents = 0;
         }
     }
+
+    /// Status label with exit code annotation for stopped agents.
+    pub fn status_display(&self) -> String {
+        if self.status == AgentStatus::Stopped {
+            match self.exit_code {
+                Some(code) => format!("Stopped ({code})"),
+                None => "Stopped".to_string(),
+            }
+        } else {
+            self.status.label().to_string()
+        }
+    }
 }
 
 // ── Save/Restore Types ───────────────────────────────────────────────

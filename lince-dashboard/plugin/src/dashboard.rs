@@ -353,14 +353,7 @@ fn render_agent_table(
                 let is_focused = focused.map_or(false, |f| f == agent.id);
                 let prefix = if is_focused { ">" } else { " " };
                 let idx_str = format!("{}", agent_idx + 1);
-                let status_label = if agent.status == AgentStatus::Stopped {
-                    match agent.exit_code {
-                        Some(code) => format!("Stopped ({code})"),
-                        None => "Stopped".to_string(),
-                    }
-                } else {
-                    agent.status.label().to_string()
-                };
+                let status_label = agent.status_display();
                 let status_color = agent.status.color();
                 let subagent_suffix = if agent.running_subagents > 0 {
                     format!(" \x1b[36m{}⚙", agent.running_subagents)
@@ -489,14 +482,7 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
             } else {
                 (agent.agent_type.as_str(), RESET, String::new())
             };
-        let detail_status = if agent.status == AgentStatus::Stopped {
-            match agent.exit_code {
-                Some(code) => format!("Stopped ({code})"),
-                None => "Stopped".to_string(),
-            }
-        } else {
-            agent.status.label().to_string()
-        };
+        let detail_status = agent.status_display();
         println!(
             " {}Agent:{} {}  {}{}{}{} {}{}{}",
             CYAN, RESET, agent.name,
