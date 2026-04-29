@@ -194,6 +194,7 @@ fn spawn_inner(
         current_tool: None,
         started_at: if started_at > 0 { Some(started_at) } else { None },
         last_error: None,
+        exit_code: None,
         group,
         running_subagents: 0,
         model: None,
@@ -264,9 +265,12 @@ pub fn reconcile_panes(
             if !all_pane_ids.contains(&pid) {
                 agent.status = AgentStatus::Stopped;
                 agent.pane_id = None;
+                agent.exit_code = None;
                 changed = true;
             } else if let Some(pane) = all_panes.iter().find(|p| p.id == pid) {
                 if pane.exited && agent.status != AgentStatus::Stopped {
+                    agent.exit_code = pane.exit_status;
+                    agent.last_error = pane.exit_status.filter(|&c| c != 0).map(|c| format!("Process exited with code {c}"));
                     agent.status = AgentStatus::Stopped;
                     changed = true;
                 }

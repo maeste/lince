@@ -353,7 +353,7 @@ fn render_agent_table(
                 let is_focused = focused.map_or(false, |f| f == agent.id);
                 let prefix = if is_focused { ">" } else { " " };
                 let idx_str = format!("{}", agent_idx + 1);
-                let status_label = agent.status.label();
+                let status_label = agent.status_display();
                 let status_color = agent.status.color();
                 let subagent_suffix = if agent.running_subagents > 0 {
                     format!(" \x1b[36m{}⚙", agent.running_subagents)
@@ -406,7 +406,7 @@ fn render_agent_table(
                         prefix, pad_left(&idx_str, col_idx), type_col,
                         pad_left(&agent.name, col_name),
                     );
-                    let status_str = pad_left(status_label, col_status);
+                    let status_str = pad_left(&status_label, col_status);
                     let trailing = format!(" {}{}", sandbox_col, profile_col);
                     let main_visible = strip_ansi_len(&main_part);
                     let suffix_visible_len = strip_ansi_len(&subagent_suffix);
@@ -441,7 +441,7 @@ fn render_agent_table(
                         "{}{}{} {} {}{}{}{}{} {}{}",
                         prefix, pad_left(&idx_str, col_idx), type_col, name_field,
                         status_color, if needs_attention { BOLD } else { "" },
-                        pad_left(status_label, col_status), subagent_suffix, RESET,
+                        pad_left(&status_label, col_status), subagent_suffix, RESET,
                         sandbox_col, profile_col,
                     );
                     println!("{}", truncate(&line, cols));
@@ -482,11 +482,12 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
             } else {
                 (agent.agent_type.as_str(), RESET, String::new())
             };
+        let detail_status = agent.status_display();
         println!(
             " {}Agent:{} {}  {}{}{}{} {}{}{}",
             CYAN, RESET, agent.name,
             type_color, type_display, RESET, sandbox_info,
-            agent.status.color(), agent.status.label(), RESET,
+            agent.status.color(), detail_status, RESET,
         );
         row += 1;
     }

@@ -185,6 +185,7 @@ pub struct AgentInfo {
     pub current_tool: Option<String>,
     pub started_at: Option<u64>,
     pub last_error: Option<String>,
+    pub exit_code: Option<i32>,
     pub group: Option<String>,
     pub running_subagents: u32,
     pub model: Option<String>,
@@ -204,6 +205,18 @@ impl AgentInfo {
         }
         if matches!(self.status, AgentStatus::Stopped) {
             self.running_subagents = 0;
+        }
+    }
+
+    /// Status label with exit code annotation for stopped agents.
+    pub fn status_display(&self) -> String {
+        if self.status == AgentStatus::Stopped {
+            match self.exit_code {
+                Some(code) => format!("Stopped ({code})"),
+                None => "Stopped".to_string(),
+            }
+        } else {
+            self.status.label().to_string()
         }
     }
 }
