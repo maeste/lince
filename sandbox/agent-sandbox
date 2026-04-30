@@ -877,6 +877,28 @@ def expand(p: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(p)))
 
 
+_ENV_VAR_REF = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+
+
+def _expand_env_value(val) -> str:
+    """Expand ``$VAR`` / ``${VAR}`` references in agent/profile/extra env values
+    against the host environment.
+
+    Lets ``[agents.X].env = { ZAI_API_KEY = "$ZAI_API_KEY" }`` (and the same
+    pattern in ``[profiles.*.env]`` and ``[env.extra]``) resolve to the host's
+    actual value at launch time. References to unset host vars expand to empty
+    strings (shell semantics) — never to the literal ``$VAR`` text, which
+    would otherwise leak inside the sandbox and look like a misconfigured key.
+    Literal values without ``$VAR`` pass through unchanged, so
+    ``GEMINI_FORCE_FILE_STORAGE = "true"`` still works.
+    """
+    s = str(val)
+    return _ENV_VAR_REF.sub(
+        lambda m: os.environ.get(m.group(1) or m.group(2), ""),
+        s,
+    )
+
+
 def check_bwrap() -> None:
     """Verify bubblewrap is installed."""
     if shutil.which("bwrap") is None:
@@ -1067,7 +1089,7 @@ def generate_nono_profile(
 
     # [env.extra]
     for var, val in env_conf.get("extra", {}).items():
-        all_env[var] = str(val)
+        all_env[var] = _expand_env_value(val)
 
     # Profile env (if a profile is selected)
     if profile_name:
@@ -1075,11 +1097,11 @@ def generate_nono_profile(
         prof_data = profiles.get(profile_name, {})
         if isinstance(prof_data, dict):
             for var, val in prof_data.get("env", {}).items():
-                all_env[var] = str(val)
+                all_env[var] = _expand_env_value(val)
 
     # Agent-level env
     for var, val in agent_config.get("env", {}).items():
-        all_env[var] = str(val)
+        all_env[var] = _expand_env_value(val)
 
     for var in sorted(all_env):
         existing_pt = profile.get("environment", {}).get("passthrough", [])
@@ -1581,15 +1603,15 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
 
     # Extra env vars (from base config)
     for var, val in env_conf.get("extra", {}).items():
-        cmd += ["--setenv", var, str(val)]
+        cmd += ["--setenv", var, _expand_env_value(val)]
 
     # Profile env vars (override base values)
     for var, val in prof.get("env", {}).items():
-        cmd += ["--setenv", var, str(val)]
+        cmd += ["--setenv", var, _expand_env_value(val)]
 
     # Agent-specific env vars
     for var, val in agent_cfg.get("env", {}).items():
-        cmd += ["--setenv", var, str(val)]
+        cmd += ["--setenv", var, _expand_env_value(val)]
 
     # Lince agent ID (from --id flag)
     if agent_id:
@@ -1913,14 +1935,14 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         collected_env: dict[str, str] = {}
         env_conf = config.get("env", {})
         for var, val in env_conf.get("extra", {}).items():
-            collected_env[var] = str(val)
+            collected_env[var] = _expand_env_value(val)
         if profile:
             all_profiles = resolve_profiles(config, agent_name)
             prof_data = all_profiles.get(profile, {})
             for var, val in prof_data.get("env", {}).items():
-                collected_env[var] = str(val)
+                collected_env[var] = _expand_env_value(val)
         for var, val in agent_cfg.get("env", {}).items():
-            collected_env[var] = str(val)
+            collected_env[var] = _expand_env_value(val)
 
         rules, strip_vars = _collect_proxy_rules(collected_env)
         if rules:
@@ -3895,15 +3917,15 @@ def build_learn_bwrap_cmd(
 
     # Extra env vars (from base config)
     for var, val in env_conf.get("extra", {}).items():
-        cmd += ["--setenv", var, str(val)]
+        cmd += ["--setenv", var, _expand_env_value(val)]
 
     # Profile env vars
     for var, val in prof.get("env", {}).items():
-        cmd += ["--setenv", var, str(val)]
+        cmd += ["--setenv", var, _expand_env_value(val)]
 
     # Agent-specific env vars
     for var, val in agent_cfg.get("env", {}).items():
-        cmd += ["--setenv", var, str(val)]
+        cmd += ["--setenv", var, _expand_env_value(val)]
 
     # 7. Separator and command
     cmd += ["--"]
