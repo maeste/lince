@@ -18,6 +18,7 @@ Quick reference for what the sandbox blocks and what it lets through.
 | `~/.bash_history`, `~/.zsh_history` | **Blocked** | Shell history hidden |
 | `~/.npmrc` | **Blocked** | npm tokens hidden |
 | `~/.claude/` | Read-Write | Isolated copy (or real, if configured) |
+| `~/.pi/` | Read-Write | Pi agent state (when `--agent pi`) |
 | `~/.config/gcloud/` | Read-only | Vertex AI credentials |
 | Version managers (`.nvm`, `.rustup`, `.pyenv`, `.sdkman`) | Read-only | Auto-detected from PATH |
 | Toolchain caches (`.cargo/registry`, `.npm/`, `.uv-cache/`, `.go/`) | Read-Write | Persistent across sessions |

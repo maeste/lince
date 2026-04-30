@@ -18,6 +18,7 @@ agent-sandbox run -a codex -p ~/project/foo --id agent-2         # OpenAI Codex
 agent-sandbox run -a gemini -p ~/project/foo --id agent-3        # Google Gemini CLI
 agent-sandbox run -a opencode -p ~/project/foo --id agent-4      # OpenCode
 agent-sandbox run -a aider -p ~/project/foo --id agent-5         # Aider
+agent-sandbox run -a pi -p ~/project/foo --id agent-6            # Pi (https://pi.dev)
 ```
 
 The `--id` flag sets `LINCE_AGENT_ID` inside the sandbox, allowing the dashboard to track each agent instance.
@@ -41,6 +42,8 @@ The wizard (`Shift+N`) now has an Agent Type selection step. When multiple agent
 │    Google Gemini CLI (sandboxed) (gemini… │
 │    OpenCode (opencode)                    │
 │    OpenCode (sandboxed) (opencode-bwrap)  │
+│    Pi (pi)                                │
+│    Pi (sandboxed) (pi-bwrap)              │
 │                                           │
 │  [j/k] Select  [Enter] Next  [Esc] Cancel │
 └───────────────────────────────────────────┘
@@ -96,6 +99,8 @@ Claude Code has native hooks that report rich status (tool usage, tokens, subage
 The dashboard injects this wrapper automatically for agents with `has_native_hooks = false`. You don't need to do anything.
 
 Codex can also use its native `notify` command hook to emit `idle` when a turn completes. The dashboard install/update scripts configure that automatically when possible.
+
+Pi (`@mariozechner/pi-coding-agent`) supports lince's full status protocol via a TypeScript extension installed at `~/.pi/agent/extensions/lince-pi-hook.ts`. The extension subscribes to Pi's `session_start`, `turn_start`, `tool_call`, `turn_end`, and `session_shutdown` events and emits the same JSON status schema the dashboard parses for Claude. As a result Pi runs with `has_native_hooks = true` — current tool name and idle/running transitions appear in real time, identical to Claude Code. The dashboard install/update scripts copy the extension automatically.
 
 ### 5. Configurable event mapping
 
