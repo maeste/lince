@@ -74,7 +74,7 @@ agent-sandbox builds a [bubblewrap](https://github.com/containers/bubblewrap) co
 - **Linux** (kernel 3.8+ for user namespaces) or **macOS** (via nono)
 - **Python 3.11+** (for `tomllib`)
 - **bubblewrap** (Linux) or **nono** (macOS)
-- **An AI coding agent** (Claude Code, Codex, Gemini, OpenCode, Aider, etc.)
+- **An AI coding agent** (Claude Code, Codex, Gemini, OpenCode, Aider, [Pi](https://pi.dev), etc.)
 
 **Install bubblewrap:** `sudo dnf install bubblewrap` (Fedora) | `sudo apt install bubblewrap` (Ubuntu/Debian) | `sudo pacman -S bubblewrap` (Arch)
 

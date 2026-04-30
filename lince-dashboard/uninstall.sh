@@ -154,6 +154,19 @@ else
 fi
 echo ""
 
+# ── Pi extension ───────────────────────────────────────────────────────
+PI_EXTENSION="$HOME/.pi/agent/extensions/lince-pi-hook.ts"
+if [ -f "$PI_EXTENSION" ]; then
+    echo -e "${YELLOW}Found: $PI_EXTENSION${NC}"
+    if confirm "  Remove Pi extension?"; then
+        rm -f "$PI_EXTENSION"
+        echo -e "${GREEN}  ✓ Removed${NC}"
+    fi
+else
+    echo "  Pi extension not found — skipping"
+fi
+echo ""
+
 # ── Codex notify in config.toml ────────────────────────────────────────
 CODEX_CONFIG="$HOME/.codex/config.toml"
 CODEX_BLOCK_START="# >>> LINCE Dashboard Codex notify >>>"
