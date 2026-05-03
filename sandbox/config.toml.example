@@ -90,9 +90,14 @@ passthrough = [
     "LINCE_AGENT_ID",
 ]
 
-# Additional environment variables to set inside the sandbox
+# Additional environment variables to set inside the sandbox.
+# Values support $VAR / ${VAR} expansion against the host environment
+# (shell semantics — unset vars resolve to empty strings, never to the
+# literal $VAR text). Same expansion applies to [agents.*.env] and
+# [<agent>.profiles.*.env] values.
 [env.extra]
 # CUSTOM_VAR = "value"
+# FROM_HOST = "$SOME_HOST_VAR"
 
 [logging]
 # Enable transcript logging by default (toggle with --log / --no-log)

@@ -18,6 +18,7 @@ agent-sandbox run -a codex -p ~/project/foo --id agent-2         # OpenAI Codex
 agent-sandbox run -a gemini -p ~/project/foo --id agent-3        # Google Gemini CLI
 agent-sandbox run -a opencode -p ~/project/foo --id agent-4      # OpenCode
 agent-sandbox run -a aider -p ~/project/foo --id agent-5         # Aider
+agent-sandbox run -a pi -p ~/project/foo --id agent-6            # Pi (https://pi.dev)
 ```
 
 The `--id` flag sets `LINCE_AGENT_ID` inside the sandbox, allowing the dashboard to track each agent instance.
@@ -41,6 +42,8 @@ The wizard (`Shift+N`) now has an Agent Type selection step. When multiple agent
 │    Google Gemini CLI (sandboxed) (gemini… │
 │    OpenCode (opencode)                    │
 │    OpenCode (sandboxed) (opencode-bwrap)  │
+│    Pi (pi)                                │
+│    Pi (sandboxed) (pi-bwrap)              │
 │                                           │
 │  [j/k] Select  [Enter] Next  [Esc] Cancel │
 └───────────────────────────────────────────┘
@@ -96,6 +99,8 @@ Claude Code has native hooks that report rich status (tool usage, tokens, subage
 The dashboard injects this wrapper automatically for agents with `has_native_hooks = false`. You don't need to do anything.
 
 Codex can also use its native `notify` command hook to emit `idle` when a turn completes. The dashboard install/update scripts configure that automatically when possible.
+
+Pi (`@mariozechner/pi-coding-agent`) supports lince's full status protocol via a TypeScript extension installed at `~/.pi/agent/extensions/lince-pi-hook.ts`. The extension subscribes to Pi's `session_start`, `turn_start`, `tool_call`, `turn_end`, and `session_shutdown` events and emits the same JSON status schema the dashboard parses for Claude. As a result Pi runs with `has_native_hooks = true` — current tool name and idle/running transitions appear in real time, identical to Claude Code. The dashboard install/update scripts copy the extension automatically.
 
 ### 5. Configurable event mapping
 
@@ -212,6 +217,15 @@ config.toml [agents.*]        ← your overrides + custom agents (never overwrit
 ```
 
 User config always wins. The defaults file is safe to overwrite on updates because your customizations live in `config.toml`.
+
+### env_vars on agent type vs env on profile
+
+Two layers of env-var configuration interact at agent launch:
+
+1. **`[agents.<name>.env_vars]`** in `agents-defaults.toml` — the *passthrough universe* for that agent type. Every var listed gets forwarded from the host shell into the agent process. Listing a var here whose host value is unset is harmless (it expands to an empty string and is dropped). Use this to declare *which host env vars are eligible* for the agent. For multi-provider agents like Pi, this list is large by design (one entry per supported provider key + base URL + cloud project).
+2. **`[<agent>.profiles.<name>]`** in user config — *narrows* the universe per launch. `env` adds or overrides values for this specific run; `env_unset` strips host vars that would otherwise propagate. Use profiles when you want, e.g., "only ZAI active right now, no other provider keys leaking in."
+
+This separation is why `env_unset` is profile-only: the agent type defines what *can* be present; the profile defines what *should* be present for this particular launch. Sandboxed agents (`--clearenv` baseline) only see what `env_vars` + profile `env` explicitly allow; non-sandboxed agents inherit the full host env, and `env_unset` is the tool for trimming it.
 
 ### Profile `env_unset` field
 
