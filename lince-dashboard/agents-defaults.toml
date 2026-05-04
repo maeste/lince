@@ -11,8 +11,20 @@
 #   {agent_id}    - unique agent identifier (e.g. "agent-1")
 #   {project_dir} - project directory path
 #   {profile}     - sandbox profile name
+#
+# Sandbox model (claude only for now; codex/gemini/opencode/pi land in
+# follow-up tasks lince-99..102):
+#   - sandbox_backend = "bwrap" | "nono"  (default per OS)
+#   - sandbox_level   = "paranoid" | "normal" | "permissive" | <custom>
+# When sandbox_level is set, the plugin synthesizes the launch command from
+# (agent_type, backend, level) — the `command` field below is then ignored
+# but kept for legacy/no-level fallback. See:
+#   docs/documentation/dashboard/sandbox-levels.md
+#   https://lince.sh/documentation/#/dashboard/sandbox-levels
 
 [agents.claude]
+# Legacy fallback command — ignored when sandbox_level is set (the plugin
+# synthesizes the actual command from sandbox_backend + sandbox_level).
 command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
 pane_title_pattern = "agent-sandbox"
 status_pipe_name = "claude-status"
@@ -23,6 +35,43 @@ sandboxed = true
 has_native_hooks = true
 home_ro_dirs = ["~/.claude/"]
 profiles = ["__discover__"]
+sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
+# sandbox_backend defaults to "agent-sandbox" (bwrap) on Linux, "nono" on macOS.
+# Uncomment to force a specific backend (overrides the OS default):
+# sandbox_backend = "nono"
+
+# Alternative levels — UNCOMMENT one of the blocks below to add a paranoid
+# or permissive variant of claude to the N-picker. They show up as separate
+# entries; the original [agents.claude] above stays as the "normal" default.
+# Both levels are kernel-enforced under nono and proxy-enforced under bwrap.
+# See docs/documentation/dashboard/sandbox-levels.md for what each level does
+# and how to ship a custom level.
+#
+# [agents.claude-paranoid]
+# command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
+# pane_title_pattern = "agent-sandbox"
+# status_pipe_name = "claude-status"
+# display_name = "Claude Code (paranoid)"
+# short_label = "CLP"
+# color = "red"
+# sandboxed = true
+# has_native_hooks = true
+# home_ro_dirs = ["~/.claude/"]
+# profiles = ["__discover__"]
+# sandbox_level = "paranoid"
+#
+# [agents.claude-permissive]
+# command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
+# pane_title_pattern = "agent-sandbox"
+# status_pipe_name = "claude-status"
+# display_name = "Claude Code (permissive)"
+# short_label = "CL+"
+# color = "green"
+# sandboxed = true
+# has_native_hooks = true
+# home_ro_dirs = ["~/.claude/"]
+# profiles = ["__discover__"]
+# sandbox_level = "permissive"
 
 [agents.claude-unsandboxed]
 command = ["claude"]
@@ -130,19 +179,11 @@ profiles = ["__discover__"]
 # ── nono-sandboxed variants ─────────────────────────────────────────
 # nono uses Landlock LSM on Linux and Seatbelt on macOS.
 # Profiles are named "lince-<agent>" and managed by `agent-sandbox nono-sync`.
-
-[agents.claude-nono]
-command = ["nono", "run", "--profile", "lince-claude", "--workdir", "{project_dir}", "--", "claude", "--dangerously-skip-permissions"]
-pane_title_pattern = "nono"
-status_pipe_name = "claude-status"
-display_name = "Claude Code (nono)"
-short_label = "CLA"
-color = "blue"
-sandboxed = true
-has_native_hooks = true
-sandbox_backend = "nono"
-home_ro_dirs = ["~/.claude/"]
-profiles = ["__discover__"]
+#
+# NOTE: claude no longer has a separate [agents.claude-nono] entry — it has
+# been collapsed into [agents.claude] above (use sandbox_backend = "nono" to
+# force the nono backend on Linux). The codex/gemini/opencode/pi entries
+# below will follow the same migration in lince-99..102.
 
 [agents.codex-nono]
 command = ["nono", "run", "--profile", "lince-codex", "--workdir", "{project_dir}", "--", "codex", "--full-auto"]
