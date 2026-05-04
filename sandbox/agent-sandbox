@@ -755,6 +755,72 @@ def load_config() -> tuple[dict, Path]:
         return tomllib.load(fh), config_path
 
 
+# Keys whose list values should be APPENDED (not replaced) when overlaying a
+# sandbox-policy fragment on top of the user's resolved config. New entries
+# are de-duplicated against what's already in the base list.
+_SANDBOX_LEVEL_LIST_APPEND_KEYS = frozenset({
+    "home_ro_dirs", "home_rw_dirs", "ro_dirs", "extra_rw"
+})
+
+
+def load_sandbox_level_fragment(level: str) -> dict | None:
+    """Locate and load a sandbox-policy fragment for the given level name.
+
+    Search order:
+      1. ./.agent-sandbox/profiles/<level>.toml   (project-local override)
+      2. ~/.agent-sandbox/profiles/<level>.toml   (user-installed)
+      3. <script-dir>/profiles/<level>.toml       (built-in, ships with the script)
+
+    Returns the fragment dict, or None if no file was found (caller surfaces
+    a user-visible error in that case so typos don't silently no-op).
+    """
+    if not level:
+        return None
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        Path.cwd() / ".agent-sandbox" / "profiles" / f"{level}.toml",
+        SANDBOX_DIR / "profiles" / f"{level}.toml",
+        script_dir / "profiles" / f"{level}.toml",
+    ]
+    for p in candidates:
+        if p.is_file():
+            with open(p, "rb") as fh:
+                return tomllib.load(fh)
+    return None
+
+
+def merge_sandbox_level(base: dict, overlay: dict) -> dict:
+    """Deep-merge a sandbox-policy fragment into the loaded config.
+
+    Dict values are merged recursively. List values for keys in
+    ``_SANDBOX_LEVEL_LIST_APPEND_KEYS`` are appended (preserving order,
+    de-duplicating); other lists and scalars are replaced by the overlay.
+    Returns a new dict; does not mutate inputs.
+    """
+    result = dict(base)
+    for key, ov_value in overlay.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(ov_value, dict)
+        ):
+            result[key] = merge_sandbox_level(result[key], ov_value)
+        elif (
+            key in result
+            and isinstance(result[key], list)
+            and isinstance(ov_value, list)
+            and key in _SANDBOX_LEVEL_LIST_APPEND_KEYS
+        ):
+            merged = list(result[key])
+            for item in ov_value:
+                if item not in merged:
+                    merged.append(item)
+            result[key] = merged
+        else:
+            result[key] = ov_value
+    return result
+
+
 _agents_defaults_cache: dict[str, dict] | None = None
 
 
@@ -1815,6 +1881,24 @@ def cmd_init(args) -> None:
 
 def cmd_run(args, agent_extra: list[str]) -> None:
     config, config_path = load_config()
+
+    # Apply sandbox-policy fragment if --sandbox-level was passed. Levels are
+    # free-form: paranoid/normal/permissive ship as built-in fragments under
+    # <script-dir>/profiles/, and users can drop their own at
+    # ~/.agent-sandbox/profiles/<name>.toml.
+    sandbox_level = getattr(args, "sandbox_level", None)
+    if sandbox_level and sandbox_level != "normal":
+        fragment = load_sandbox_level_fragment(sandbox_level)
+        if fragment is None:
+            print(
+                f"Error: unknown sandbox level '{sandbox_level}' "
+                f"(no fragment file found in ./.agent-sandbox/profiles/, "
+                f"~/.agent-sandbox/profiles/, or alongside agent-sandbox).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        config = merge_sandbox_level(config, fragment)
+
     backend = resolve_backend(config)
 
     project_dir = Path(args.project).resolve()
@@ -4292,6 +4376,13 @@ def main() -> None:
                        metavar="DIR", help="Extra read-only directory for this run (repeatable)")
     p_run.add_argument("--id", default=None, metavar="ID",
                        help="Agent ID (sets LINCE_AGENT_ID env var inside sandbox)")
+    p_run.add_argument("--sandbox-level", dest="sandbox_level", default=None,
+                       metavar="NAME",
+                       help="Sandbox isolation level: paranoid|normal|permissive "
+                            "(or any custom name). Loads the matching policy fragment "
+                            "from sandbox/profiles/<NAME>.toml (built-in) or "
+                            "~/.agent-sandbox/profiles/<NAME>.toml (user-supplied) and "
+                            "merges it into the config before running.")
 
     # diff
     sub.add_parser("diff",
