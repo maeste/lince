@@ -1,10 +1,10 @@
 ---
 id: LINCE-98
 title: Three sandbox levels (paranoid/normal/permissive) — claude prototype
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-04 20:53'
+updated_date: '2026-05-04 21:04'
 labels:
   - sandbox
   - lince-dashboard
@@ -420,4 +420,67 @@ The follow-up agent tasks **do not re-invent** this doc structure. Each of them:
 - Adds its agent-specific row to the level-comparison table
 - Documents agent-specific quirks (e.g. codex inner-sandbox conflict, opencode Bun/Landlock, pi multi-provider)
 - Does **not** re-explain the overall mechanism — that lives in the master doc page from this task
+
+## Phase 0 research outcomes (resolved 2026-05-04)
+
+### R1 — sandbox-policy mechanism in agent-sandbox
+
+**Decision: strategy (c) — TOML fragment overlays + new `--sandbox-level` CLI flag.**
+
+Key findings:
+- `load_config()` (sandbox/agent-sandbox:751) is the merge point
+- Existing `default_profile` key in `[sandbox]` is **already taken** for credential profiles (`-P` flag) — we need a NEW key, e.g. `sandbox_level` in `[sandbox]` (parallel to dashboard side)
+- `resolve_agent_config()` (line 812) shows the existing 4-layer merge pattern; we extend it for fragment overlay
+- Risk: list fields like `home_ro_dirs` must be **appended** by the merge, not replaced
+
+**Implementation**:
+1. Add `--sandbox-level NAME` flag to `agent-sandbox run` (cmd_run, line 1816)
+2. Fragment files live in `sandbox/profiles/<name>.toml` (script-dir search path, mirroring agents-defaults.toml resolution)
+3. After main config load, if flag set, load fragment and deep-merge (append for known list keys: `home_ro_dirs`, `ro_dirs`, `extra_rw`)
+
+### R2 — Scratch copy of `~/.claude` for nono paranoid
+
+**Decision: Option A — pre-spawn rsync from plugin + HOME override via shell wrapper.**
+
+Key findings:
+- Spawn entry: `lince-dashboard/plugin/src/agent.rs:206-227` (`spawn_agent_custom` → `spawn_inner`)
+- `CommandToRun` (agent.rs:167-171) has no env field → use shell wrapper to set HOME
+- `run_typed_command()` pattern (config.rs:288-303) for async rsync; result via `Event::RunCommandResult`
+- Pane lifecycle: `reconcile_panes` (agent.rs:263-277) detects close → cleanup hook here
+- Nono profiles (`lince-dashboard/nono-profiles/lince-claude.json`) do **not** have pre/post-spawn hooks
+
+**Implementation flow**:
+```
+1. Plugin: rsync ~/.claude → $XDG_RUNTIME_DIR/lince-{agent_id}/.claude (async run_command)
+2. On rsync OK: spawn pane with command:
+   bash -c 'export HOME=$XDG_RUNTIME_DIR/lince-{agent_id} && exec nono run --profile lince-claude-paranoid --workdir {project_dir} -- claude --dangerously-skip-permissions'
+3. Nono profile allow_path uses $HOME → resolves to scratch dir
+4. On agent stop (reconcile_panes detects close): rm -rf scratch dir (best-effort)
+```
+
+Bwrap path: no Phase 2 work needed — `use_real_config = false` (default) already handles isolation. Documented asymmetry.
+
+### R3 — bwrap network isolation
+
+**Status**: `--unshare-net` flag is **not implemented today** in agent-sandbox.
+
+**Architectural caveat (CRITICAL)**: Adding `--unshare-net` naively breaks the credential proxy. The proxy runs on the host's network namespace; with `--unshare-net`, the sandbox gets a fresh netns with only its own `lo` interface — it **cannot** reach the host's 127.0.0.1:PORT (each netns has independent loopback).
+
+**Decision for prototype**:
+- Bwrap paranoid: **do NOT add `--unshare-net`** in this prototype. Instead, rely on the existing `credential_proxy` (which strips API keys + only allows configured URLs). This is functionally similar to nono's `network.credentials` but enforced at the proxy layer rather than at the kernel.
+- Document the asymmetry: nono paranoid is kernel-enforced (Landlock + network policy); bwrap paranoid is proxy-enforced (lighter but real). Future hardening would require unix-socket proxy or in-namespace proxy.
+- File follow-up issue if user wants kernel-level bwrap paranoid (out of scope for this prototype).
+
+**Implementation**: paranoid bwrap fragment forces `use_real_config = false` + `credential_proxy = true`; permissive adds extra `home_ro_dirs`.
+
+### R4 — MCP-on-internet allowlist for permissive
+
+**Decision**: out of scope for prototype. Permissive does NOT auto-allow MCP endpoints. Users running MCP-on-internet servers inside the sandbox must create a custom profile (`lince-claude-permissive-with-mcp.json`) — exactly the customization story already documented.
+
+## Updated Phase 1/2 plan based on research
+
+- Phase 1: introduce `sandbox_level`/`sandbox_backend` fields in plugin AgentConfig as planned. Profile-resolution logic unchanged.
+- Phase 1.5 (NEW, in agent-sandbox): add `--sandbox-level NAME` CLI flag + fragment loader + deep merge. This is in `sandbox/agent-sandbox` (Python), not the dashboard plugin.
+- Phase 2: shell-wrapper pattern for HOME override (Option A confirmed); rsync hook + cleanup hook locations identified.
+- Phase 3: bwrap fragment uses `credential_proxy = true`, NOT `unshare_net = true` (architectural decision documented above).
 <!-- SECTION:NOTES:END -->
