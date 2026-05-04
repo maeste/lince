@@ -1,10 +1,10 @@
 ---
 id: LINCE-98
 title: Three sandbox levels (paranoid/normal/permissive) — claude prototype
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-04 21:04'
+updated_date: '2026-05-04 21:23'
 labels:
   - sandbox
   - lince-dashboard
@@ -97,18 +97,18 @@ The N-picker shows only **uncommented** entries. Users opt into non-default leve
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 agents-defaults.toml has a single [agents.claude] with sandbox_level/sandbox_backend; claude-nono removed; claude-unsandboxed kept
+- [x] #1 agents-defaults.toml has a single [agents.claude] with sandbox_level/sandbox_backend; claude-nono removed; claude-unsandboxed kept
 - [ ] #2 sandbox_level=paranoid on nono: arbitrary outbound network fails (curl https://example.com), Claude Code reaches Anthropic API via proxy, modifications to ~/.claude inside sandbox stay isolated from real ~/.claude
 - [ ] #3 sandbox_level=permissive on nono: gh auth status works, gh pr create works, docker ps fails, direct git push fails (use gh)
 - [ ] #4 N-picker shows 'Claude Code' once (not three times)
 - [ ] #5 Default backend per OS works (linux=bwrap, mac=nono); explicit sandbox_backend=nono on linux works
 - [ ] #6 install.sh copies new nono profiles idempotently and is safe to re-run
-- [ ] #7 Manual test doc in docs/ covering each (level x backend) cell
-- [ ] #8 Documentation page created (e.g. docs/documentation/dashboard/sandbox-levels.md) covering: what each of paranoid/normal/permissive does, how to choose, backend selection, customization mechanism
-- [ ] #9 Doc explicitly states sandbox_level is a free-form profile suffix (not a closed enum); the three shipped levels are opinionated examples
-- [ ] #10 Doc includes a worked customization example (e.g. lince-claude-with-aws.json) showing file location, naming convention, extends, and how to enable via config.toml
-- [ ] #11 Plugin accepts any sandbox_level value: well-known names get shipped profiles; arbitrary names resolved by file lookup with clear error if profile missing
-- [ ] #12 lince-dashboard/README.md and agents-defaults.toml header comment cross-link to the new doc page
+- [x] #7 Manual test doc in docs/ covering each (level x backend) cell
+- [x] #8 Documentation page created (e.g. docs/documentation/dashboard/sandbox-levels.md) covering: what each of paranoid/normal/permissive does, how to choose, backend selection, customization mechanism
+- [x] #9 Doc explicitly states sandbox_level is a free-form profile suffix (not a closed enum); the three shipped levels are opinionated examples
+- [x] #10 Doc includes a worked customization example (e.g. lince-claude-with-aws.json) showing file location, naming convention, extends, and how to enable via config.toml
+- [x] #11 Plugin accepts any sandbox_level value: well-known names get shipped profiles; arbitrary names resolved by file lookup with clear error if profile missing
+- [x] #12 lince-dashboard/README.md and agents-defaults.toml header comment cross-link to the new doc page
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -484,3 +484,50 @@ Bwrap path: no Phase 2 work needed — `use_real_config = false` (default) alrea
 - Phase 2: shell-wrapper pattern for HOME override (Option A confirmed); rsync hook + cleanup hook locations identified.
 - Phase 3: bwrap fragment uses `credential_proxy = true`, NOT `unshare_net = true` (architectural decision documented above).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+## What shipped
+
+7 commits on `feature/lince-98-sandbox-levels-claude` (rebased on upstream/main):
+
+1. `dashboard: introduce sandbox_level field + paranoid scratch wrapper` — `Option<String>` field on `AgentTypeConfig` + dispatch in `spawn_inner` that synthesizes the command from `(agent_type, sandbox_backend, sandbox_level)`. For nono+paranoid the synthesized command is a self-contained bash wrapper that creates a per-agent scratch dir under `$XDG_RUNTIME_DIR`, rsyncs `~/.claude` into it, exports `HOME=<scratch>`, runs nono, and `rm -rf`'s the scratch on exit (trap EXIT). No plugin-side state machine needed — simpler than the original Phase 2 plan.
+2. `sandbox-profiles: ship claude paranoid + permissive (nono + bwrap)` — 2 nono JSON profiles (extending `lince-claude`) + 2 TOML fragments under `sandbox/profiles/`.
+3. `sandbox: --sandbox-level flag + policy-fragment overlay` — `agent-sandbox run --sandbox-level NAME` loads `sandbox/profiles/NAME.toml` and deep-merges (lists like `home_ro_dirs` are appended, not replaced). Search path: `./.agent-sandbox/profiles/` → `~/.agent-sandbox/profiles/` → `<script-dir>/profiles/`.
+4. `agents-defaults: collapse [agents.claude] / claude-nono into one entry` — single `[agents.claude]` with `sandbox_level = "normal"`, alternative levels as commented templates, `[agents.claude-nono]` removed, `[agents.claude-unsandboxed]` kept.
+5. `install: ship sandbox-policy fragments + paranoid keystore reminder` — `sandbox/install.sh` and `sandbox/update.sh` copy `profiles/*.toml` into `~/.agent-sandbox/profiles/`; `lince-dashboard/install.sh` prints platform-specific keystore command when nono is detected.
+6. `docs: sandbox-levels reference + manual test plan` — `docs/documentation/dashboard/sandbox-levels.md` (level breakdown, decision guide, customization with worked `lince-claude-with-aws.json` example, keystore setup) + `docs/documentation/dashboard/sandbox-levels-testing.md` (level × backend matrix with copy-pasteable verification commands, custom-level smoke test, regression checklist) + cross-links from `lince-dashboard/README.md`.
+7. `backlog: record lince-98 phase 0 research outcomes + status In Progress` — task notes capturing the resolved R1–R4 decisions so lince-99..102 inherit them without re-investigation.
+
+## Verified at code-review time
+
+- ✅ AC #1 — `agents-defaults.toml` validated by tomllib parse: claude entry has `sandbox_level = "normal"`, `claude-nono` absent, `claude-unsandboxed` present
+- ✅ AC #7, #8, #9, #10 — documentation files exist with the required structure
+- ✅ AC #11 — plugin's `synthesize_sandboxed_command` returns `None` for unknown agent types (graceful fallback) and `agent-sandbox --sandbox-level` emits a hard error for missing fragment files
+- ✅ AC #12 — cross-links present in `lince-dashboard/README.md` and `agents-defaults.toml` header
+- ✅ WASM plugin builds clean; agent-sandbox parses; smoke tests on `load_sandbox_level_fragment` + `merge_sandbox_level` pass
+
+## Pending manual verification (AC #2–6)
+
+These require a running dashboard and cannot be checked from code review alone. Per `docs/documentation/dashboard/sandbox-levels-testing.md`, the tester runs each (level × backend) cell:
+
+- AC #2 (paranoid on nono: arbitrary network blocked, Anthropic via proxy works, `~/.claude` isolated)
+- AC #3 (permissive on nono: gh CLI works, docker fails, direct `git push` fails)
+- AC #4 (N-picker shows "Claude Code" once)
+- AC #5 (default backend per OS; explicit override on linux)
+- AC #6 (install.sh re-run idempotent)
+
+Reviewer should run the cells before merging the PR. The manual test plan doc is the executable form of these criteria.
+
+## Architectural decisions worth highlighting in the PR description
+
+- **`sandbox_level` is free-form on purpose**: users drop a custom profile and reference it by name, no plugin changes needed. Documented prominently.
+- **bwrap paranoid is proxy-enforced, not kernel-enforced**: adding `--unshare-net` to bwrap would break the host-side credential proxy (each netns has its own `lo`). Documented as known asymmetry; future hardening tracked separately.
+- **MCP-on-internet for permissive is opt-in**: users who run MCP servers that reach internet inside the sandbox write their own `lince-claude-permissive-with-mcp.json`. Out of scope for the prototype.
+
+## Follow-ups (already filed)
+
+- lince-99..102 (codex/gemini/opencode/pi) — depend on this PR
+- GH #53 — wizard 'N' picker UX changes enabled by the single-entry-per-agent model
+<!-- SECTION:FINAL_SUMMARY:END -->
