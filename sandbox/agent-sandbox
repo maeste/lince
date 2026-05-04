@@ -3943,37 +3943,146 @@ def build_learn_bwrap_cmd(
     return cmd
 
 
+def _deep_merge_toml(base: dict, override: dict) -> dict:
+    """Deep-merge *override* into *base*, returning a new dict.
+
+    - dict values are merged recursively
+    - list values are extended (with dedup, preserving order)
+    - scalar values from *override* replace *base*
+    """
+    result = dict(base)
+    for key, value in override.items():
+        if key in result:
+            existing = result[key]
+            if isinstance(existing, dict) and isinstance(value, dict):
+                result[key] = _deep_merge_toml(existing, value)
+            elif isinstance(existing, list) and isinstance(value, list):
+                seen: set = set()
+                merged: list = []
+                for lst in (existing, value):
+                    for item in lst:
+                        if item not in seen:
+                            seen.add(item)
+                            merged.append(item)
+                result[key] = merged
+            else:
+                result[key] = value
+        else:
+            result[key] = value
+    return result
+
+
+def _escape_toml_string(value: str) -> str:
+    """Escape a string for use in a TOML basic (double-quoted) string."""
+    return (
+        value
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+
+
+_BARE_KEY_OK = set(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "_-"
+)
+
+
+def _quote_key(key: str) -> str:
+    """Quote a TOML key if it is not a valid bare key."""
+    if all(c in _BARE_KEY_OK for c in key) and key:
+        return key
+    return f'"{_escape_toml_string(key)}"'
+
+
+def _toml_scalar(value) -> str:  # noqa: ANN001
+    """Format a single TOML scalar value (bool, int, float, str)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return f'"{_escape_toml_string(value)}"'
+
+
+def _toml_value_line(key: str, value) -> str:  # noqa: ANN001
+    """Format a single TOML key = value line."""
+    qkey = _quote_key(key)
+    if isinstance(value, list):
+        if not value:
+            return f"{qkey} = []"
+        items = "\n".join(
+            f"    {_toml_scalar(v)}," for v in value
+        )
+        return f"{qkey} = [\n{items}\n]"
+    return f"{qkey} = {_toml_scalar(value)}"
+
+
+def _serialize_toml(data: dict, prefix: str = "") -> str:
+    """Serialize a dict tree to TOML text.
+
+    Handles the flat-ish structure used by agent-sandbox config:
+    top-level tables (possibly dotted), with string / bool / int /
+    string-list values.  Comments are not preserved.
+    """
+    lines: list[str] = []
+
+    # Write scalar/array keys at this level
+    has_scalars = any(not isinstance(v, dict) for v in data.values())
+    if has_scalars and prefix:
+        lines.append(f"[{prefix}]")
+
+    for key, value in data.items():
+        if isinstance(value, dict):
+            continue
+        lines.append(_toml_value_line(key, value))
+
+    # Write sub-tables
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        sub_prefix = f"{prefix}.{key}" if prefix else key
+        sub = _serialize_toml(value, sub_prefix)
+        if sub.strip():
+            if lines and lines[-1] != "":
+                lines.append("")
+            lines.append(sub)
+
+    return "\n".join(lines)
+
+
 def _apply_toml_suggestions(
     config_path: Path, toml_fragment: str,
 ) -> bool:
-    """Append TOML suggestions to an existing config file.
+    """Merge TOML suggestions into an existing config file.
 
-    Adds a clearly marked section at the end. The user should review
-    and manually integrate the suggestions into the proper sections.
+    Parses both the existing config and the suggestions, deep-merges
+    them (extending lists, preserving existing keys), and writes back.
+    A backup is saved alongside the config.
     Returns True on success, False on failure.
     """
     try:
-        with open(config_path, "r") as fh:
-            existing = fh.read()
+        with open(config_path, "rb") as fh:
+            existing = tomllib.load(fh)
 
-        marker = (
-            "\n# --- Learn mode suggestions "
-            "(review and integrate above) ---\n"
-        )
-        # Remove any previous learn suggestions block
-        if marker in existing:
-            existing = existing[:existing.index(marker)]
+        suggestions = tomllib.loads(toml_fragment)
+
+        merged = _deep_merge_toml(existing, suggestions)
+
+        # Backup before overwriting
+        backup = config_path.with_suffix(".toml.bak")
+        shutil.copy2(config_path, backup)
 
         with open(config_path, "w") as fh:
-            fh.write(existing.rstrip("\n") + "\n")
-            fh.write(marker)
-            fh.write(toml_fragment)
+            fh.write(_serialize_toml(merged))
             fh.write("\n")
 
         return True
-    except OSError as exc:
+    except (OSError, tomllib.TOMLDecodeError) as exc:
         print(
-            f"Error writing to {config_path}: {exc}",
+            f"Error updating {config_path}: {exc}",
             file=sys.stderr,
         )
         return False
@@ -4133,11 +4242,9 @@ def cmd_learn(args) -> None:
     if args.apply:
         print(f"Applying suggestions to {config_path}...")
         if _apply_toml_suggestions(config_path, toml_fragment):
-            print(f"Suggestions appended to {config_path}")
-            print(
-                "Review the file and integrate the suggestions "
-                "into the proper sections."
-            )
+            print(f"Suggestions merged into {config_path}")
+            backup = config_path.with_suffix(".toml.bak")
+            print(f"Backup saved to {backup}")
         else:
             print("Failed to apply suggestions.", file=sys.stderr)
             sys.exit(1)
