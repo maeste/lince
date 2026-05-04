@@ -1,0 +1,21 @@
+# Sandbox-policy fragment: claude — permissive level.
+#
+# Loaded by `agent-sandbox run --sandbox-level permissive` and merged on top
+# of the user's resolved config (deep merge; lists are appended).
+#
+# Permissive intent on bwrap:
+#   - Read access to gh CLI's config and SSH known_hosts so `gh auth status`
+#     and `gh pr create` work inside the sandbox.
+#   - Read access to ~/.cache for general tool cache reuse.
+#   - Anthropic API and github.com reachable (the credential proxy already
+#     allows the LLM API; bwrap shares the host network so github is reachable
+#     unless explicitly blocked).
+#
+# Out of scope: docker, podman, direct `git push` (use `gh` instead).
+
+[sandbox]
+home_ro_dirs = [".config/gh", ".cache", ".ssh/known_hosts"]
+
+[security]
+credential_proxy = true
+block_git_push = true

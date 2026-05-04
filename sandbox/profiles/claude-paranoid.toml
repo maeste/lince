@@ -1,0 +1,23 @@
+# Sandbox-policy fragment: claude — paranoid level.
+#
+# Loaded by `agent-sandbox run --sandbox-level paranoid` and merged on top of
+# the user's resolved config (deep merge; lists are appended). See lince-98
+# for the design rationale.
+#
+# Paranoid intent on bwrap:
+#   - Force isolated copy of ~/.claude (use_real_config = false), so anything
+#     the agent writes stays inside ~/.agent-sandbox/claude-config/, not the
+#     real config dir.
+#   - Ensure the credential proxy is on so API keys never enter the sandbox.
+#
+# NOTE: kernel-level network isolation (--unshare-net) is intentionally NOT
+# enabled here. With --unshare-net the sandbox gets its own loopback and can
+# no longer reach the host-side credential proxy at 127.0.0.1:PORT, breaking
+# all LLM API calls. Tightening this path requires a unix-socket proxy or an
+# in-namespace proxy — tracked as a follow-up issue.
+
+[claude]
+use_real_config = false
+
+[security]
+credential_proxy = true
