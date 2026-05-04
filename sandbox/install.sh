@@ -98,6 +98,24 @@ if [ -f "$DEFAULTS_SRC" ]; then
     cp "$DEFAULTS_SRC" "$HOME/.local/bin/agents-defaults.toml"
     echo -e "${GREEN}  ✓ Installed: ~/.local/bin/agents-defaults.toml${NC}"
 fi
+
+# Install built-in sandbox-policy fragments (paranoid/normal/permissive +
+# any custom-shipped ones). agent-sandbox loads these via --sandbox-level.
+# Fragment search order in the script: ./.agent-sandbox/profiles → ~/.agent-sandbox/profiles → <script-dir>/profiles.
+PROFILES_SRC="$SCRIPT_DIR/profiles"
+PROFILES_DST="$CONFIG_DIR/profiles"
+if [ -d "$PROFILES_SRC" ]; then
+    mkdir -p "$PROFILES_DST"
+    count=0
+    for fragment in "$PROFILES_SRC"/*.toml; do
+        [ -f "$fragment" ] || continue
+        cp "$fragment" "$PROFILES_DST/"
+        count=$((count + 1))
+    done
+    if [ "$count" -gt 0 ]; then
+        echo -e "${GREEN}  ✓ Installed $count sandbox-policy fragment(s) to $PROFILES_DST${NC}"
+    fi
+fi
 echo ""
 
 # ── Step 3: Initialize config ──────────────────────────────────────────

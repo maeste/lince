@@ -39,6 +39,24 @@ if [ -f "$DEFAULTS_SRC" ]; then
     cp "$DEFAULTS_SRC" "$HOME/.local/bin/agents-defaults.toml"
     echo -e "${GREEN}  ✓ Agent defaults updated: ~/.local/bin/agents-defaults.toml${NC}"
 fi
+
+# Update built-in sandbox-policy fragments. New fragments shipped with this
+# release land in ~/.agent-sandbox/profiles/ where agent-sandbox finds them
+# via its --sandbox-level flag.
+PROFILES_SRC="$SCRIPT_DIR/profiles"
+PROFILES_DST="$HOME/.agent-sandbox/profiles"
+if [ -d "$PROFILES_SRC" ]; then
+    mkdir -p "$PROFILES_DST"
+    count=0
+    for fragment in "$PROFILES_SRC"/*.toml; do
+        [ -f "$fragment" ] || continue
+        cp "$fragment" "$PROFILES_DST/"
+        count=$((count + 1))
+    done
+    if [ "$count" -gt 0 ]; then
+        echo -e "${GREEN}  ✓ Sandbox-policy fragments updated: $count file(s) in $PROFILES_DST${NC}"
+    fi
+fi
 echo ""
 
 # ── Step 2: Ensure env passthrough ─────────────────────────────────────
