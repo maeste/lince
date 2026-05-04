@@ -3959,10 +3959,11 @@ def _deep_merge_toml(base: dict, override: dict) -> dict:
             elif isinstance(existing, list) and isinstance(value, list):
                 seen: set = set()
                 merged: list = []
-                for item in existing + value:
-                    if item not in seen:
-                        seen.add(item)
-                        merged.append(item)
+                for lst in (existing, value):
+                    for item in lst:
+                        if item not in seen:
+                            seen.add(item)
+                            merged.append(item)
                 result[key] = merged
             else:
                 result[key] = value
@@ -3997,25 +3998,26 @@ def _quote_key(key: str) -> str:
     return f'"{_escape_toml_string(key)}"'
 
 
+def _toml_scalar(value) -> str:  # noqa: ANN001
+    """Format a single TOML scalar value (bool, int, float, str)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return f'"{_escape_toml_string(value)}"'
+
+
 def _toml_value_line(key: str, value) -> str:  # noqa: ANN001
     """Format a single TOML key = value line."""
     qkey = _quote_key(key)
-    if isinstance(value, bool):
-        return f"{qkey} = {'true' if value else 'false'}"
-    if isinstance(value, int):
-        return f"{qkey} = {value}"
-    if isinstance(value, float):
-        return f"{qkey} = {value}"
-    if isinstance(value, str):
-        return f'{qkey} = "{_escape_toml_string(value)}"'
     if isinstance(value, list):
         if not value:
             return f"{qkey} = []"
         items = "\n".join(
-            f'    "{_escape_toml_string(v)}",' for v in value
+            f"    {_toml_scalar(v)}," for v in value
         )
         return f"{qkey} = [\n{items}\n]"
-    return f'{qkey} = "{_escape_toml_string(value)}"'
+    return f"{qkey} = {_toml_scalar(value)}"
 
 
 def _serialize_toml(data: dict, prefix: str = "") -> str:
