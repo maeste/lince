@@ -589,10 +589,32 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
             _proxy_logger.warning(
                 "Upstream error %s %s: %s", method, upstream_url, exc
             )
-            self.send_error(502, f"Upstream error: {exc}")
+            self._safe_send_error(502, f"Upstream error: {exc}")
+        except BrokenPipeError:
+            # Client closed the connection mid-stream (normal end-of-SSE
+            # behavior for some SDKs). Don't try to write anything else;
+            # the socket is already gone.
+            _proxy_logger.debug("client closed during %s %s", method, upstream_url)
         except OSError as exc:
             _proxy_logger.error("Proxy forwarding error: %s", exc)
-            self.send_error(502, f"Proxy error: {exc}")
+            self._safe_send_error(502, f"Proxy error: {exc}")
+
+    # --- Helper: send_error that swallows write-side failures ------------
+
+    def _safe_send_error(self, code: int, message: str) -> None:
+        """``send_error`` wrapped so a broken client connection doesn't
+        cascade into a second uncaught OSError.
+
+        The default ``BaseHTTPRequestHandler.send_error`` writes status +
+        headers + body to ``self.wfile``; if the underlying socket is
+        already gone (because the *first* error was a write failure), the
+        secondary write raises another exception that surfaces as
+        "Exception occurred during processing of request" in stderr.
+        """
+        try:
+            self.send_error(code, message)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     # --- Pass-through forwarding (no credential injection) ---------------
 
@@ -640,10 +662,12 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
         except http.client.HTTPException as exc:
             _proxy_logger.warning("Pass-through error %s %s: %s", method, upstream_url, exc)
-            self.send_error(502, f"Pass-through error: {exc}")
+            self._safe_send_error(502, f"Pass-through error: {exc}")
+        except BrokenPipeError:
+            _proxy_logger.debug("client closed during pass-through %s %s", method, upstream_url)
         except OSError as exc:
             _proxy_logger.error("Pass-through socket error: %s", exc)
-            self.send_error(502, f"Pass-through error: {exc}")
+            self._safe_send_error(502, f"Pass-through error: {exc}")
 
     def do_GET(self):  # noqa: N802
         self._handle_forward("GET")
