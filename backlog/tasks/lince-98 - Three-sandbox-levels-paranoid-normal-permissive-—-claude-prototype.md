@@ -1,10 +1,10 @@
 ---
 id: LINCE-98
 title: Three sandbox levels (paranoid/normal/permissive) — claude prototype
-status: Done
+status: In Progress
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-04 21:23'
+updated_date: '2026-05-05 09:34'
 labels:
   - sandbox
   - lince-dashboard
@@ -490,44 +490,57 @@ Bwrap path: no Phase 2 work needed — `use_real_config = false` (default) alrea
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 ## What shipped
 
-7 commits on `feature/lince-98-sandbox-levels-claude` (rebased on upstream/main):
+10 commits on `feature/lince-98-sandbox-levels-claude` (rebased on upstream/main):
 
-1. `dashboard: introduce sandbox_level field + paranoid scratch wrapper` — `Option<String>` field on `AgentTypeConfig` + dispatch in `spawn_inner` that synthesizes the command from `(agent_type, sandbox_backend, sandbox_level)`. For nono+paranoid the synthesized command is a self-contained bash wrapper that creates a per-agent scratch dir under `$XDG_RUNTIME_DIR`, rsyncs `~/.claude` into it, exports `HOME=<scratch>`, runs nono, and `rm -rf`'s the scratch on exit (trap EXIT). No plugin-side state machine needed — simpler than the original Phase 2 plan.
+### Initial implementation (7 commits)
+
+1. `dashboard: introduce sandbox_level field + paranoid scratch wrapper` — `Option<String>` field on `AgentTypeConfig` + dispatch in `spawn_inner` that synthesizes the command from `(agent_type, sandbox_backend, sandbox_level)`. For nono+paranoid the synthesized command is a self-contained bash wrapper that creates a per-agent scratch dir under `$XDG_RUNTIME_DIR`, rsyncs `~/.claude` into it, exports `HOME=<scratch>`, runs nono, and `rm -rf`'s the scratch on exit (trap EXIT).
 2. `sandbox-profiles: ship claude paranoid + permissive (nono + bwrap)` — 2 nono JSON profiles (extending `lince-claude`) + 2 TOML fragments under `sandbox/profiles/`.
-3. `sandbox: --sandbox-level flag + policy-fragment overlay` — `agent-sandbox run --sandbox-level NAME` loads `sandbox/profiles/NAME.toml` and deep-merges (lists like `home_ro_dirs` are appended, not replaced). Search path: `./.agent-sandbox/profiles/` → `~/.agent-sandbox/profiles/` → `<script-dir>/profiles/`.
+3. `sandbox: --sandbox-level flag + policy-fragment overlay` — `agent-sandbox run --sandbox-level NAME` loads `sandbox/profiles/NAME.toml` and deep-merges (lists like `home_ro_dirs` are appended, not replaced).
 4. `agents-defaults: collapse [agents.claude] / claude-nono into one entry` — single `[agents.claude]` with `sandbox_level = "normal"`, alternative levels as commented templates, `[agents.claude-nono]` removed, `[agents.claude-unsandboxed]` kept.
 5. `install: ship sandbox-policy fragments + paranoid keystore reminder` — `sandbox/install.sh` and `sandbox/update.sh` copy `profiles/*.toml` into `~/.agent-sandbox/profiles/`; `lince-dashboard/install.sh` prints platform-specific keystore command when nono is detected.
-6. `docs: sandbox-levels reference + manual test plan` — `docs/documentation/dashboard/sandbox-levels.md` (level breakdown, decision guide, customization with worked `lince-claude-with-aws.json` example, keystore setup) + `docs/documentation/dashboard/sandbox-levels-testing.md` (level × backend matrix with copy-pasteable verification commands, custom-level smoke test, regression checklist) + cross-links from `lince-dashboard/README.md`.
-7. `backlog: record lince-98 phase 0 research outcomes + status In Progress` — task notes capturing the resolved R1–R4 decisions so lince-99..102 inherit them without re-investigation.
+6. `docs: sandbox-levels reference + manual test plan` — `docs/documentation/dashboard/sandbox-levels.md` + `docs/documentation/dashboard/sandbox-levels-testing.md` + cross-links from `lince-dashboard/README.md`.
+7. `backlog: record lince-98 phase 0 research outcomes + status In Progress` — task notes capturing the resolved R1–R4 decisions.
+
+### Hardening commits (added after design review)
+
+8. `sandbox: kernel-enforced bwrap paranoid (--unshare-net + socat bridge)` — promotes bwrap paranoid from credential-proxy-only to kernel-enforced. CredentialProxy gets `allow_domains` + `enforce_allowlist` + `start_unix_bridge` + `_forward_passthrough`. cmd_run wires `[security] unshare_net = true` to add `--unshare-net` to bwrap, bind-mount the proxy unix socket at `/run/lince-proxy.sock`, and wrap the inner agent command in a bash setup that runs `socat TCP-LISTEN:8118 ... UNIX-CONNECT:/run/lince-proxy.sock`. Agents see plain TCP localhost — no SDK changes. install.sh detects `socat`. merge_sandbox_level adds `allow_domains` to append-merge keys.
+9. `sandbox-profiles: claude paranoid/permissive use allow_domains` — paranoid ships `unshare_net = true` + `allow_domains = ["api.anthropic.com"]`; permissive moves github allowlist into `[security] allow_domains`. Headers document the merge semantics so users extend via `~/.agent-sandbox/config.toml` instead of forking the fragment.
+10. `docs: bwrap paranoid is now kernel-enforced` — threat-model table promotes bwrap paranoid (raw socket exfil now blocked at kernel level on both backends); customization section documents `allow_domains` + worked "paranoid + pypi.org" example via config.toml override; testing doc replaces "soft paranoid" cell with kernel-isolation tests (curl to attacker.com fails at netns level, raw socket fails with OSError, host-side socat visible per running paranoid agent); GH #54 reframed as "fragment-level extends inheritance" (smaller scope follow-up).
+
+## Threat model — final state (post-hardening)
+
+| Scenario | bwrap normal | bwrap paranoid | nono paranoid |
+|---|---|---|---|
+| Leak `ANTHROPIC_API_KEY` via env dump | unsafe | safe (proxy strips) | safe (keystore) |
+| Modify real `~/.claude` | unsafe | safe (use_real_config=false) | safe (scratch copy) |
+| Open raw socket to attacker.com | unsafe | safe (netns has no route) | safe (Landlock) |
+| `curl https://attacker.com` via HTTP_PROXY | unsafe | safe (proxy 403) | safe (nono allowlist) |
+
+Both paranoid backends are now kernel-enforced. Implementation paths differ (Linux netns + socat bridge vs. Landlock + nono native proxy) but the security guarantee converges.
 
 ## Verified at code-review time
 
-- ✅ AC #1 — `agents-defaults.toml` validated by tomllib parse: claude entry has `sandbox_level = "normal"`, `claude-nono` absent, `claude-unsandboxed` present
-- ✅ AC #7, #8, #9, #10 — documentation files exist with the required structure
-- ✅ AC #11 — plugin's `synthesize_sandboxed_command` returns `None` for unknown agent types (graceful fallback) and `agent-sandbox --sandbox-level` emits a hard error for missing fragment files
-- ✅ AC #12 — cross-links present in `lince-dashboard/README.md` and `agents-defaults.toml` header
-- ✅ WASM plugin builds clean; agent-sandbox parses; smoke tests on `load_sandbox_level_fragment` + `merge_sandbox_level` pass
+- ✅ AC #1 — `agents-defaults.toml` validated by tomllib parse
+- ✅ AC #7..#12 — documentation files exist, allowlist-based customization documented, plugin accepts free-form sandbox_level
+- ✅ WASM plugin builds clean
+- ✅ agent-sandbox parses; smoke tests on `load_sandbox_level_fragment`, `merge_sandbox_level`, `CredentialProxy(allow_domains, enforce_allowlist)`, and `build_bwrap_cmd(unshare_net=True, proxy_unix_socket=...)` all pass
+- ✅ The assembled bwrap command for paranoid contains `--unshare-net`, the unix-socket bind, and the bash wrapper invoking socat with the right flags
 
-## Pending manual verification (AC #2–6)
+## Pending manual verification
 
-These require a running dashboard and cannot be checked from code review alone. Per `docs/documentation/dashboard/sandbox-levels-testing.md`, the tester runs each (level × backend) cell:
-
-- AC #2 (paranoid on nono: arbitrary network blocked, Anthropic via proxy works, `~/.claude` isolated)
-- AC #3 (permissive on nono: gh CLI works, docker fails, direct `git push` fails)
-- AC #4 (N-picker shows "Claude Code" once)
-- AC #5 (default backend per OS; explicit override on linux)
-- AC #6 (install.sh re-run idempotent)
-
-Reviewer should run the cells before merging the PR. The manual test plan doc is the executable form of these criteria.
+Per `docs/documentation/dashboard/sandbox-levels-testing.md`, the tester runs each (level × backend) cell. The hardening introduces tests that need a running paranoid bwrap sandbox to exercise (e.g. `curl https://attacker.com` failing at netns level, `pgrep socat` showing one helper per running agent). The doc spells the steps and expected outcomes.
 
 ## Architectural decisions worth highlighting in the PR description
 
-- **`sandbox_level` is free-form on purpose**: users drop a custom profile and reference it by name, no plugin changes needed. Documented prominently.
-- **bwrap paranoid is proxy-enforced, not kernel-enforced**: adding `--unshare-net` to bwrap would break the host-side credential proxy (each netns has its own `lo`). Documented as known asymmetry; future hardening tracked separately.
-- **MCP-on-internet for permissive is opt-in**: users who run MCP servers that reach internet inside the sandbox write their own `lince-claude-permissive-with-mcp.json`. Out of scope for the prototype.
+- **`sandbox_level` is free-form on purpose** — users drop a custom profile and reference it by name, no plugin changes needed.
+- **`[security] allow_domains` is the per-level allowlist knob** — append-merged so users extend without forking fragments. `[security] unshare_net = true` automatically activates strict-allowlist mode in the proxy.
+- **bwrap paranoid is now kernel-enforced** via `bwrap --unshare-net` + a unix-socket bridge to the credential proxy. socat is the in-sandbox helper; the agent's HTTP_PROXY points at a fixed in-sandbox port; the unix socket is bind-mounted from the host.
+- **MCP-on-internet for permissive is opt-in** — users who run MCP servers that reach internet inside the sandbox extend `allow_domains` with the MCP endpoints they need.
 
 ## Follow-ups (already filed)
 
 - lince-99..102 (codex/gemini/opencode/pi) — depend on this PR
 - GH #53 — wizard 'N' picker UX changes enabled by the single-entry-per-agent model
+- GH #54 — fragment-level `extends` inheritance (so `paranoid-with-pypi.toml` can `extends = "paranoid"` instead of self-contained or config.toml-overlay)
 <!-- SECTION:FINAL_SUMMARY:END -->

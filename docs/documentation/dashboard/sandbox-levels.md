@@ -12,17 +12,24 @@ Until recently each combination of "agent type + isolation tightness" required i
 
 The table below summarises the differences. Sections after it give the concrete config snippets and behavior for each level.
 
-| Aspect                | paranoid                                | normal                       | permissive                                                                   |
-|-----------------------|-----------------------------------------|------------------------------|------------------------------------------------------------------------------|
-| Network               | Anthropic API only (proxy)              | inherited base               | + GitHub + gh CLI domains                                                    |
-| Filesystem            | $WORKDIR + scratch ~/.claude            | as today                     | + ~/.config/gh, ~/.cache, ~/.ssh/known_hosts                                 |
-| `gh` CLI              | no                                      | no                           | yes                                                                          |
-| `docker` / `podman`   | no                                      | no                           | **no** (out of scope)                                                        |
-| direct `git push`     | no                                      | no                           | **no** (use `gh` instead)                                                    |
+| Aspect                                  | paranoid (bwrap)              | paranoid (nono)        | normal             | permissive                                              |
+|-----------------------------------------|-------------------------------|------------------------|--------------------|---------------------------------------------------------|
+| Network (allowed destinations)          | Anthropic API only            | Anthropic API only     | inherited base     | + GitHub + gh CLI domains                               |
+| Network isolation enforcement           | kernel (netns) + proxy allowlist | kernel (Landlock + nono policy) | inherited       | proxy allowlist                                         |
+| Agent opens raw socket to exfiltrate    | blocked (no route in netns) ✓ | blocked (kernel policy) ✓ | depends on base | blocked for non-allowlisted hosts (proxy)               |
+| Filesystem                              | $WORKDIR + scratch ~/.claude  | $WORKDIR + scratch ~/.claude | as today      | + ~/.config/gh, ~/.cache, ~/.ssh/known_hosts            |
+| `gh` CLI                                | no                            | no                     | no                 | yes                                                     |
+| `docker` / `podman`                     | no                            | no                     | no                 | **no** (out of scope)                                   |
+| direct `git push`                       | no                            | no                     | no                 | **no** (use `gh` instead)                               |
 
 ### 2.1 Paranoid
 
-**Network.** Only the Anthropic API is reachable. All requests go through nono's credential proxy, which injects the API key on the host side; the key never enters the sandbox environment. Everything else — DNS for arbitrary hosts, plain HTTPS to other services, even `pip install` from PyPI — fails.
+**Network.** Only the Anthropic API is reachable, and isolation is **kernel-enforced** on both backends.
+
+- Under bwrap: the sandbox runs in a fresh network namespace (`bwrap --unshare-net`) with only its own loopback. There is no route to anywhere on the host or the internet — a raw TCP connect to `1.1.1.1:443` or a DNS lookup for `attacker.com` fails at the kernel. The host-side credential proxy is reached over a unix domain socket bind-mounted into the sandbox at `/run/lince-proxy.sock`; a small `socat` helper inside the sandbox listens on `127.0.0.1:8118` and forwards each TCP connection to that unix socket. The agent sees `HTTP_PROXY=http://127.0.0.1:8118` and uses TCP localhost as before — no SDK changes are required. On top of the kernel netns isolation, the credential proxy enforces an application-layer allowlist (`allow_domains`, default `["api.anthropic.com"]`); any HTTPS CONNECT or HTTP request to a destination outside the allowlist is rejected with a 403.
+- Under nono: kernel-level via Landlock LSM and nono's native network policy; application-level via the same credential proxy mechanism.
+
+The credential proxy injects the API key on the host side in both cases, so the key never enters the sandbox environment. Everything else — DNS for arbitrary hosts, plain HTTPS to other services, even `pip install` from PyPI — fails.
 
 nono profile (`~/.config/nono/profiles/lince-claude-paranoid.json`):
 
@@ -188,9 +195,9 @@ The dashboard supports two backends, switched per agent via `sandbox_backend`:
 
 The default is per-OS: Linux picks `bwrap` (agent-sandbox), macOS picks `nono`. A Linux user who wants kernel-enforced filesystem isolation via Landlock can override that and pick `nono` explicitly.
 
-**Important asymmetry.** The two backends do not enforce paranoid the same way. Under nono, paranoid is **kernel-enforced**: Landlock restricts the filesystem and nono's native network policy restricts outbound connections. Under bwrap, paranoid is **proxy-enforced**: `use_real_config = false` keeps writes inside the scratch config copy and the credential proxy strips API keys from the sandbox environment, but the bwrap sandbox today does not run with `--unshare-net`. Adding `--unshare-net` would give the sandbox its own loopback and break the host-side credential proxy at `127.0.0.1:PORT`, which is what carries every LLM API call. Tightening this path requires a unix-socket proxy or an in-namespace proxy and is tracked as separate hardening work.
+**Backend implementation note.** Both backends now achieve kernel-enforced network isolation under paranoid; the implementation paths differ. bwrap paranoid uses `--unshare-net` plus a socat unix-socket bridge to the credential proxy. nono paranoid uses Landlock LSM plus nono's native network policy. From a threat-model standpoint the two are equivalent for paranoid: an agent that opens a raw TCP socket to a non-allowlisted host fails at the kernel level on either backend.
 
-In practice: if you want the strongest available network isolation under paranoid, run on a host where nono is available and set `sandbox_backend = "nono"`.
+**Prerequisites for paranoid + bwrap.** `socat` must be available on the host's `$PATH` (most distros: install the `socat` package). `install.sh` warns when it is missing. If `unshare_net = true` is resolved at run time and `socat` is not found, `agent-sandbox` errors out with a clear message rather than silently degrading.
 
 ## 5. Customization
 
@@ -244,6 +251,32 @@ The next time you spawn a Claude Code agent it will launch with `lince-claude-wi
 
 For agent-sandbox (bwrap) users, the equivalent is a TOML fragment at `~/.agent-sandbox/profiles/with-aws.toml` deep-merged into the resolved config (lists appended, scalars overridden); flip the same `sandbox_level = "with-aws"` switch in `agents-defaults.toml` (or in the user `[agents.claude]` override block of `config.toml`) to activate it.
 
+### Extending the network allowlist with `allow_domains`
+
+`allow_domains` is the user-visible knob that controls which hosts the credential proxy lets through. It appears in the shipped fragments and can be extended by the user without writing a custom level.
+
+- **In paranoid (`unshare_net = true`)**: `allow_domains` is the **strict allowlist**. Any HTTPS CONNECT or HTTP request to a host not in the union of `credential_rules.domains` and `allow_domains` is rejected. The shipped paranoid fragment sets `allow_domains = ["api.anthropic.com"]`.
+- **In permissive (`unshare_net = false`)**: `allow_domains` lists the extra hosts the proxy passes through without credential injection. The shipped permissive fragment sets `allow_domains = ["api.github.com", "github.com", "objects.githubusercontent.com"]`.
+- **Append-merged, not replaced**: when the user adds `[security] allow_domains = [...]` in `~/.agent-sandbox/config.toml`, the entries are concatenated onto whatever the active fragment ships. Switching from paranoid to permissive (or vice versa) does not silently drop the user's additions, but it does change which fragment's defaults they extend.
+
+### Worked example: paranoid + pypi.org
+
+Suppose you want paranoid for an agent that occasionally needs `pip install` from PyPI. Rather than ship a new fragment file, extend `allow_domains` directly in `~/.agent-sandbox/config.toml`:
+
+```toml
+# ~/.agent-sandbox/config.toml
+[security]
+allow_domains = ["pypi.org", "files.pythonhosted.org"]
+```
+
+Then:
+
+```bash
+agent-sandbox run --sandbox-level paranoid <command>
+```
+
+The resolved config is paranoid + the two extra hosts: kernel netns isolation is unchanged, the proxy allowlist becomes `["api.anthropic.com", "pypi.org", "files.pythonhosted.org"]`, and `pip install` resolves through the proxy. This works because `allow_domains` is append-merged with the paranoid fragment's list, not overwritten.
+
 ## 6. Keystore setup for paranoid
 
 Paranoid relies on the Anthropic API key being in nono's credential keystore — **not** in `ANTHROPIC_API_KEY` in your environment. The point is that the key never enters the sandbox process tree; nono injects the `Authorization` header on the host side as the request flows through the credential proxy.
@@ -268,6 +301,6 @@ For 1Password, Apple Passwords, and other backends, see nono's credential inject
 
 ## 7. Future work
 
-The new `sandbox_level` model is what the upcoming wizard ('N' picker) UX changes are built on — the picker becomes a two-axis chooser (agent type x sandbox level) instead of needing a separate `agents.*` entry per variant. Progress is tracked in [GitHub issue #53](https://github.com/RisorseArtificiali/lince/issues/53).
+The new `sandbox_level` model is what the upcoming wizard ('N' picker) UX changes are built on — the picker becomes a two-axis chooser (agent type x sandbox level) instead of needing a separate `agents.*` entry per variant. Progress is tracked in [GitHub issue #53](https://github.com/RisorseArtificiali/lince/issues/53). [GitHub issue #54](https://github.com/RisorseArtificiali/lince/issues/54) tracks fragment-level `extends` inheritance so custom fragments can declare a parent level explicitly instead of relying on deep-merge order — a smaller, separate scope from the now-completed bwrap paranoid network hardening.
 
 For the manual test plan used to validate this feature, see [`sandbox-levels-testing.md`](./sandbox-levels-testing.md).

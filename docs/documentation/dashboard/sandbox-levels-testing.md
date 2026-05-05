@@ -13,6 +13,11 @@ The Claude prototype is the only agent type wired to `sandbox_level` in this ite
   ```bash
   agent-sandbox --version
   ```
+- `socat` installed on the host (required for paranoid + bwrap; the bwrap netns reaches the credential proxy via a unix-socket bridge driven by `socat`). Verify:
+  ```bash
+  socat -V | head -n 1
+  ```
+  If missing: `sudo dnf install socat` (Fedora) or `sudo apt install socat` (Debian/Ubuntu).
 - nono installed and on `$PATH`. Verify:
   ```bash
   nono --version
@@ -61,22 +66,30 @@ The Claude prototype is the only agent type wired to `sandbox_level` in this ite
 3. Spawn a Claude agent: press `n` in the dashboard, accept defaults.
 
 #### Inside the sandbox (run in claude's bash pane)
-- Command: `curl -s -o /dev/null -w "%{http_code}\n" https://example.com`
-  - Expected: non-200 / connection failure (DNS or TCP error). Network outside Anthropic must be blocked.
+- Command: `curl -s -o /dev/null -w "%{http_code}\n" https://attacker.com 2>&1`
+  - Expected: kernel-level connection failure (e.g. `Could not resolve host: attacker.com` or `Network is unreachable`), **not** a 403 from a proxy. This verifies the bwrap netns isolation: the sandbox has no route to anywhere except its own loopback.
+- Command: `python3 -c "import socket; s=socket.socket(); s.settimeout(3); s.connect(('1.1.1.1', 443))"`
+  - Expected: `OSError` (typically `Network is unreachable` or `No route to host`). The fresh netns has no route to non-loopback addresses, so even raw-socket bypasses of `HTTP_PROXY` fail.
+- Command: `printenv | grep -E "(ANTHROPIC|OPENAI|GEMINI)_API_KEY"`
+  - Expected: empty output. The credential proxy strips API keys from the sandbox environment.
 - Command: send a chat message that triggers a real Anthropic API call.
-  - Expected: normal response. The credential proxy injects the API key on the host side.
+  - Expected: normal response. The agent reaches the credential proxy via `HTTP_PROXY=http://127.0.0.1:8118`, which the in-sandbox `socat` helper bridges to the host-side proxy over the unix socket at `/run/lince-proxy.sock`.
 - Command: `ls -la ~/.claude/`
   - Expected: a scratch copy of claude settings, NOT the real one. No personal history files outside what was rsync-seeded at spawn.
 - Command: `touch ~/.claude/MUTATED_BY_AGENT && ls ~/.claude/MUTATED_BY_AGENT`
   - Expected: file exists inside the scratch copy.
 
-#### Outside the sandbox (host shell, after the previous step)
+#### Outside the sandbox (host shell, while the agent is still running)
 - Command: `ls ~/.claude/MUTATED_BY_AGENT`
   - Expected: `No such file or directory`. The real config is untouched.
+- Command: `pgrep -af socat`
+  - Expected: at least one `socat` process per running paranoid+bwrap agent, listening on the per-agent unix socket and bridging to `127.0.0.1:8118` inside the netns.
 
 #### After agent stop
 - Command: `ls "$XDG_RUNTIME_DIR"/lince-* 2>/dev/null`
   - Expected: no output. Cleanup ran and the scratch copy is gone.
+- Command: `pgrep -af socat | grep lince-proxy`
+  - Expected: no output. The bridge `socat` was torn down with the agent.
 
 ### 3.2 Cell: paranoid x nono (linux)
 
@@ -231,6 +244,35 @@ Run only if a macOS host is available. Same commands as 3.5.
 
 Run only if a macOS host is available. Same commands as 3.8.
 
+### 3.10 Cell: paranoid + extra domain via `config.toml` override (linux, bwrap)
+
+Verifies that `allow_domains` is append-merged with the paranoid fragment, so a user can extend the allowlist without writing a custom level.
+
+#### Setup
+1. In `~/.agent-sandbox/config.toml` (create the file if absent), add:
+   ```toml
+   [security]
+   allow_domains = ["github.com", "api.github.com", "objects.githubusercontent.com"]
+   ```
+2. In `~/.config/lince-dashboard/config.toml`:
+   ```toml
+   [agents.claude]
+   sandbox_level = "paranoid"
+   sandbox_backend = "bwrap"
+   ```
+3. Restart Zellij and spawn a Claude agent inside the test project.
+
+#### Inside the sandbox
+- Command: `gh auth status`
+  - Expected: `Logged in to github.com`. The proxy CONNECT to `api.github.com` is allowed by the extended allowlist; kernel netns isolation is unchanged because traffic still flows through the proxy.
+- Command: `curl -s -o /dev/null -w "%{http_code}\n" https://attacker.com 2>&1`
+  - Expected: still a kernel-level failure. Extending `allow_domains` does not punch a hole for non-allowlisted hosts.
+- Command: `printenv | grep -E "(ANTHROPIC|OPENAI|GEMINI)_API_KEY"`
+  - Expected: empty. Credential injection still applies to Anthropic; GitHub traffic passes through without injection.
+
+#### Cleanup
+Remove the `[security]` block from `~/.agent-sandbox/config.toml` to return paranoid to its default allowlist.
+
 ## 4. Custom-level smoke test
 
 Walk through creating a custom level following the customization story in the design doc.
@@ -281,6 +323,7 @@ Things that must STILL work after the change.
 - N-picker shows **"Claude Code"** once. It must NOT show "Claude Code", "Claude Code (nono)", and "Claude Code (sandboxed)" all at once.
 - `[agents.claude-unsandboxed]` is still spawnable. It is a separate entry, not a level.
 - Existing agents that have NOT been migrated yet — `codex`, `gemini`, `opencode`, `pi` — still spawn and work as before. They have no `sandbox_level` and fall back to the static command.
+- When `sandbox_level` is **not** paranoid (e.g. `permissive` or `normal`), the bwrap sandbox stays in the host network namespace — `--unshare-net` must NOT be set. Verify by running `ip route` from inside a permissive agent shell: it should show the host's default route, not just `lo`. Equivalently, no `socat` bridge process should be spawned for non-paranoid agents (`pgrep -af socat | grep lince-proxy` returns empty).
 - `install.sh` is idempotent. Re-running on an already-installed system prints no errors and overwrites profiles cleanly.
 - The WASM plugin builds clean:
   ```bash
@@ -300,5 +343,6 @@ Tester ticks each box that was actually run and passed. Cells skipped due to pla
 - [ ] 3.7 permissive x bwrap (linux)
 - [ ] 3.8 permissive x nono (linux)
 - [ ] 3.9 permissive x nono (macOS)
+- [ ] 3.10 paranoid + extra domain via `config.toml` override (linux, bwrap)
 - [ ] 4. Custom-level smoke test (including typo fallback)
 - [ ] 5. Regression checklist (all items)
