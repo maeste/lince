@@ -1,10 +1,10 @@
 ---
 id: LINCE-100
 title: Three sandbox levels — gemini follow-up
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-05 20:52'
+updated_date: '2026-05-05 21:39'
 labels:
   - sandbox
   - lince-dashboard
@@ -246,3 +246,22 @@ Master doc page extension (acceptance criterion #7) deferred — no docs/ tree e
 
 Runtime sanity checks (curl/printenv inside paranoid) require a host with the gemini binary + a GEMINI_API_KEY, so left for the user to verify before pushing.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Shipped in PR #64 (`feature/lince-104-agents-template-toml` → `main`). PR closes GH #50 + umbrella #47.
+
+Delivered:
+- Nono profiles `lince-gemini-{paranoid,permissive}.json` + sandbox fragments `sandbox/profiles/gemini-{paranoid,permissive}.toml`.
+- `agents-defaults.toml`: collapsed gemini/gemini-bwrap/gemini-nono → `[agents.gemini]` (sandboxed default, `sandbox_level="normal"`) + `[agents.gemini-unsandboxed]`.
+- `agents-template.toml`: gemini-paranoid + gemini-permissive variants.
+- `plugin/src/agent.rs`: gemini match arm in `synthesize_sandboxed_command`. Bash wrapper hardened (mkdir nested home subdir + skip rsync on missing source) so clean-install `~/.gemini` works.
+- Paranoid bail-out now agent-aware (lists `GEMINI_API_KEY, GOOGLE_API_KEY` instead of `ANTHROPIC_API_KEY`) with an OAuth note for browser-login users.
+
+OAuth decision (paranoid): API-key only. `accounts.google.com` / `oauth2.googleapis.com` intentionally not allowlisted (broader trust boundary than the model API alone). OAuth-only gemini users should pick `normal`/`permissive`, or follow the generic bypass recipe in `docs/documentation/dashboard/sandbox-levels.md` §6 with the documented credential-isolation trade-off.
+
+AC #7 (master doc page extension) addressed: §3 carries the API-key requirement caveat, §6 has the trust model + bypass recipe, §7.2 has gemini-specific auth matrix.
+
+Runtime sanity checks (curl/printenv inside paranoid, gemini API call) deferred to the PR's manual test plan — require host gemini binary + GEMINI_API_KEY which weren't available in the implementation session.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,10 +1,10 @@
 ---
 id: LINCE-101
 title: Three sandbox levels — opencode follow-up
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 20:53'
+updated_date: '2026-05-05 21:39'
 labels:
   - sandbox
   - lince-dashboard
@@ -257,3 +257,23 @@ Covered providers: anthropic, openai, gemini (intersection of `CREDENTIAL_PROXY_
 
 Master doc page extension deferred (no docs tree yet). Runtime sanity checks (`opencode --version` inside paranoid; curl tests) require host opencode + provider keys, left for the user to verify before pushing.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Shipped in PR #64 (`feature/lince-104-agents-template-toml` → `main`). PR closes GH #51 + umbrella #47.
+
+Delivered:
+- Nono profiles `lince-opencode-{paranoid,permissive}.json` (`network.credentials = ["anthropic","openai","gemini"]`) + sandbox fragments `sandbox/profiles/opencode-{paranoid,permissive}.toml`.
+- `agents-defaults.toml`: collapsed opencode/opencode-bwrap/opencode-nono → `[agents.opencode]` (sandboxed default) + `[agents.opencode-unsandboxed]`.
+- `agents-template.toml`: opencode-paranoid + opencode-permissive variants.
+- `plugin/src/agent.rs`: opencode match arm. Picked option (a) from the task notes — Bun-resolution shipped as `inner_command` (`bash -c 'exec "$(dirname "$(readlink -f "$(which opencode)")")/.opencode" "$@"' --`). `shell_quote` wraps the resolution in single quotes inside the paranoid bash wrapper, so `$`-expansion happens at exec-time inside nono, not at wrapper-construction time.
+- Bash wrapper now mkdirs nested home subdir + skips rsync on missing source (clean-install case for `.config/opencode`).
+- Wrapper template post-review: collapsed 5 sequential `.replace()` into one `format!` (smoke-tested for `.config/opencode` + paths with spaces).
+
+LLM-endpoint allowlist decision (paranoid): covers anthropic, openai, gemini — intersection of `CREDENTIAL_PROXY_RULES` and nono's keystore. Other providers (groq, mistral, deepseek, …) ship a custom level via the documented escape hatch. `OPENCODE_API_KEY` is passthrough only — not a proxied credential.
+
+Bun/Landlock workaround confirmed not needed for bwrap path (agent-sandbox CLI doesn't trigger Landlock).
+
+Runtime sanity checks (`opencode --version` inside paranoid; SIGABRT regression check; provider routing) deferred to the PR's manual test plan — require host opencode binary + provider keys.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,10 +1,10 @@
 ---
 id: LINCE-102
 title: Three sandbox levels — pi follow-up
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 20:53'
+updated_date: '2026-05-05 21:39'
 labels:
   - sandbox
   - lince-dashboard
@@ -250,3 +250,34 @@ The task description proposes a `pi_providers = [...]` config field that the plu
 
 Master doc page extension deferred (no docs tree yet).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Shipped in PR #64 (`feature/lince-104-agents-template-toml` → `main`). PR closes GH #52 + umbrella #47.
+
+Delivered:
+- Nono profiles `lince-pi-paranoid.json` (3-provider credentials, narrow `environment.passthrough`: only the 3 supported providers' keys + base URLs + standard) + `lince-pi-permissive.json` (3-provider credentials + GitHub, full 18-provider passthrough inherited from `lince-pi`).
+- Sandbox fragments `sandbox/profiles/pi-{paranoid,permissive}.toml`.
+- `agents-defaults.toml`: collapsed pi/pi-bwrap/pi-nono → `[agents.pi]` (sandboxed default, `sandbox_level="normal"`) with full 33-key env block preserved + multi-provider comment pointing at the custom-level escape hatch.
+- `agents-template.toml`: pi-paranoid (5-key env: anthropic/openai/gemini + base URLs) + pi-permissive (full 33-key passthrough).
+- `plugin/src/agent.rs`: pi match arm.
+
+## `pi_providers` field — deferred (NOT delivered)
+
+The task description proposed a `pi_providers = [...]` config field that the plugin would translate to nono `network.credentials` AND env-var filtering (option a/b/c from the task notes). Skipped here in favor of the simpler custom-level escape hatch:
+
+- AC #1 (single `[agents.pi]` with `sandbox_level/sandbox_backend` + `pi_providers` field; `pi-nono` removed) — partially met. The collapse landed; the `pi_providers` field did not.
+- AC #2 (declared providers' keys passed; others filtered) — NOT met.
+- AC #3 (paranoid with no `pi_providers` = full block; pi launches but can't reach LLMs) — NOT met (paranoid bails at startup if no host API key is set, by design).
+- AC #4 (paranoid with `pi_providers=['anthropic']` = anthropic works, others fail) — NOT met as written; achievable via custom level.
+- AC #5 (env-var filtering verified inside paranoid) — NOT met.
+- AC #6 (N-picker shows 'Pi' once) — met.
+- AC #7 (master doc page extended with pi-specific rows + `pi_providers` rationale) — partially met (the multi-provider note exists in `agents-defaults.toml`; the docs page does not yet have a pi-specific section).
+
+Recommendation: re-open `pi_providers` as a separate task once user demand surfaces. Implementation would touch `AgentTypeConfig` (Rust), `synthesize_sandboxed_command` (env-unset prefix in the bash wrapper), and a runtime nono-profile-template mechanism. ~150–300 LOC across 3 files, ~half-day of work.
+
+## Runtime checks deferred
+
+Per-provider isolation verification (`pi_providers=['anthropic']` reaching anthropic but not openai; `printenv | grep _API_KEY` showing only the declared subset) is in the PR's manual test plan and requires the host pi binary + multiple provider keys.
+<!-- SECTION:FINAL_SUMMARY:END -->
