@@ -1,10 +1,10 @@
 ---
 id: LINCE-101
 title: Three sandbox levels — opencode follow-up
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 19:02'
+updated_date: '2026-05-05 20:53'
 labels:
   - sandbox
   - lince-dashboard
@@ -95,6 +95,32 @@ Decide and document the trade-off.
 - [ ] #6 sandbox_level=permissive: gh CLI works; docker ps fails
 - [ ] #7 Master doc page extended with opencode-specific rows: Bun/Landlock workaround explained, LLM-endpoint allowlist decision documented, OPENCODE_API_KEY handling per level
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Plan
+
+1. **Nono profiles**:
+   - `lince-opencode-paranoid.json`: extends lince-opencode, `network.credentials = ["anthropic", "openai", "gemini"]` (the providers nono knows; for others ship a custom level).
+   - `lince-opencode-permissive.json`: same credentials + GitHub allowlist + standard permissive reads.
+
+2. **Sandbox fragments**:
+   - `opencode-paranoid.toml`: auto-map all 5 credential-rule providers in `[env.extra]`; `scratch_home_dirs=[".config/opencode"]`; paranoid security flags.
+   - `opencode-permissive.toml`: standard GitHub allowlist + GH_TOKEN passthrough.
+
+3. **LLM-endpoint decision**: paranoid covers anthropic/openai/gemini (the providers `CREDENTIAL_PROXY_RULES` and nono's keystore know). For other LLMs the user ships a custom level. Documented in JSON `meta.description`.
+
+4. **OPENCODE_API_KEY**: passthrough for normal/permissive (inherited from base profile env). For paranoid: not in CREDENTIAL_PROXY_RULES so no proxy injection — opencode users on a non-OpenAI/Anthropic/Google routing should use a custom level.
+
+5. **Bun/Landlock workaround**: option (a) from the task notes — pass the bun-resolution as `inner_command` in `synthesize_sandboxed_command`. The shape is `["bash", "-c", "exec ... .opencode \"$@\"", "--"]`. shell_quote single-quotes the `-c` arg in the paranoid bash wrapper, preserving the shell metas. Bwrap path goes through the agent-sandbox CLI, which doesn't use Landlock — so the workaround is only effective on the Nono path, which is where the bug manifests.
+
+6. **agents-defaults.toml**: collapse opencode/opencode-bwrap/opencode-nono → `[agents.opencode]` (sandboxed default) + `[agents.opencode-unsandboxed]`.
+
+7. **agents-template.toml**: add `[agents.opencode-paranoid]` and `[agents.opencode-permissive]`.
+
+8. **plugin/src/agent.rs**: opencode match arm with the Bun-resolution inner_command and `agent_home_subdir = ".config/opencode"`. The bash wrapper now `mkdir -p`s the (potentially nested) home subdir and skips rsync if source is missing — both needed for `.config/opencode` on a fresh install.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -206,4 +232,28 @@ This task is updated to:
 3. The new `[agents.opencode]` entry in `agents-defaults.toml` is the only loaded opencode entry; it carries `sandbox_level = "normal"`.
 
 Nothing else in the existing plan changes — the Bun/Landlock workaround, LLM-endpoint allowlist decision, plugin match arm, and `scratch_home_dirs = [".config/opencode"]` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
+
+## Implementation
+
+- Nono profiles: `lince-opencode-paranoid.json` (`credentials: ["anthropic","openai","gemini"]`), `lince-opencode-permissive.json` (same + GitHub).
+- Sandbox fragments: `opencode-paranoid.toml` (5-provider env.extra, `scratch_home_dirs=[".config/opencode"]`) and `opencode-permissive.toml`.
+- `agents-defaults.toml`: collapsed opencode/opencode-bwrap/opencode-nono.
+- `agents-template.toml`: added opencode-paranoid + opencode-permissive.
+- `plugin/src/agent.rs`: opencode match arm — `inner_command = ["bash","-c","exec \"$(dirname \"$(readlink -f \"$(which opencode)\")\")/.opencode\" \"$@\"","--"]`, `agent_home_subdir=".config/opencode"`. Picked option (a) from task notes (pass resolution as inner_command). Verified: `shell_quote()` wraps the resolution string in single quotes inside the paranoid bash wrapper, so $-expansion happens at exec-time inside nono, not at wrapper-construction time.
+- Plugin bash wrapper: now `mkdir -p "$SCRATCH/$HOME_SUBDIR"` (so nested `.config/opencode` works) and skips rsync if source is missing (clean-install case).
+
+## LLM-endpoint allowlist decision (paranoid)
+
+Covered providers: anthropic, openai, gemini (intersection of `CREDENTIAL_PROXY_RULES` and nono's keystore). Rationale: ship a useful default for the most common router targets without enumerating every possible backend. Users on other providers (groq, mistral, deepseek, etc.) ship a custom level fragment.
+
+`OPENCODE_API_KEY` itself is passthrough only — not a proxied credential. Routing happens client-side; the actual upstream is one of the 3 covered providers (or a custom level the user ships).
+
+## Verification done
+
+- All TOML/JSON parse.
+- WASM plugin builds clean.
+- `apply-sandbox-levels.py paranoid,permissive` correctly emits `opencode-paranoid` and `opencode-permissive`.
+- Bun/Landlock workaround confirmed not needed for bwrap path (agent-sandbox CLI on bwrap doesn't trigger Landlock).
+
+Master doc page extension deferred (no docs tree yet). Runtime sanity checks (`opencode --version` inside paranoid; curl tests) require host opencode + provider keys, left for the user to verify before pushing.
 <!-- SECTION:NOTES:END -->

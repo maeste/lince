@@ -1,0 +1,14 @@
+{
+  "extends": "lince-opencode",
+  "meta": {
+    "name": "lince-opencode-paranoid",
+    "description": "OpenCode paranoid: only the LLM providers known to nono's credential proxy (anthropic, openai, gemini) are reachable; ~/.config/opencode is isolated to a per-agent scratch HOME. The Bun/Landlock workaround (exec'ing the native .opencode binary) is preserved at the dashboard plugin level. For other providers (groq, mistral, deepseek, ...) ship a custom level — `network.credentials` here covers only the common subset."
+  },
+  "filesystem": {
+    "allow": ["$WORKDIR", "$HOME"],
+    "read": []
+  },
+  "network": {
+    "credentials": ["anthropic", "openai", "gemini"]
+  }
+}

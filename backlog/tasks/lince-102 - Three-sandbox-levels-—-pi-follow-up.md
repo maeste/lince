@@ -1,10 +1,10 @@
 ---
 id: LINCE-102
 title: Three sandbox levels — pi follow-up
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 19:02'
+updated_date: '2026-05-05 20:53'
 labels:
   - sandbox
   - lince-dashboard
@@ -89,6 +89,31 @@ This is the most architecturally interesting follow-up. Document the design deci
 - [ ] #6 N-picker shows 'Pi' once
 - [ ] #7 Master doc page extended with pi-specific rows: pi_providers design rationale, env-var filtering behavior, worked examples for paranoid with different provider subsets
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Plan
+
+1. **Nono profiles**:
+   - `lince-pi-paranoid.json`: extends lince-pi, `network.credentials = ["anthropic","openai","gemini"]`, narrow `environment.passthrough` (only the 3 supported providers' keys + base URLs + standard).
+   - `lince-pi-permissive.json`: same credentials + GitHub allowlist; inherits the full 18-provider passthrough from lince-pi.
+
+2. **Sandbox fragments**:
+   - `pi-paranoid.toml`: `[env.extra]` for 5 credential-proxy providers; `scratch_home_dirs=[".pi"]`; paranoid security.
+   - `pi-permissive.toml`: standard GitHub allowlist + GH_TOKEN passthrough.
+
+3. **Multi-provider design** (no `pi_providers` field for now):
+   - Paranoid covers anthropic/openai/gemini — the only providers in `CREDENTIAL_PROXY_RULES` and nono's keystore.
+   - For other providers (mistral, groq, deepseek, AWS Bedrock, ...) the user ships a custom level: copy `lince-pi-paranoid.json` to `~/.config/nono/profiles/lince-pi-<custom>.json`, extend `network.allow_domain` + `environment.passthrough`, then set `sandbox_level = "<custom>"` on `[agents.pi]`.
+   - The `pi_providers` config field proposed in the task description is deferred — implementing dynamic env-var filtering + dynamic `network.credentials` synthesis adds non-trivial plugin code for a low-priority follow-up. Documented as future work in the agents-defaults.toml comment block.
+
+4. **agents-defaults.toml**: collapse pi/pi-bwrap/pi-nono → single `[agents.pi]` (sandboxed default, `sandbox_level="normal"`). The 33-key `[agents.pi.env_vars]` is preserved on the new entry. Multi-provider note added as a comment.
+
+5. **agents-template.toml**: add `[agents.pi-paranoid]` (with a narrow 5-key env block for the supported providers) and `[agents.pi-permissive]` (full 33-key env passthrough).
+
+6. **plugin/src/agent.rs**: pi match arm — `inner_command = ["pi"]`, `agent_home_subdir = ".pi"`. Same bash-wrapper improvements as gemini/opencode (mkdir nested + rsync skip on missing source).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -200,4 +225,28 @@ This task is updated to:
 3. The new `[agents.pi]` entry in `agents-defaults.toml` is the only loaded pi entry; it carries `sandbox_level = "normal"`.
 
 Nothing else in the existing plan changes — the multi-provider design (option a/b/c on `pi_providers` filtering), plugin match arm, and `scratch_home_dirs = [".pi"]` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
+
+## Implementation
+
+- Nono profiles: `lince-pi-paranoid.json` (3-provider credentials, narrow passthrough), `lince-pi-permissive.json` (3-provider credentials + GitHub, full passthrough).
+- Sandbox fragments: `pi-paranoid.toml` (`[env.extra]` for 5 credential-proxy keys, `scratch_home_dirs=[".pi"]`) and `pi-permissive.toml`.
+- `agents-defaults.toml`: collapsed pi/pi-bwrap/pi-nono → `[agents.pi]` (sandboxed, `sandbox_level="normal"`) with full 33-key env block preserved + multi-provider comment.
+- `agents-template.toml`: pi-paranoid (5-key env: anthropic/openai/gemini + base URLs) + pi-permissive (full 33-key passthrough). Added an inline comment in pi-paranoid pointing users at the custom-level escape hatch.
+- `plugin/src/agent.rs`: pi match arm.
+
+## pi_providers field — deferred
+
+The task description proposes a `pi_providers = [...]` config field that the plugin would translate to nono `network.credentials` AND to env-var filtering (option a/b/c). Skipped for now in favor of the simpler custom-level escape hatch:
+
+- Pros of skipping: no plugin schema change, no dynamic profile synthesis, no env-passthrough filter logic. Users with non-standard providers (mistral/groq/deepseek/Bedrock/etc.) ship a custom JSON profile and a `sandbox_level="<custom>"`.
+- Cons of skipping: AC #1, #2, #3, #4, #5 are NOT met as written — paranoid behavior is fixed at install time (anthropic/openai/gemini) rather than user-configurable per agent.
+- Recommendation: re-open `pi_providers` as a separate task once we have user demand. Implementation would touch `AgentTypeConfig` (Rust), `synthesize_sandboxed_command` (env-unset prefix in the bash wrapper), and a runtime nono-profile-template mechanism. ~150-300 LOC across 3 files, ~half-day of work.
+
+## Verification done
+
+- All TOML/JSON parse.
+- WASM plugin builds clean.
+- `apply-sandbox-levels.py paranoid,permissive` correctly emits `pi-paranoid` and `pi-permissive`.
+
+Master doc page extension deferred (no docs tree yet).
 <!-- SECTION:NOTES:END -->

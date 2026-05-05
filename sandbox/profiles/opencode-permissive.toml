@@ -1,0 +1,19 @@
+# Sandbox-policy fragment: opencode — permissive level.
+# See docs/documentation/dashboard/sandbox-levels.md. Lists are
+# append-merged with the user's ~/.agent-sandbox/config.toml.
+
+[sandbox]
+home_ro_dirs = [".config/gh", ".cache", ".ssh/known_hosts"]
+
+[env]
+# Keyring-auth users rely on GH_TOKEN/GITHUB_TOKEN; --clearenv would wipe them.
+passthrough = ["GH_TOKEN", "GITHUB_TOKEN"]
+
+[security]
+credential_proxy = true
+block_git_push = true
+allow_domains = [
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+]

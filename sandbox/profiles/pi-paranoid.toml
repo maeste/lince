@@ -1,0 +1,27 @@
+# Sandbox-policy fragment: pi — paranoid level.
+# See docs/documentation/dashboard/sandbox-levels.md. Lists are
+# append-merged with the user's ~/.agent-sandbox/config.toml.
+#
+# Pi supports 18+ LLM providers. Paranoid covers only the providers
+# known to the credential proxy (anthropic, openai, gemini). For other
+# providers (mistral, groq, deepseek, cerebras, AWS Bedrock, ...) ship
+# a custom level fragment that extends [security].allow_domains and
+# adds the provider's env var to [env.extra] below.
+
+[env.extra]
+# _collect_proxy_rules silently drops empties, so over-mapping is safe.
+ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
+ANTHROPIC_AUTH_TOKEN = "$ANTHROPIC_AUTH_TOKEN"
+OPENAI_API_KEY = "$OPENAI_API_KEY"
+GEMINI_API_KEY = "$GEMINI_API_KEY"
+GOOGLE_API_KEY = "$GOOGLE_API_KEY"
+
+[agents.pi]
+# Per-run ephemeral copy of ~/.pi (rsync-seeded, bind-mounted, removed
+# on exit). Mirrors what the nono paranoid bash wrapper does.
+scratch_home_dirs = [".pi"]
+
+[security]
+credential_proxy = true
+unshare_net = true
+allow_domains = []

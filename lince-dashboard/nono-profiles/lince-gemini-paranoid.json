@@ -1,0 +1,14 @@
+{
+  "extends": "lince-gemini",
+  "meta": {
+    "name": "lince-gemini-paranoid",
+    "description": "Gemini paranoid: only generativelanguage.googleapis.com via nono credential proxy; ~/.gemini isolated to a per-agent scratch HOME (rsync'd at spawn, deleted on stop). API-key auth only — OAuth users should use normal/permissive (paranoid does NOT allow accounts.google.com / oauth2.googleapis.com to keep the surface minimal)."
+  },
+  "filesystem": {
+    "allow": ["$WORKDIR", "$HOME"],
+    "read": []
+  },
+  "network": {
+    "credentials": ["gemini"]
+  }
+}

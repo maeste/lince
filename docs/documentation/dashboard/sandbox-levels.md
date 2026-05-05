@@ -221,7 +221,7 @@ docker: command not found
 
 ## 3. How to choose a level
 
-- **paranoid** when you are running an agent on an untrusted prompt, an unfamiliar repository, or any input you wouldn't paste into a root shell. The agent still does its job for the LLM API path; everything else is denied.
+- **paranoid** when you are running an agent on an untrusted prompt, an unfamiliar repository, or any input you wouldn't paste into a root shell. The agent still does its job for the LLM API path; everything else is denied. Paranoid requires an **API key on the host** (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`) so the credential proxy has something to inject — OAuth/browser-login flows put the token inside the sandbox, breaking paranoid's "credentials never in the sandbox" guarantee. If your agent is OAuth-authenticated, pick `normal` or `permissive` instead, or switch the agent to API-key auth. The trust-model rationale and an opt-out recipe (with risks spelled out) live in §6, "Trust model: why paranoid requires API-key auth (and how to opt out)". See §8 for per-agent specifics.
 - **normal** for daily work on your own code, where you want the agent to read/write the project, talk to its model, and not much else. This is the right default for most users most of the time.
 - **permissive** when you specifically need the agent to inspect or open PRs against GitHub and you accept that `~/.config/gh` is now visible inside the sandbox. The trade-off is real: a prompt-injected agent at this level can read your `gh` token and act as you on GitHub, scoped to whatever permissions that token holds.
 - **custom** (see below) when none of the three fit — for example if you need AWS Bedrock, a private Hugging Face mirror, or a corporate proxy.
@@ -350,6 +350,111 @@ agent-sandbox run --sandbox-level paranoid <command>
 
 The resolved config is paranoid + the two extra hosts: kernel netns isolation is unchanged, the proxy allowlist becomes `["api.anthropic.com", "pypi.org", "files.pythonhosted.org"]`, and `pip install` resolves through the proxy. This works because `allow_domains` is append-merged with the paranoid fragment's list, not overwritten.
 
+### Trust model: why paranoid requires API-key auth (and how to opt out)
+
+Paranoid is built around one specific assumption: **the agent's credentials never enter the sandbox process tree**. The flow is:
+
+1. The user puts an API key on the host — env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, etc.) or keystore entry.
+2. The credential proxy runs **on the host** (outside the sandbox), reads the key, and listens on a unix socket bind-mounted into the sandbox.
+3. The agent inside the sandbox sees `HTTP_PROXY=http://127.0.0.1:8118` and routes outbound HTTPS through it. The proxy strips the agent's own copy of the key from `[env]` and rewrites `*_BASE_URL` to point at itself.
+4. The proxy injects the `Authorization` / `x-api-key` / `x-goog-api-key` header on the **host side** as the request flows through.
+5. Inside the sandbox, `printenv | grep _API_KEY` returns nothing.
+
+That last point is what makes paranoid stronger than "kernel netns + host allowlist" alone: even if the agent is prompt-injected and tries to exfiltrate credentials by encoding them in a model response, a tool-call argument, or a written file, **there are no credentials to read**. The host-side proxy is the only thing that holds them, and the proxy doesn't echo them back.
+
+OAuth/browser-login auth violates that assumption by design. The flow is:
+
+- The agent (gemini's Google sign-in, claude's `/login`, codex configured for ChatGPT-token auth, etc.) does an interactive browser login and stores a **refresh token + access token** in its config dir: `~/.gemini/oauth_creds.json`, `~/.claude/.credentials.json`, similar.
+- That config dir is mounted into the sandbox so the agent can read its own auth state. In paranoid this is a per-run scratch copy (rsync-seeded from the real one), but it still contains the real tokens — the scratch is a *filesystem* isolation, not a *credential* isolation.
+- The agent reads the file at startup, sets `Authorization: Bearer <oauth-token>` itself, and sends requests directly. The credential proxy doesn't inject — there's nothing for it to inject — and crucially, **the bearer token now lives inside the sandbox process tree** for the lifetime of the run.
+
+A prompt-injected agent at "paranoid + OAuth" can:
+
+- Read the on-disk refresh + access token from its config scratch.
+- Encode the bytes into a model response (the LLM API host is allowlisted; that's the whole point of paranoid). The attacker on the other end of the LLM session reads the response and recovers the token.
+- Use the recovered token from any other machine until it's rotated/revoked. Refresh tokens for these providers typically last days to months.
+
+Compared to the API-key setup:
+
+| Property                                              | API-key paranoid | OAuth paranoid (bypass) |
+|-------------------------------------------------------|------------------|-------------------------|
+| Kernel network isolation (netns / Landlock)           | ✅                | ✅                       |
+| Application-layer host allowlist                      | ✅                | ✅                       |
+| Filesystem isolation of config dir (per-run scratch)  | ✅                | ✅                       |
+| Credentials never enter the sandbox process tree      | ✅                | **❌**                   |
+| Prompt-injected agent can exfiltrate via the LLM path | no                | yes                     |
+
+That last row is the entire reason paranoid exists. If you opt into the bypass, you keep the network and filesystem isolation but lose the credential isolation. The shipped paranoid fragments therefore only auto-map API keys and bail out when none is set — picking `normal` or `permissive` for OAuth users is the **safer** path; those levels don't claim "no credentials in the sandbox" so OAuth fits their model honestly.
+
+#### How to opt out (if you really want OAuth + paranoid)
+
+This recipe is generic — it works for any agent (gemini, claude, codex, opencode, pi). You're trading the credential-isolation guarantee for kernel network isolation while keeping OAuth.
+
+The gate that bails paranoid when no credential rule fires (`Error: [security] unshare_net = true requires at least one credential rule...`) is the only blocker today. Two ways around it:
+
+**(a) Carry a real API key on the host as a "starter".** Set the agent's API-key env var on the host even though the agent itself authenticates via OAuth. The proxy uses the key to satisfy the startup gate; the agent uses its OAuth bearer at runtime; both auth headers reach the model server (`Authorization: Bearer <oauth>` + the proxy-injected key header). For Google APIs the OAuth bearer takes precedence; for other providers, behavior depends on how the server resolves dual-auth — verify with a non-trivial request (e.g. a model call) before trusting the setup.
+
+```bash
+# Even if gemini uses OAuth, set this so paranoid starts.
+# Use a real key from your provider; a placeholder will fail at the
+# server-side validation step inside the proxy.
+export GEMINI_API_KEY='AIza...'
+zd
+```
+
+**(b) Ship a custom level that adds the OAuth refresh endpoints to `allow_domains`.** This gives the agent a path to refresh its OAuth token on top of the model API. Append to your `~/.agent-sandbox/config.toml` (bwrap) and ship a matching nono profile:
+
+```toml
+# ~/.agent-sandbox/config.toml — applies to *every* paranoid run
+[security]
+allow_domains = [
+    # Google OAuth (gemini browser login, Vertex AI, etc.)
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    # Anthropic OAuth (claude /login)
+    "console.anthropic.com",
+    # Add your provider's OAuth refresh endpoints here.
+]
+```
+
+```json
+// ~/.config/nono/profiles/lince-<agent>-paranoid-oauth.json
+{
+  "extends": "lince-<agent>-paranoid",
+  "meta": {
+    "name": "lince-<agent>-paranoid-oauth",
+    "description": "Paranoid + OAuth refresh allowlist — credentials live in the sandbox; see sandbox-levels.md trust model section."
+  },
+  "network": {
+    "allow_domain": [
+      "accounts.google.com",
+      "oauth2.googleapis.com",
+      "console.anthropic.com"
+    ]
+  }
+}
+```
+
+Then activate it on a specific agent:
+
+```toml
+# ~/.config/lince-dashboard/config.toml
+[agents.gemini]
+sandbox_level = "paranoid-oauth"
+```
+
+You still need (a) — the credential-rule gate fires before `allow_domains` is consulted, so paranoid won't even start without a key on the host. The two together give you: kernel netns isolation + model API allowlist + OAuth refresh allowlist, with OAuth bearer tokens visible to the agent process tree.
+
+#### Risks summary, plain language
+
+By using either path above, you accept that:
+
+- **A prompt-injected agent at paranoid + OAuth can exfiltrate your refresh token** via the model API endpoint — the only thing standing between an attacker and the token is the LLM session itself. Recovery from a leaked refresh token usually means revoking the OAuth grant in the provider's dashboard and re-authenticating.
+- **The "credentials never in the sandbox" property is gone.** Paranoid + OAuth is *not* equivalent to paranoid + API-key for credential-handling purposes. Don't claim it is in security reviews or threat models.
+- **Refresh-token blast radius depends on the provider's scope rules.** A Gemini refresh token is normally scoped to Generative Language API only; an Anthropic OAuth token covers claude.ai and the API; a `gh` OAuth token covers your full GitHub. Match the level you choose to the worst case for the token you're putting at risk.
+
+If those trade-offs are unacceptable for your threat model, switch the agent to API-key auth (the proper paranoid path) or drop to `normal` / `permissive` (which don't promise credential isolation in the first place).
+
 ## 7. Keystore setup for paranoid
 
 Paranoid relies on the Anthropic API key being in nono's credential keystore — **not** in `ANTHROPIC_API_KEY` in your environment. The point is that the key never enters the sandbox process tree; nono injects the `Authorization` header on the host side as the request flows through the credential proxy.
@@ -418,6 +523,33 @@ The result is identical to the user: the agent sees its own auth/state at startu
 - **`lince-codex-with-aws`** — same pattern as the Claude + Bedrock example in §6; replace the `credentials` entry with whatever Bedrock auth scheme your codex setup uses, and grant read access to `~/.aws` for the SDK.
 
 For the master mechanics (file-naming convention, append-merge semantics, choosing a backend), see §4 and §6 above — those rules apply unchanged to codex.
+
+### 7.2 Gemini (Google)
+
+Gemini's level mappings follow the same shape as Claude's, with one important caveat around authentication.
+
+| Aspect                                  | paranoid                                  | normal                         | permissive                                              |
+|-----------------------------------------|-------------------------------------------|--------------------------------|---------------------------------------------------------|
+| Network (allowed destinations)          | `generativelanguage.googleapis.com` only  | inherited base                 | + GitHub + gh CLI domains                               |
+| Auth supported                          | **API key only** (`GEMINI_API_KEY` / `GOOGLE_API_KEY`) | API key OR OAuth     | API key OR OAuth                                        |
+| Filesystem (`~/.gemini`)                | per-run ephemeral scratch                 | as today                       | as today + read on `~/.config/gh`, `~/.cache`, `~/.ssh/known_hosts` |
+| `gh` CLI                                | no                                        | no                             | yes                                                     |
+
+**Paranoid requires API-key auth.** The credential proxy works by injecting an `x-goog-api-key` header on outbound HTTPS to `generativelanguage.googleapis.com`; it needs the key on the host side at startup. The browser/OAuth login flow gemini ships with deposits a refresh token in `~/.gemini/oauth_creds.json` but does **not** set `GEMINI_API_KEY` in your shell. The shipped `sandbox/profiles/gemini-paranoid.toml` auto-maps both `GEMINI_API_KEY` and `GOOGLE_API_KEY` (deduped to the same domain) — if neither is set in the host env, `_collect_proxy_rules` drops both and the paranoid bail-out fires with a clear `Note: gemini OAuth/browser-login users...` line.
+
+Two recommended paths:
+
+1. **Switch to API-key auth.** Get a key from <https://aistudio.google.com/apikey> and `export GEMINI_API_KEY='AIza...'` before launching the dashboard. The paranoid fragment auto-maps it; the proxy injects it on outbound calls and gemini never sees the raw value inside the sandbox.
+2. **Stay on OAuth, drop to `normal` or `permissive`.** Both levels keep `~/.gemini/` accessible and let gemini refresh its OAuth token against `oauth2.googleapis.com` directly. You lose the kernel network isolation paranoid offers, but OAuth keeps working.
+
+The paranoid fragment intentionally does **not** allowlist `accounts.google.com` / `oauth2.googleapis.com` because the OAuth refresh path puts the bearer token inside the sandbox process tree, breaking paranoid's credential-isolation guarantee. If you understand the trade-off and still want OAuth + paranoid, follow the generic opt-out recipe in §6 — it works for gemini exactly the same way it works for any other agent (set `GEMINI_API_KEY` on the host as the startup ticket, then add the two Google OAuth domains to `[security].allow_domains`).
+
+**Common custom levels for gemini.**
+
+- **Vertex AI users**: ship `lince-gemini-vertex.json` extending `lince-gemini` with `network.allow_domain = ["aiplatform.googleapis.com"]` and the appropriate Vertex credential. Skip the GenLang credential rule and rely on Vertex's own auth.
+- **API-key user who also wants gh**: just use `permissive` — it adds the GitHub allowlist on top of the gemini API.
+
+For master mechanics (file-naming convention, fragment lookup, custom levels), see §4 and §6.
 
 ## 9. Future work
 

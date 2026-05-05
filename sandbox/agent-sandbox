@@ -282,6 +282,13 @@ DEFAULT_BLOCKED_HOSTS: set[str] = {
     "100.100.100.200",  # Alibaba Cloud
 }
 
+# Agents whose default auth flow is OAuth/browser-login rather than an
+# API key — used to tailor the paranoid bail-out message. Paranoid
+# can't inject a credential the agent doesn't have on the host, so
+# OAuth users need to drop to normal/permissive (or switch to API-key
+# auth). See docs/documentation/dashboard/sandbox-levels.md.
+OAUTH_CAPABLE_AGENTS: frozenset[str] = frozenset({"gemini", "claude"})
+
 _proxy_logger = logging.getLogger("agent-sandbox.proxy")
 
 # Headers to strip when forwarding through the credential proxy.
@@ -2422,17 +2429,49 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                     file=sys.stderr,
                 )
             else:
+                # Reaching here means the fragment ran but produced no
+                # rules — either it auto-maps known keys none of which
+                # are exported, or it doesn't auto-map anything.
+                fragment_keys = [
+                    k for k in collected_env
+                    if k in CREDENTIAL_PROXY_RULES
+                ]
+                if fragment_keys:
+                    keys_for_msg = ", ".join(fragment_keys)
+                    quick = (
+                        f"Quick fix: export {fragment_keys[0]} (or "
+                        f"another from {keys_for_msg}) in your host "
+                        f"shell — the paranoid fragment for agent "
+                        f"'{agent_name}' auto-maps it via [env.extra]."
+                    )
+                else:
+                    keys_for_msg = ", ".join(CREDENTIAL_PROXY_RULES.keys())
+                    quick = (
+                        f"Quick fix: add one of [{keys_for_msg}] to "
+                        f"[env.extra] in your fragment for agent "
+                        f"'{agent_name}', then export the matching "
+                        f"host env var."
+                    )
+                oauth_note = ""
+                if agent_name in OAUTH_CAPABLE_AGENTS:
+                    oauth_note = (
+                        f"\nNote: {agent_name} OAuth/browser-login users "
+                        f"have no API key in their host env, so paranoid "
+                        f"cannot inject one — pick `--sandbox-level "
+                        f"normal` or `permissive` instead, or switch to "
+                        f"API-key auth (see "
+                        f"docs/documentation/dashboard/sandbox-levels.md)."
+                    )
                 print(
                     "Error: [security] unshare_net = true requires at "
-                    "least one credential rule (e.g. ANTHROPIC_API_KEY "
-                    "in [env.extra] or in the active provider profile), "
+                    f"least one credential rule (e.g. {keys_for_msg} in "
+                    "[env.extra] or in the active provider profile), "
                     "otherwise the proxy doesn't start and the sandbox "
                     "has no path to any LLM API.\n"
-                    "Quick fix: export ANTHROPIC_API_KEY in your host "
-                    "shell — the paranoid fragment auto-maps it via "
-                    "[env.extra]. If you use a different provider, add "
-                    "its key to your [env.extra] in "
-                    f"{config_path} or pick a profile with `-P`.",
+                    f"{quick}\n"
+                    f"You can also add a key to [env.extra] in "
+                    f"{config_path} or pick a profile with `-P`."
+                    f"{oauth_note}",
                     file=sys.stderr,
                 )
             sys.exit(1)

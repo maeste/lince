@@ -1,0 +1,30 @@
+# Sandbox-policy fragment: gemini — paranoid level.
+# See docs/documentation/dashboard/sandbox-levels.md. Lists are
+# append-merged with the user's ~/.agent-sandbox/config.toml.
+#
+# OAuth-only users: this fragment does NOT allow Google OAuth domains
+# (accounts.google.com, oauth2.googleapis.com). If you authenticate via
+# the browser flow rather than GEMINI_API_KEY/GOOGLE_API_KEY, paranoid
+# will not be able to refresh tokens. Use sandbox_level = "normal" or
+# "permissive" instead, or extend allow_domains in your own config.
+
+[env.extra]
+# Auto-map both forms; _collect_proxy_rules silently drops empties so
+# unset host vars are skipped. Both keys map to the same domain
+# (generativelanguage.googleapis.com), deduped at rule level.
+GEMINI_API_KEY = "$GEMINI_API_KEY"
+GOOGLE_API_KEY = "$GOOGLE_API_KEY"
+
+[agents.gemini]
+# Per-run ephemeral copy of ~/.gemini (rsync-seeded, bind-mounted, removed
+# on exit). Mirrors what the nono paranoid bash wrapper does.
+scratch_home_dirs = [".gemini"]
+
+[security]
+credential_proxy = true
+unshare_net = true
+# generativelanguage.googleapis.com is auto-included from the credential
+# rule. Extend by appending in your own config:
+#   [security]
+#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+allow_domains = []
