@@ -2422,16 +2422,47 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                     file=sys.stderr,
                 )
             else:
+                # Tell the user *which* env vars the active fragment
+                # auto-maps. collected_env still holds the post-expansion
+                # values; an empty string means "host var unset".
+                # CREDENTIAL_PROXY_RULES is the universe of keys that
+                # would have produced a rule if set.
+                expected = [
+                    k for k in collected_env
+                    if k in CREDENTIAL_PROXY_RULES
+                ]
+                if expected:
+                    unset = [k for k in expected if not collected_env[k]]
+                    quick = (
+                        f"Quick fix: export {unset[0]} (or another from "
+                        f"{', '.join(expected)}) in your host shell — "
+                        f"the paranoid fragment for agent '{agent_name}' "
+                        f"auto-maps it via [env.extra]."
+                        if unset else
+                        f"All of {', '.join(expected)} are already set "
+                        f"but none matched a known proxy rule. This "
+                        f"shouldn't happen — please file a bug."
+                    )
+                    examples = ", ".join(expected)
+                else:
+                    # Fragment doesn't auto-map any known credential.
+                    # List the global rule table so the user knows what
+                    # the proxy would accept.
+                    examples = ", ".join(CREDENTIAL_PROXY_RULES.keys())
+                    quick = (
+                        f"Quick fix: add one of [{examples}] to "
+                        f"[env.extra] in your fragment for agent "
+                        f"'{agent_name}', then export the matching "
+                        f"host env var."
+                    )
                 print(
                     "Error: [security] unshare_net = true requires at "
-                    "least one credential rule (e.g. ANTHROPIC_API_KEY "
-                    "in [env.extra] or in the active provider profile), "
+                    f"least one credential rule (e.g. {examples} in "
+                    "[env.extra] or in the active provider profile), "
                     "otherwise the proxy doesn't start and the sandbox "
                     "has no path to any LLM API.\n"
-                    "Quick fix: export ANTHROPIC_API_KEY in your host "
-                    "shell — the paranoid fragment auto-maps it via "
-                    "[env.extra]. If you use a different provider, add "
-                    "its key to your [env.extra] in "
+                    f"{quick}\n"
+                    f"You can also add a key to [env.extra] in "
                     f"{config_path} or pick a profile with `-P`.",
                     file=sys.stderr,
                 )
