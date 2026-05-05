@@ -2,7 +2,7 @@
   "extends": "lince-codex",
   "meta": {
     "name": "lince-codex-permissive",
-    "description": "OpenAI Codex, permissive sandbox: OpenAI API + GitHub allowlist (api.github.com, github.com, objects.githubusercontent.com); reads ~/.config/gh, ~/.cache, ~/.ssh/known_hosts so gh CLI works (no docker, no podman, no direct git push). Codex's own --sandbox is disabled (danger-full-access)."
+    "description": "Codex permissive: OpenAI API + GitHub allowlist; reads ~/.config/gh, ~/.cache, ~/.ssh/known_hosts so gh CLI works. No docker, no direct git push."
   },
   "filesystem": {
     "allow": ["$WORKDIR"],

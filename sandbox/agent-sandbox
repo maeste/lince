@@ -1172,12 +1172,7 @@ def resolve_agent_config(config: dict, agent_name: str) -> dict:
         "home_rw_dirs": [],
         "bwrap_conflict": False,
         "disable_inner_sandbox_args": [],
-        # Subdirs of $HOME that are bound to per-run ephemeral scratch
-        # directories: the real ~/<subdir> is rsync-seeded into a scratch
-        # path under $XDG_RUNTIME_DIR (or /tmp) at spawn, bind-mounted
-        # over the agent's $HOME/<subdir>, and removed on exit. Activated
-        # by sandbox-policy fragments (e.g. codex-paranoid.toml) so the
-        # agent's writes to its own config dir don't touch the real one.
+        # Subdirs bound to per-run ephemeral scratch dirs (see cmd_run §5c).
         "scratch_home_dirs": [],
     }
 
@@ -1791,11 +1786,8 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
             cmd += ["--ro-bind", str(full), str(full)]
 
     # --- 5b. Agent-specific home dirs ----------------------------------------
-    # Subdirs that will be replaced by ephemeral scratch dirs (see §5c) are
-    # filtered out here so the real home dir is never exposed in the same
-    # run — even momentarily — and so we don't emit a redundant bind that
-    # bwrap would just shadow. Match by absolute target path so nested
-    # subdirs (e.g. ".config/gh") work too.
+    # Subdirs that §5c will rebind from a scratch dir are skipped here so
+    # the real home dir is never exposed, even momentarily.
     scratched_targets: set[str] = {target for _, target in (scratch_binds or [])}
 
     def _is_scratched(d: str) -> bool:
@@ -1814,11 +1806,7 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
         full.mkdir(parents=True, exist_ok=True)
         cmd += ["--bind", str(full), str(full)]
 
-    # --- 5c. Ephemeral scratch binds -----------------------------------------
-    # Each (scratch_path, target) is rsync-seeded on the host before bwrap
-    # starts; the bind mounts the seeded scratch on top of the agent's
-    # ~/<subdir> so writes inside the sandbox are isolated. The host-side
-    # cleanup happens in cmd_run's finally block after bwrap exits.
+    # --- 5c. Ephemeral scratch binds (rsync-seeded in cmd_run) ---------------
     for scratch_path, target in scratch_binds or []:
         cmd += ["--bind", scratch_path, target]
 
@@ -2326,15 +2314,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     # --- agent-sandbox (bwrap) backend path --------------------------------
 
     # --- Ephemeral scratch home dirs (per-run snapshot) -------------------
-    # Subdirs listed in `scratch_home_dirs` (typically activated by a
-    # sandbox-policy fragment like codex-paranoid.toml) get a per-run
-    # scratch directory: rsync-seeded from real `~/<subdir>` if it exists,
-    # bind-mounted over `$HOME/<subdir>` inside bwrap, and removed when
-    # the agent exits. Lets paranoid mode "see" the user's auth/state
-    # without giving the agent write access to the real config.
     scratch_binds: list[tuple[str, str]] = []
-    scratch_dirs_to_cleanup: list[str] = []
-    scratch_subdirs = list(agent_cfg.get("scratch_home_dirs", []))
+    scratch_subdirs = agent_cfg.get("scratch_home_dirs", [])
     if scratch_subdirs:
         if not shutil.which("rsync"):
             print(
@@ -2345,25 +2326,17 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             )
             sys.exit(1)
         scratch_root = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-        try:
-            os.makedirs(scratch_root, exist_ok=True)
-        except OSError:
-            scratch_root = "/tmp"
+        home_p = Path.home()
         for subdir in scratch_subdirs:
             sub_clean = subdir.lstrip("/").rstrip("/")
             if not sub_clean:
                 continue
-            # tempfile.mkdtemp avoids collisions across concurrent agents
-            # of the same type. The pid is in the prefix so leftover dirs
-            # from a SIGKILL'd run are recognizable on the host.
             scratch_path = tempfile.mkdtemp(
                 prefix=f"agent-sandbox-{agent_name}-{os.getpid()}-",
                 dir=scratch_root,
             )
-            scratch_dirs_to_cleanup.append(scratch_path)
-            real = Path.home() / sub_clean
+            real = home_p / sub_clean
             if real.is_dir():
-                # Trailing slash on src copies *contents* into dst.
                 rsync = subprocess.run(
                     ["rsync", "-a", "--", f"{real}/", f"{scratch_path}/"],
                     check=False,
@@ -2375,8 +2348,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                         f"partially-seeded scratch dir.",
                         file=sys.stderr,
                     )
-            target = f"{str(Path.home())}/{sub_clean}"
-            scratch_binds.append((scratch_path, target))
+            scratch_binds.append((scratch_path, str(home_p / sub_clean)))
 
     # --- Credential proxy setup -------------------------------------------
     proxy_enabled = sec.get("credential_proxy", False)
@@ -2671,14 +2643,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     finally:
         if proxy:
             proxy.stop()
-        for scratch_path in scratch_dirs_to_cleanup:
-            try:
-                shutil.rmtree(scratch_path, ignore_errors=True)
-            except OSError:
-                # Best-effort: a SIGKILL or a bind-mount we couldn't
-                # detach leaves the dir behind, but $XDG_RUNTIME_DIR is
-                # tmpfs and gets reclaimed at logout/reboot.
-                pass
+        for scratch_path, _ in scratch_binds:
+            shutil.rmtree(scratch_path, ignore_errors=True)
 
 
 def cmd_diff(args) -> None:

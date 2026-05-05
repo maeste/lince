@@ -87,30 +87,23 @@ has_native_hooks = true
 profiles = ["__discover__"]
 
 [agents.codex]
-# Legacy fallback command — ignored when sandbox_level is set (the plugin
-# synthesizes the actual command from sandbox_backend + sandbox_level).
+# Legacy fallback command — ignored when sandbox_level is set.
 command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "codex"]
 pane_title_pattern = "agent-sandbox"
 status_pipe_name = "lince-status"
 display_name = "OpenAI Codex"
 short_label = "CDX"
-# Color follows the sandbox-level gradient (basic ANSI palette):
-#   paranoid=green, normal=cyan, permissive=yellow, unsandboxed=red
 color = "cyan"
 sandboxed = true
 has_native_hooks = false
 ignore_wrapper_start = true
-# codex applies its own filesystem sandbox; disable it under our outer
-# sandbox via --sandbox danger-full-access. The flag is read by
-# agent-sandbox (bwrap path) from this entry; the nono path hardcodes
-# it into the synthesized inner_command in plugin/src/agent.rs.
+# Disables codex's own --sandbox so it doesn't fight ours.
 bwrap_conflict = true
 disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
 home_ro_dirs = ["~/.codex/"]
 profiles = ["__discover__"]
 sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
-# sandbox_backend defaults to "agent-sandbox" (bwrap) on Linux, "nono" on macOS.
-# Uncomment to force a specific backend (overrides the OS default):
+# sandbox_backend defaults to bwrap on Linux, nono on macOS. Uncomment to override:
 # sandbox_backend = "nono"
 
 [agents.codex.env_vars]
