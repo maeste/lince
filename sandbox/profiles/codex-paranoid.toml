@@ -1,0 +1,56 @@
+# Sandbox-policy fragment: codex — paranoid level.
+#
+# Loaded by `agent-sandbox run -a codex --sandbox-level paranoid` and
+# deep-merged on top of the user's resolved config. Lists like
+# home_ro_dirs and allow_domains are appended (not replaced).
+#
+# Paranoid means kernel-enforced isolation:
+#   - credential_proxy = true: OPENAI_API_KEY lives on the host keystore/env,
+#     never in the sandbox; the proxy injects the Authorization header at
+#     request time.
+#   - unshare_net = true: the agent runs in a fresh network namespace
+#     (cmd_run wraps bwrap with `unshare -U -n -r`) with only its own
+#     loopback. No route to anywhere — kernel rejects raw socket connections
+#     to attacker.com or anywhere else. The credential proxy is reached via
+#     a unix socket bind-mounted into the sandbox + an in-sandbox socat
+#     bridge that the agent talks to as plain TCP localhost.
+#   - allow_domains: hosts the proxy is allowed to forward to (whether by
+#     credential injection for known providers, or by pass-through for
+#     extras like pypi.org). Anything else gets 403 from the proxy.
+#
+# Note on codex's inner sandbox: codex applies its own filesystem sandbox
+# unless told otherwise. When running under our outer sandbox we disable it
+# via `disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]`,
+# wired through the [agents.codex] entry in agent-sandbox's
+# agents-defaults.toml — it is appended to codex's argv in build_bwrap_cmd.
+# Nothing extra is needed in this fragment.
+#
+# To extend paranoid (e.g. paranoid + Azure OpenAI), don't fork this file —
+# just add to your ~/.agent-sandbox/config.toml:
+#
+#   [security]
+#   allow_domains = ["YOURRESOURCE.openai.azure.com"]
+#
+# The lists are append-merged, so the final allowlist is the base
+# (api.openai.com, auto-included from the credential rule) plus your extras.
+
+[env.extra]
+# Auto-pick the user's host OpenAI credential so the credential proxy has
+# something to inject without requiring `-P someprofile` or a manual entry
+# in the user's [env.extra]. If unset on the host, _expand_env_value
+# returns "" and _collect_proxy_rules silently drops it — same behavior as
+# claude-paranoid.toml.
+OPENAI_API_KEY = "$OPENAI_API_KEY"
+
+[security]
+credential_proxy = true
+unshare_net = true
+# allow_domains lists EXTRA hosts the agent can reach via the proxy, on top
+# of the domains already covered by credential rules (api.openai.com is
+# auto-included because we have an OpenAI credential rule — no need to
+# repeat it here). Empty by default.
+# Extend in your own ~/.agent-sandbox/config.toml — the lists are
+# append-merged:
+#   [security]
+#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+allow_domains = []

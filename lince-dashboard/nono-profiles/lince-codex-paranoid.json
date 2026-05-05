@@ -1,0 +1,14 @@
+{
+  "extends": "lince-codex",
+  "meta": {
+    "name": "lince-codex-paranoid",
+    "description": "OpenAI Codex, paranoid sandbox: only api.openai.com reachable via nono credential proxy; ~/.codex isolated to a per-agent scratch HOME (rsync'd at spawn, deleted on stop). Codex's own --sandbox is disabled (danger-full-access) since the outer sandbox is doing the isolating."
+  },
+  "filesystem": {
+    "allow": ["$WORKDIR", "$HOME"],
+    "read": []
+  },
+  "network": {
+    "credentials": ["openai"]
+  }
+}

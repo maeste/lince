@@ -114,7 +114,19 @@ fn synthesize_sandboxed_command(
             "claude".to_string(),
             "--dangerously-skip-permissions".to_string(),
         ],
-        // codex/gemini/opencode/pi land in follow-up tasks (lince-99..102).
+        // codex applies its own filesystem sandbox; disable it under our
+        // outer sandbox via --sandbox danger-full-access. The bwrap path
+        // applies this through agent-sandbox (which reads
+        // disable_inner_sandbox_args from agents-defaults.toml); the nono
+        // path bypasses agent-sandbox so we hardcode it into argv here.
+        // Pattern reused for gemini/opencode/pi in follow-ups (lince-100..102).
+        "codex" => vec![
+            "codex".to_string(),
+            "--full-auto".to_string(),
+            "--sandbox".to_string(),
+            "danger-full-access".to_string(),
+        ],
+        // gemini/opencode/pi land in follow-up tasks (lince-100..102).
         _ => return None,
     };
 
@@ -122,6 +134,9 @@ fn synthesize_sandboxed_command(
 
     Some(match backend {
         SandboxBackend::AgentSandbox => {
+            // Always pass --agent <base>: agent-sandbox defaults to claude,
+            // so claude is unchanged in behavior, but codex/gemini/opencode/pi
+            // need the explicit dispatch.
             let mut cmd = vec![
                 "agent-sandbox".to_string(),
                 "run".to_string(),
@@ -129,6 +144,8 @@ fn synthesize_sandboxed_command(
                 project_dir.to_string(),
                 "--id".to_string(),
                 agent_id.to_string(),
+                "--agent".to_string(),
+                base.to_string(),
             ];
             if level != "normal" {
                 cmd.push("--sandbox-level".to_string());
@@ -160,7 +177,8 @@ fn synthesize_sandboxed_command(
                 // metacharacters.
                 let agent_home_subdir = match base {
                     "claude" => ".claude",
-                    // follow-ups add codex/.codex, gemini/.gemini, etc.
+                    "codex" => ".codex",
+                    // follow-ups add gemini/.gemini, etc.
                     _ => return None,
                 };
                 // Sentinels use `@@…@@` rather than bare uppercase words so

@@ -1,0 +1,41 @@
+# Sandbox-policy fragment: codex — permissive level.
+#
+# Loaded by `agent-sandbox run -a codex --sandbox-level permissive` and
+# deep-merged on top of the user's resolved config. Lists like
+# home_ro_dirs and allow_domains are appended (not replaced).
+#
+# Permissive opens up github + the gh CLI's filesystem footprint while
+# keeping the credential proxy on. Network is NOT kernel-isolated here
+# (unshare_net is left at its default, off) — the threat model is "trusted
+# agent that needs broader access, not adversarial".
+#
+# Codex's inner sandbox is disabled via `disable_inner_sandbox_args` on
+# the [agents.codex] entry — see codex-paranoid.toml for the rationale.
+#
+# To narrow what the proxy is allowed to forward (without going to the
+# stricter paranoid level), keep this fragment but tighten allow_domains
+# in your own config:
+#
+#   [security]
+#   allow_domains = []   # block everything except credential-rule hosts
+
+[sandbox]
+home_ro_dirs = [".config/gh", ".cache", ".ssh/known_hosts"]
+
+[env]
+# Pass host-env GitHub tokens through. gh CLI authenticated via
+# `gh auth login --with-token` reads from ~/.config/gh/hosts.yml (mounted
+# above), but users authenticated via the system keyring rely on
+# GH_TOKEN / GITHUB_TOKEN being exported in their shell — the sandbox's
+# default --clearenv would otherwise wipe them. Append-merged with the
+# user's [env].passthrough.
+passthrough = ["GH_TOKEN", "GITHUB_TOKEN"]
+
+[security]
+credential_proxy = true
+block_git_push = true
+allow_domains = [
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+]

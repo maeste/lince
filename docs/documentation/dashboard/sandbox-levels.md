@@ -339,7 +339,47 @@ Store the key once per machine:
 
 For 1Password, Apple Passwords, and other backends, see nono's credential injection docs: https://nono.sh/docs/cli/features/credential-injection.md.
 
-## 7. Future work
+The same mechanism applies to OpenAI Codex, with the keystore account name `openai_api_key`:
+
+- **macOS**: `security add-generic-password -s "nono" -a "openai_api_key" -w "sk-..."`
+- **Linux**: `secret-tool store --label "nono openai" service nono account openai_api_key`
+
+## 7. Per-agent specifics
+
+The shipped levels apply across all sandboxed agents, but each agent has quirks worth calling out. The general mechanics are documented above; this section is for the per-agent deltas.
+
+### 7.1 Codex (OpenAI)
+
+Codex's level mappings follow the same shape as Claude's, with a few codex-specific knobs.
+
+| Aspect                                  | paranoid (bwrap)                       | paranoid (nono)              | normal                         | permissive                                              |
+|-----------------------------------------|----------------------------------------|------------------------------|--------------------------------|---------------------------------------------------------|
+| Network (allowed destinations)          | OpenAI API only                        | OpenAI API only              | inherited base                 | + GitHub + gh CLI domains                               |
+| Network isolation enforcement           | kernel (netns) + proxy allowlist       | kernel (Landlock + nono policy) | inherited                  | proxy allowlist                                         |
+| `OPENAI_API_KEY` handling               | proxy-injected, **stripped** from env  | proxy-injected, stripped     | passthrough                    | passthrough (codex usually picks token from `~/.codex`) |
+| Filesystem (~/.codex)                   | bind-mounted RW (real)                 | per-agent scratch HOME       | as today                       | as today + read on `~/.config/gh`, `~/.cache`, `~/.ssh/known_hosts` |
+| `gh` CLI                                | no                                     | no                           | no                             | yes                                                     |
+| `disable_inner_sandbox_args`            | preserved (`--sandbox danger-full-access`) | preserved                | preserved                      | preserved                                               |
+
+**Inner-sandbox conflict.** Codex applies its own filesystem sandbox by default. When running under our outer sandbox the two sandboxes fight: codex's seccomp/landlock layer collides with bwrap's PID/mount namespaces, and Landlock-on-Landlock under nono is a non-starter. We disable codex's inner sandbox by passing `--sandbox danger-full-access` on its argv. The wiring lives in two places:
+
+- **bwrap path**: `[agents.codex] disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]` in `agent-sandbox`'s `agents-defaults.toml`. `build_bwrap_cmd` appends these args when `bwrap_conflict = true`.
+- **nono path**: hardcoded into the synthesized `inner_command` in `lince-dashboard/plugin/src/agent.rs` (the nono path bypasses agent-sandbox).
+
+Both paths must keep `--sandbox danger-full-access` on the codex argv across all three levels — it is unrelated to network/filesystem isolation; it just turns off the redundant inner layer.
+
+**`OPENAI_API_KEY` handling per level.** Normal and permissive pass `OPENAI_API_KEY` through to the codex process unchanged. Paranoid strips it from the sandbox environment entirely and lets the host-side credential proxy inject the `Authorization: Bearer <key>` header on outbound HTTPS — same model as Claude's `ANTHROPIC_API_KEY` in paranoid. The shipped `sandbox/profiles/codex-paranoid.toml` auto-maps `OPENAI_API_KEY = "$OPENAI_API_KEY"` in `[env.extra]` so the proxy has something to inject without requiring a manual entry in the user's config; if the host env var is unset the rule is silently dropped (same as Claude).
+
+**Scratch ~/.codex on bwrap paranoid.** Unlike Claude (`[claude] use_real_config = false` redirects to `~/.agent-sandbox/claude-config/`), codex has no equivalent host-side scratch mechanism in `agent-sandbox` today. Under bwrap paranoid, the real `~/.codex` is still bind-mounted read-write inside the sandbox. Under nono paranoid, the `lince-dashboard` plugin synthesizes a per-agent bash wrapper that rsyncs `~/.codex` into a scratch HOME under `$XDG_RUNTIME_DIR` and discards it on exit — the agent sees a fresh, isolated config dir. **For threat models that require codex's persistent state to be untouchable, prefer nono paranoid over bwrap paranoid.**
+
+**Common custom levels for codex.** The same `sandbox_level` knob accepts arbitrary suffixes — drop a profile at `~/.config/nono/profiles/lince-codex-<name>.json` (or a TOML fragment under `~/.agent-sandbox/profiles/`) and reference it via `sandbox_level = "<name>"`. Two common patterns:
+
+- **`lince-codex-with-azure`** — adds an `allow_domain` for `<your-resource>.openai.azure.com` so Codex can hit Azure OpenAI. Keep `credentials: ["openai"]` and set `OPENAI_BASE_URL` to your Azure endpoint via `[env.extra]` in the matching agent-sandbox fragment.
+- **`lince-codex-with-aws`** — same pattern as the Claude + Bedrock example in §5; replace the `credentials` entry with whatever Bedrock auth scheme your codex setup uses, and grant read access to `~/.aws` for the SDK.
+
+For the master mechanics (file-naming convention, append-merge semantics, choosing a backend), see §4 and §5 above — those rules apply unchanged to codex.
+
+## 8. Future work
 
 The new `sandbox_level` model is what the upcoming wizard ('N' picker) UX changes are built on — the picker becomes a two-axis chooser (agent type x sandbox level) instead of needing a separate `agents.*` entry per variant. Progress is tracked in [GitHub issue #53](https://github.com/RisorseArtificiali/lince/issues/53). [GitHub issue #54](https://github.com/RisorseArtificiali/lince/issues/54) tracks fragment-level `extends` inheritance so custom fragments can declare a parent level explicitly instead of relying on deep-merge order — a smaller, separate scope from the now-completed bwrap paranoid network hardening.
 
