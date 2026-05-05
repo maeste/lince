@@ -239,7 +239,38 @@ The default is per-OS: Linux picks `bwrap` (agent-sandbox), macOS picks `nono`. 
 
 **Prerequisites for paranoid + bwrap.** `socat` must be available on the host's `$PATH` (most distros: install the `socat` package). `install.sh` warns when it is missing. If `unshare_net = true` is resolved at run time and `socat` is not found, `agent-sandbox` errors out with a clear message rather than silently degrading.
 
-## 5. Customization
+## 5. Enabling paranoid / permissive variants in the N-picker
+
+The dashboard ships only the `normal` level enabled out of the box — that's the entry you see in the N-picker as e.g. *Claude Code* or *OpenAI Codex*. Paranoid and permissive variants are available but **opt-in**: to make them appear as separate `(paranoid)` / `(permissive)` entries in the picker you have to enable them in your dashboard config.
+
+There are two paths.
+
+### 5.1 During install
+
+`install.sh` prompts for which extra levels to enable across all supported agents:
+
+```
+  Sandbox levels for the N-picker:
+    [x] normal       (always on — the default level)
+    [ ] paranoid     (kernel-isolated network, ephemeral home scratch)
+    [ ] permissive   (gh CLI + GitHub allowlist)
+  Enable paranoid? (y/n):
+  Enable permissive? (y/n):
+```
+
+For each level you say yes to, the installer reads `lince-dashboard/agents-template.toml`, finds every `[agents.<agent>-<level>]` block, and appends it (with its `[agents.<agent>-<level>.env_vars]` companion, if present) into your `~/.config/lince-dashboard/config.toml`. Re-running install does not duplicate blocks already present — it's safe to re-run any time.
+
+For headless installs (CI, scripted setup), pass `--sandbox-levels=paranoid,permissive` or set `LINCE_SANDBOX_LEVELS=paranoid,permissive` to skip the prompt.
+
+**Per-agent feature support is implicit.** Only agents that ship a `[agents.<agent>-<level>]` block in `agents-template.toml` get a variant for that level. Agents without one are silently skipped — your selection is honoured for every agent that does support the level. Today claude and codex support both paranoid and permissive; gemini, opencode, and pi will follow once their respective tasks land (LINCE-100/101/102), and the install prompt will pick them up automatically.
+
+### 5.2 After install (manual)
+
+Open `~/.config/lince-dashboard/agents-template.toml` (installed by `install.sh` as a copy-paste source — **not** loaded by the dashboard), copy any `[agents.<agent>-<level>]` block (and its `[agents.<agent>-<level>.env_vars]` companion) into your `~/.config/lince-dashboard/config.toml`, and restart the dashboard. The plugin merges your `config.toml` on top of `agents-defaults.toml` and the new entry shows up in the picker.
+
+This is the same mechanism the install prompt uses internally — the prompt is just the bulk-apply UX. Use the manual path when you want a single agent at a single level, or when you're hand-curating your config.
+
+## 6. Customization
 
 `sandbox_level` is a **free-form profile suffix, not a closed enum**. The three shipped levels are opinionated examples of how to use it. You are expected to ship your own when the defaults don't fit.
 
@@ -317,7 +348,7 @@ agent-sandbox run --sandbox-level paranoid <command>
 
 The resolved config is paranoid + the two extra hosts: kernel netns isolation is unchanged, the proxy allowlist becomes `["api.anthropic.com", "pypi.org", "files.pythonhosted.org"]`, and `pip install` resolves through the proxy. This works because `allow_domains` is append-merged with the paranoid fragment's list, not overwritten.
 
-## 6. Keystore setup for paranoid
+## 7. Keystore setup for paranoid
 
 Paranoid relies on the Anthropic API key being in nono's credential keystore — **not** in `ANTHROPIC_API_KEY` in your environment. The point is that the key never enters the sandbox process tree; nono injects the `Authorization` header on the host side as the request flows through the credential proxy.
 
@@ -344,7 +375,7 @@ The same mechanism applies to OpenAI Codex, with the keystore account name `open
 - **macOS**: `security add-generic-password -s "nono" -a "openai_api_key" -w "sk-..."`
 - **Linux**: `secret-tool store --label "nono openai" service nono account openai_api_key`
 
-## 7. Per-agent specifics
+## 8. Per-agent specifics
 
 The shipped levels apply across all sandboxed agents, but each agent has quirks worth calling out. The general mechanics are documented above; this section is for the per-agent deltas.
 
@@ -382,11 +413,11 @@ The result is identical to the user: the agent sees its own auth/state at startu
 **Common custom levels for codex.** The same `sandbox_level` knob accepts arbitrary suffixes — drop a profile at `~/.config/nono/profiles/lince-codex-<name>.json` (or a TOML fragment under `~/.agent-sandbox/profiles/`) and reference it via `sandbox_level = "<name>"`. Two common patterns:
 
 - **`lince-codex-with-azure`** — adds an `allow_domain` for `<your-resource>.openai.azure.com` so Codex can hit Azure OpenAI. Keep `credentials: ["openai"]` and set `OPENAI_BASE_URL` to your Azure endpoint via `[env.extra]` in the matching agent-sandbox fragment.
-- **`lince-codex-with-aws`** — same pattern as the Claude + Bedrock example in §5; replace the `credentials` entry with whatever Bedrock auth scheme your codex setup uses, and grant read access to `~/.aws` for the SDK.
+- **`lince-codex-with-aws`** — same pattern as the Claude + Bedrock example in §6; replace the `credentials` entry with whatever Bedrock auth scheme your codex setup uses, and grant read access to `~/.aws` for the SDK.
 
-For the master mechanics (file-naming convention, append-merge semantics, choosing a backend), see §4 and §5 above — those rules apply unchanged to codex.
+For the master mechanics (file-naming convention, append-merge semantics, choosing a backend), see §4 and §6 above — those rules apply unchanged to codex.
 
-## 8. Future work
+## 9. Future work
 
 The new `sandbox_level` model is what the upcoming wizard ('N' picker) UX changes are built on — the picker becomes a two-axis chooser (agent type x sandbox level) instead of needing a separate `agents.*` entry per variant. Progress is tracked in [GitHub issue #53](https://github.com/RisorseArtificiali/lince/issues/53). [GitHub issue #54](https://github.com/RisorseArtificiali/lince/issues/54) tracks fragment-level `extends` inheritance so custom fragments can declare a parent level explicitly instead of relying on deep-merge order — a smaller, separate scope from the now-completed bwrap paranoid network hardening.
 

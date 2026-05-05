@@ -21,6 +21,12 @@
 # but kept for legacy/no-level fallback. See:
 #   docs/documentation/dashboard/sandbox-levels.md
 #   https://lince.sh/documentation/#/dashboard/sandbox-levels
+#
+# Alternative paranoid / permissive variants live in `agents-template.toml`
+# (sibling file, NOT loaded by the dashboard). To enable them, either re-run
+# install.sh and pick the levels in the prompt, or copy the desired blocks
+# from `~/.config/lince-dashboard/agents-template.toml` into your own
+# `~/.config/lince-dashboard/config.toml`.
 
 [agents.claude]
 # Legacy fallback command — ignored when sandbox_level is set (the plugin
@@ -41,39 +47,6 @@ sandbox_level = "normal"          # paranoid | normal | permissive (or custom; s
 # sandbox_backend defaults to "agent-sandbox" (bwrap) on Linux, "nono" on macOS.
 # Uncomment to force a specific backend (overrides the OS default):
 # sandbox_backend = "nono"
-
-# Alternative levels — UNCOMMENT one of the blocks below to add a paranoid
-# or permissive variant of claude to the N-picker. They show up as separate
-# entries; the original [agents.claude] above stays as the "normal" default.
-# Both levels are kernel-enforced under nono and proxy-enforced under bwrap.
-# See docs/documentation/dashboard/sandbox-levels.md for what each level does
-# and how to ship a custom level.
-#
-# [agents.claude-paranoid]
-# command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
-# pane_title_pattern = "agent-sandbox"
-# status_pipe_name = "claude-status"
-# display_name = "Claude Code (paranoid)"
-# short_label = "CLP"
-# color = "green"
-# sandboxed = true
-# has_native_hooks = true
-# home_ro_dirs = ["~/.claude/"]
-# profiles = ["__discover__"]
-# sandbox_level = "paranoid"
-#
-# [agents.claude-permissive]
-# command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
-# pane_title_pattern = "agent-sandbox"
-# status_pipe_name = "claude-status"
-# display_name = "Claude Code (permissive)"
-# short_label = "CL+"
-# color = "yellow"
-# sandboxed = true
-# has_native_hooks = true
-# home_ro_dirs = ["~/.claude/"]
-# profiles = ["__discover__"]
-# sandbox_level = "permissive"
 
 [agents.claude-unsandboxed]
 command = ["claude"]
@@ -108,51 +81,6 @@ sandbox_level = "normal"          # paranoid | normal | permissive (or custom; s
 
 [agents.codex.env_vars]
 OPENAI_API_KEY = "$OPENAI_API_KEY"
-
-# Alternative levels — UNCOMMENT one of the blocks below to add a paranoid
-# or permissive variant of codex to the N-picker. They show up as separate
-# entries; the original [agents.codex] above stays as the "normal" default.
-# Both levels are kernel-enforced under nono and proxy-enforced under bwrap.
-# See docs/documentation/dashboard/sandbox-levels.md for what each level does
-# and how to ship a custom level.
-#
-# [agents.codex-paranoid]
-# command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "codex"]
-# pane_title_pattern = "agent-sandbox"
-# status_pipe_name = "lince-status"
-# display_name = "OpenAI Codex (paranoid)"
-# short_label = "CDP"
-# color = "green"
-# sandboxed = true
-# has_native_hooks = false
-# ignore_wrapper_start = true
-# bwrap_conflict = true
-# disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
-# home_ro_dirs = ["~/.codex/"]
-# profiles = ["__discover__"]
-# sandbox_level = "paranoid"
-#
-# [agents.codex-paranoid.env_vars]
-# OPENAI_API_KEY = "$OPENAI_API_KEY"
-#
-# [agents.codex-permissive]
-# command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "codex"]
-# pane_title_pattern = "agent-sandbox"
-# status_pipe_name = "lince-status"
-# display_name = "OpenAI Codex (permissive)"
-# short_label = "CD+"
-# color = "yellow"
-# sandboxed = true
-# has_native_hooks = false
-# ignore_wrapper_start = true
-# bwrap_conflict = true
-# disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
-# home_ro_dirs = ["~/.codex/"]
-# profiles = ["__discover__"]
-# sandbox_level = "permissive"
-#
-# [agents.codex-permissive.env_vars]
-# OPENAI_API_KEY = "$OPENAI_API_KEY"
 
 [agents.codex-unsandboxed]
 command = ["codex", "--full-auto"]
