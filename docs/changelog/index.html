@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Changelog &middot; LINCE</title>
+  <meta name="description" content="What's new in LINCE — release notes for the multi-agent coding workstation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Space Grotesk', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Consolas', 'monospace'],
+          },
+          colors: {
+            bg: '#0a0a0a',
+            surface: '#141414',
+            border: '#2a2a2a',
+            muted: '#888',
+            accent: '#4ade80',
+            'accent-dim': '#22543d',
+            cyan: '#22d3ee',
+            amber: '#fbbf24',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { background: #0a0a0a; color: #e5e5e5; }
+    .glow { text-shadow: 0 0 20px rgba(74,222,128,0.3); }
+    .feature-card { background: #141414; border: 1px solid #2a2a2a; }
+    .entry { background: #141414; border: 1px solid #2a2a2a; }
+    ::selection { background: #22543d; color: #4ade80; }
+    .tag {
+      display: inline-block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 0.25rem;
+      border: 1px solid #2a2a2a;
+      color: #888;
+      margin-right: 0.4rem;
+    }
+    .tag-sandbox { color: #4ade80; border-color: #22543d; }
+    .tag-dashboard { color: #22d3ee; border-color: #155e75; }
+    .tag-docs { color: #fbbf24; border-color: #92400e; }
+    .tag-install { color: #c084fc; border-color: #581c87; }
+  </style>
+</head>
+<body class="font-sans antialiased">
+
+  <!-- Nav -->
+  <nav class="sticky top-0 z-50 border-b border-border bg-bg/90 backdrop-blur-sm">
+    <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
+      <a href="/" class="text-xl font-bold tracking-tight">
+        <span class="text-accent">lince</span><span class="text-muted">.sh</span>
+      </a>
+      <div class="flex gap-6 text-sm text-muted">
+        <a href="/#features" class="hover:text-white transition-colors">Features</a>
+        <a href="/#sandbox" class="hover:text-white transition-colors">Sandbox</a>
+        <a href="/#install" class="hover:text-white transition-colors">Install</a>
+        <a href="/changelog/" class="text-white">Changelog</a>
+        <a href="/documentation/" class="hover:text-white transition-colors">Docs</a>
+        <a href="https://github.com/RisorseArtificiali/lince" class="hover:text-white transition-colors">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Header -->
+  <section class="max-w-5xl mx-auto px-6 pt-16 pb-10">
+    <p class="text-accent font-mono text-sm mb-4 tracking-wider uppercase">Release notes</p>
+    <h1 class="text-4xl sm:text-5xl font-bold leading-tight mb-4">
+      <span class="text-accent glow">Changelog</span>
+    </h1>
+    <p class="text-lg text-muted leading-relaxed max-w-2xl">
+      What's new in LINCE. Grouped by date, themed by area. For the full per-commit history,
+      see <a href="https://github.com/RisorseArtificiali/lince/commits/main" class="text-accent hover:underline">the git log</a>.
+    </p>
+  </section>
+
+  <!-- Entries -->
+  <section class="max-w-5xl mx-auto px-6 pb-20">
+
+    <!-- 2026-05-05 -->
+    <article id="2026-05-05" class="entry rounded-lg p-8 mb-8">
+      <header class="mb-6 pb-6 border-b border-border">
+        <div class="flex items-baseline gap-4 mb-2 flex-wrap">
+          <time class="font-mono text-sm text-muted" datetime="2026-05-05">2026-05-05</time>
+          <span class="tag tag-sandbox">sandbox</span>
+          <span class="tag tag-dashboard">dashboard</span>
+          <span class="tag tag-install">install</span>
+          <span class="tag tag-docs">docs</span>
+        </div>
+        <h2 class="text-2xl font-bold mb-2">Three-level sandbox model across all agents</h2>
+        <p class="text-muted leading-relaxed">
+          Every supported agent &mdash; Claude, Codex, Gemini, OpenCode, Pi &mdash; can now run at three
+          discrete sandbox levels: <span class="font-mono text-accent">paranoid</span>,
+          <span class="font-mono text-accent">normal</span>, and <span class="font-mono text-accent">permissive</span>.
+          Plus ephemeral scratch homes for paranoid runs, an install-time multi-select to pick which
+          variants you want, and a documented trust model with an OAuth bypass recipe.
+        </p>
+      </header>
+
+      <div class="space-y-6">
+
+        <div>
+          <h3 class="font-semibold mb-2 flex items-center gap-2">
+            <span class="text-accent">&#x2192;</span> Three sandbox levels per agent
+          </h3>
+          <p class="text-sm text-muted leading-relaxed mb-2">
+            <span class="font-mono text-accent">paranoid</span> locks the agent into a minimal,
+            read-mostly environment with no credential access by default.
+            <span class="font-mono text-accent">normal</span> is the recommended day-to-day profile.
+            <span class="font-mono text-accent">permissive</span> drops the most rules for trusted tasks
+            that need broad host access. Each agent ships with all three variants pre-wired
+            (<a href="https://github.com/RisorseArtificiali/lince/pull/57" class="text-accent hover:underline">#57</a>,
+            LINCE-99 / 100 / 101 / 102).
+          </p>
+        </div>
+
+        <div>
+          <h3 class="font-semibold mb-2 flex items-center gap-2">
+            <span class="text-accent">&#x2192;</span> Ephemeral <span class="font-mono">scratch_home_dirs</span> for paranoid
+          </h3>
+          <p class="text-sm text-muted leading-relaxed">
+            Paranoid runs now get a per-run scratch <span class="font-mono">$HOME</span> that is created
+            fresh and discarded when the agent exits &mdash; nothing the agent writes leaks across
+            invocations, and it can't read state from a previous run (LINCE-100 / 101 / 102 / 103).
+          </p>
+        </div>
+
+        <div>
+          <h3 class="font-semibold mb-2 flex items-center gap-2">
+            <span class="text-accent">&#x2192;</span> Install-time multi-select for sandbox levels
+          </h3>
+          <p class="text-sm text-muted leading-relaxed">
+            The quickstart TUI now lets you pick which sandbox levels to install per agent, instead of
+            forcing all three. Variants ship in a separate <span class="font-mono">agents-template.toml</span>
+            so you can opt in to the ones you actually want (LINCE-104).
+          </p>
+        </div>
+
+        <div>
+          <h3 class="font-semibold mb-2 flex items-center gap-2">
+            <span class="text-accent">&#x2192;</span> Trust model + OAuth bypass recipe
+          </h3>
+          <p class="text-sm text-muted leading-relaxed">
+            New documentation covers the trust model behind the three levels, an agent-aware error when
+            paranoid is selected without credential rules, and a recipe for handling agents that need a
+            one-time OAuth login despite running paranoid afterwards.
+          </p>
+        </div>
+
+      </div>
+
+      <footer class="mt-8 pt-6 border-t border-border text-sm">
+        <a href="https://github.com/RisorseArtificiali/lince/commits/main?since=2026-05-05&amp;until=2026-05-06"
+           class="text-accent hover:underline">See all 16 commits on GitHub &rarr;</a>
+      </footer>
+    </article>
+
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-10 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-muted">
+      <p>&copy; 2026 <a href="https://github.com/RisorseArtificiali" class="hover:text-white transition-colors">RisorseArtificiali</a>. MIT License.</p>
+      <div class="flex gap-6">
+        <a href="https://github.com/RisorseArtificiali/lince" class="hover:text-white transition-colors">GitHub</a>
+        <a href="https://github.com/RisorseArtificiali/lince/blob/main/QUICKSTART.md" class="hover:text-white transition-colors">Docs</a>
+        <a href="https://github.com/RisorseArtificiali/lince/issues" class="hover:text-white transition-colors">Issues</a>
+      </div>
+    </div>
+  </footer>
+
+  <script data-goatcounter="https://lince-sh.goatcounter.com/count"
+          async src="//gc.zgo.at/count.js"></script>
+
+</body>
+</html>
