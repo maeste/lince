@@ -4,7 +4,7 @@ title: Three sandbox levels — pi follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 13:41'
+updated_date: '2026-05-05 18:11'
 labels:
   - sandbox
   - lince-dashboard
@@ -165,4 +165,23 @@ printenv OPENAI_API_KEY    # empty
 
 - `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `7f5898c4` (BrokenPipe), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
 For pi's multi-provider model specifically, see the original PR #40 commit history (when the 18-var passthrough was added) and the `[agents.pi.env_vars]` block in `lince-dashboard/agents-defaults.toml`.
+
+## 2026-05-05 — helper available since LINCE-99: `scratch_home_dirs`
+
+LINCE-99 introduced a generic, agent-agnostic ephemeral scratch mechanism in `sandbox/agent-sandbox`. Use it instead of hand-rolling per-agent scratch logic on the bwrap path.
+
+**What it does.** `agent_cfg.scratch_home_dirs` (list[str], default `[]`). When non-empty, `cmd_run` (bwrap path) creates a `tempfile.mkdtemp` per entry under `$XDG_RUNTIME_DIR` (or `/tmp`), `rsync -a`-seeds it from the real `~/<subdir>` if it exists, bind-mounts it over `$HOME/<subdir>` inside bwrap, and `shutil.rmtree`s it in the run's `finally` block. `build_bwrap_cmd` filters those subdirs out of `home_ro_dirs`/`home_rw_dirs` so the real dir is never bound — even briefly. Requires `rsync` on the host; agent-sandbox errors out with a clear install hint if it's missing.
+
+**For pi.** Add to `sandbox/profiles/pi-paranoid.toml`:
+```toml
+[agents.pi]
+scratch_home_dirs = [".pi"]
+```
+No other code change needed for the bwrap-paranoid scratch — agent-sandbox handles rsync, bind, and cleanup.
+
+**Note on `pi_providers` filtering.** The `scratch_home_dirs` mechanism is purely about filesystem isolation of `~/.pi`. It does NOT affect env-var passthrough or proxy rule selection — those are still the architectural call this task has to make (option a/b/c in §2 of the existing notes). The two are orthogonal: scratch the config dir AND filter the env vars.
+
+**For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic stays — add the pi match arm with `agent_home_subdir = ".pi"`. Both backends now give the same user-facing guarantee: ephemeral, per-run, fresh snapshot of `~/.pi`, discarded on exit.
+
+**Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
 <!-- SECTION:NOTES:END -->

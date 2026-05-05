@@ -4,7 +4,7 @@ title: Three sandbox levels — opencode follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 13:42'
+updated_date: '2026-05-05 18:11'
 labels:
   - sandbox
   - lince-dashboard
@@ -171,4 +171,23 @@ curl -s https://attacker.com 2>&1   # netns-level fail
 - `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
 
 For the Bun/Landlock workaround specifically, the existing `[agents.opencode-nono]` entry in `agents-defaults.toml` is the canonical reference.
+
+## 2026-05-05 — helper available since LINCE-99: `scratch_home_dirs`
+
+LINCE-99 introduced a generic, agent-agnostic ephemeral scratch mechanism in `sandbox/agent-sandbox`. Use it instead of hand-rolling per-agent scratch logic on the bwrap path.
+
+**What it does.** `agent_cfg.scratch_home_dirs` (list[str], default `[]`). When non-empty, `cmd_run` (bwrap path) creates a `tempfile.mkdtemp` per entry under `$XDG_RUNTIME_DIR` (or `/tmp`), `rsync -a`-seeds it from the real `~/<subdir>` if it exists, bind-mounts it over `$HOME/<subdir>` inside bwrap, and `shutil.rmtree`s it in the run's `finally` block. `build_bwrap_cmd` filters those subdirs out of `home_ro_dirs`/`home_rw_dirs` so the real dir is never bound — even briefly. Requires `rsync` on the host; agent-sandbox errors out with a clear install hint if it's missing.
+
+**Nested subdirs supported.** The implementation matches by absolute target path (`home_p / sub_clean`), so `.config/opencode` works as well as a flat name like `.codex`. rsync `-a` on a destination with a trailing slash creates the parent dir (`.config/`) automatically when seeding from source.
+
+**For opencode.** Add to `sandbox/profiles/opencode-paranoid.toml`:
+```toml
+[agents.opencode]
+scratch_home_dirs = [".config/opencode"]
+```
+No other code change needed for the bwrap-paranoid scratch — agent-sandbox handles rsync, bind, and cleanup.
+
+**For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic stays — add the opencode match arm with `agent_home_subdir = ".config/opencode"`. Note that the **Bun/Landlock workaround** must still compose with the paranoid bash wrapper: pick option (a) or (b) from the existing notes §2 — the scratch_home_dirs helper is orthogonal to the inner-command shape.
+
+**Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
 <!-- SECTION:NOTES:END -->

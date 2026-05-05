@@ -4,7 +4,7 @@ title: Three sandbox levels — gemini follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-05 13:40'
+updated_date: '2026-05-05 18:11'
 labels:
   - sandbox
   - lince-dashboard
@@ -166,4 +166,21 @@ ls ~/.agent-sandbox/proxy-*.sock 2>/dev/null
 
 - `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `7f5898c4` (BrokenPipe), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
 Reading those diffs is faster than re-discovering the same problems.
+
+## 2026-05-05 — helper available since LINCE-99: `scratch_home_dirs`
+
+LINCE-99 introduced a generic, agent-agnostic ephemeral scratch mechanism in `sandbox/agent-sandbox`. Use it instead of hand-rolling per-agent scratch logic on the bwrap path.
+
+**What it does.** `agent_cfg.scratch_home_dirs` (list[str], default `[]`). When non-empty, `cmd_run` (bwrap path) creates a `tempfile.mkdtemp` per entry under `$XDG_RUNTIME_DIR` (or `/tmp`), `rsync -a`-seeds it from the real `~/<subdir>` if it exists, bind-mounts it over `$HOME/<subdir>` inside bwrap, and `shutil.rmtree`s it in the run's `finally` block. `build_bwrap_cmd` filters those subdirs out of `home_ro_dirs`/`home_rw_dirs` so the real dir is never bound — even briefly. Requires `rsync` on the host; agent-sandbox errors out with a clear install hint if it's missing.
+
+**For gemini.** Add to `sandbox/profiles/gemini-paranoid.toml`:
+```toml
+[agents.gemini]
+scratch_home_dirs = [".gemini"]
+```
+No other code change needed for the bwrap-paranoid scratch — agent-sandbox handles the rsync, bind, and cleanup.
+
+**For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic (rsync into `$XDG_RUNTIME_DIR` HOME, trap-on-EXIT cleanup) stays — just add the gemini match arm with `agent_home_subdir = ".gemini"`. Both backends now give the same user-facing guarantee: ephemeral, per-run, fresh snapshot of `~/.gemini`, discarded on exit.
+
+**Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
 <!-- SECTION:NOTES:END -->
