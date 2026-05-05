@@ -4,7 +4,7 @@ title: Three sandbox levels — pi follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 18:11'
+updated_date: '2026-05-05 19:02'
 labels:
   - sandbox
   - lince-dashboard
@@ -12,6 +12,7 @@ labels:
 milestone: m-13
 dependencies:
   - LINCE-98
+  - LINCE-104
 references:
   - 'https://github.com/RisorseArtificiali/lince/issues/52'
   - 'https://github.com/RisorseArtificiali/lince/issues/47'
@@ -184,4 +185,19 @@ No other code change needed for the bwrap-paranoid scratch — agent-sandbox han
 **For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic stays — add the pi match arm with `agent_home_subdir = ".pi"`. Both backends now give the same user-facing guarantee: ephemeral, per-run, fresh snapshot of `~/.pi`, discarded on exit.
 
 **Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
+
+## 2026-05-05 — organisation change: variants go in agents-template.toml (LINCE-104)
+
+LINCE-104 splits `lince-dashboard/agents-defaults.toml` (loaded) from a new `lince-dashboard/agents-template.toml` (reference-only, not loaded). After LINCE-104 lands:
+
+- `agents-defaults.toml` carries only the **active** pi entry: a single `[agents.pi]` with `sandbox_level = "normal"` + `sandbox_backend` + `pi_providers` (per the multi-provider design call this task makes), plus `[agents.pi-unsandboxed]` if kept separate. **No commented variant blocks.**
+- `agents-template.toml` carries the **alternative variants** as fully uncommented TOML: `[agents.pi-paranoid]` and `[agents.pi-permissive]`, each with its own `pi_providers` example values. Users copy what they want into their own `~/.config/lince-dashboard/config.toml` and edit the providers list.
+
+This task is updated to:
+
+1. Depend on LINCE-104 (so the file split exists before pi variants are written).
+2. Add `[agents.pi-paranoid]` and `[agents.pi-permissive]` to `agents-template.toml` (not as commented blocks anywhere).
+3. The new `[agents.pi]` entry in `agents-defaults.toml` is the only loaded pi entry; it carries `sandbox_level = "normal"`.
+
+Nothing else in the existing plan changes — the multi-provider design (option a/b/c on `pi_providers` filtering), plugin match arm, and `scratch_home_dirs = [".pi"]` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
 <!-- SECTION:NOTES:END -->

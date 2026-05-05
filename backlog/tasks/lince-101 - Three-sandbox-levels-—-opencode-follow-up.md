@@ -4,7 +4,7 @@ title: Three sandbox levels — opencode follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 18:11'
+updated_date: '2026-05-05 19:02'
 labels:
   - sandbox
   - lince-dashboard
@@ -12,6 +12,7 @@ labels:
 milestone: m-13
 dependencies:
   - LINCE-98
+  - LINCE-104
 references:
   - 'https://github.com/RisorseArtificiali/lince/issues/51'
   - 'https://github.com/RisorseArtificiali/lince/issues/47'
@@ -190,4 +191,19 @@ No other code change needed for the bwrap-paranoid scratch — agent-sandbox han
 **For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic stays — add the opencode match arm with `agent_home_subdir = ".config/opencode"`. Note that the **Bun/Landlock workaround** must still compose with the paranoid bash wrapper: pick option (a) or (b) from the existing notes §2 — the scratch_home_dirs helper is orthogonal to the inner-command shape.
 
 **Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
+
+## 2026-05-05 — organisation change: variants go in agents-template.toml (LINCE-104)
+
+LINCE-104 splits `lince-dashboard/agents-defaults.toml` (loaded) from a new `lince-dashboard/agents-template.toml` (reference-only, not loaded). After LINCE-104 lands:
+
+- `agents-defaults.toml` carries only the **active** opencode entry: a single `[agents.opencode]` with `sandbox_level = "normal"` + `sandbox_backend`, plus `[agents.opencode-unsandboxed]` if kept separate. **No commented variant blocks.**
+- `agents-template.toml` carries the **alternative variants** as fully uncommented TOML: `[agents.opencode-paranoid]` and `[agents.opencode-permissive]`. Users copy what they want into their own `~/.config/lince-dashboard/config.toml`.
+
+This task is updated to:
+
+1. Depend on LINCE-104 (so the file split exists before opencode variants are written).
+2. Add `[agents.opencode-paranoid]` and `[agents.opencode-permissive]` to `agents-template.toml` (not as commented blocks anywhere).
+3. The new `[agents.opencode]` entry in `agents-defaults.toml` is the only loaded opencode entry; it carries `sandbox_level = "normal"`.
+
+Nothing else in the existing plan changes — the Bun/Landlock workaround, LLM-endpoint allowlist decision, plugin match arm, and `scratch_home_dirs = [".config/opencode"]` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
 <!-- SECTION:NOTES:END -->

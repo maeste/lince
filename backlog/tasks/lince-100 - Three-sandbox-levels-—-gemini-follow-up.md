@@ -4,7 +4,7 @@ title: Three sandbox levels — gemini follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-05 18:11'
+updated_date: '2026-05-05 19:02'
 labels:
   - sandbox
   - lince-dashboard
@@ -12,6 +12,7 @@ labels:
 milestone: m-13
 dependencies:
   - LINCE-98
+  - LINCE-104
 references:
   - 'https://github.com/RisorseArtificiali/lince/issues/50'
   - 'https://github.com/RisorseArtificiali/lince/issues/47'
@@ -183,4 +184,19 @@ No other code change needed for the bwrap-paranoid scratch — agent-sandbox han
 **For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic (rsync into `$XDG_RUNTIME_DIR` HOME, trap-on-EXIT cleanup) stays — just add the gemini match arm with `agent_home_subdir = ".gemini"`. Both backends now give the same user-facing guarantee: ephemeral, per-run, fresh snapshot of `~/.gemini`, discarded on exit.
 
 **Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
+
+## 2026-05-05 — organisation change: variants go in agents-template.toml (LINCE-104)
+
+LINCE-104 splits `lince-dashboard/agents-defaults.toml` (loaded) from a new `lince-dashboard/agents-template.toml` (reference-only, not loaded). After LINCE-104 lands:
+
+- `agents-defaults.toml` carries only the **active** gemini entry: a single `[agents.gemini]` with `sandbox_level = "normal"` + `sandbox_backend`, plus `[agents.gemini-unsandboxed]` if kept separate. **No commented variant blocks.**
+- `agents-template.toml` carries the **alternative variants** as fully uncommented TOML: `[agents.gemini-paranoid]` and `[agents.gemini-permissive]`. Users copy what they want into their own `~/.config/lince-dashboard/config.toml`.
+
+This task is updated to:
+
+1. Depend on LINCE-104 (so the file split exists before gemini variants are written).
+2. Add `[agents.gemini-paranoid]` and `[agents.gemini-permissive]` to `agents-template.toml` (not as commented blocks anywhere).
+3. The new `[agents.gemini]` entry in `agents-defaults.toml` is the only loaded gemini entry; it carries `sandbox_level = "normal"`.
+
+Nothing else in the existing plan changes — the nono profiles, bwrap fragments, plugin match arm, OAuth decision, and `scratch_home_dirs` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
 <!-- SECTION:NOTES:END -->
