@@ -163,6 +163,46 @@ block_git_push = true
 
 **Tools.** Adds the `gh` CLI. Direct `git push` is still blocked; the intended push path is `gh pr create` / `gh repo sync`. Docker and Podman are not in scope and are not made reachable — that is a much wider trust boundary and is tracked separately.
 
+**Recommended `gh` token: fine-grained PAT, scoped, non-destructive.** A prompt-injected agent at permissive level can read your `gh` token and act as you on GitHub. The default `gh auth login` token from a CLI device flow inherits broad `repo` scope and can do anything you can do — including delete branches, force-push, change repo settings, and read your other repos. Reduce the blast radius by giving the sandbox its own *fine-grained personal access token*, scoped to only the repository (or repositories) the agent is meant to work on, with permissions chosen so a leaked or coerced token cannot do destructive things.
+
+Create one at <https://github.com/settings/personal-access-tokens/new>:
+
+- **Token name**: pick something recognizable, e.g. `lince-permissive-<repo>` or `lince-sandbox-<project>`.
+- **Expiration**: 30–90 days. Rotation is part of the safety budget.
+- **Repository access**: select **Only select repositories** and choose the specific repo(s) you want the agent to operate on. Do not pick "All repositories".
+- **Account permissions** (left column): leave everything at *No access*. The agent does not need them.
+- **Repository permissions** (right column) — these are the sensible defaults for "agent that reads code, opens PRs, manages issues, does not destroy anything":
+
+  | Permission             | Setting        | Why                                                  |
+  | ---------------------- | -------------- | ---------------------------------------------------- |
+  | Metadata               | Read-only      | Required by all repo operations                      |
+  | Contents               | Read and write | Read code, push branches the agent created           |
+  | Pull requests          | Read and write | Open PRs, push review comments, update PR body       |
+  | Issues                 | Read and write | Read issue context, comment, label                   |
+  | Commit statuses        | Read-only      | Lets `gh pr checks` show CI state                    |
+  | Actions                | Read-only      | View workflow runs without re-triggering or editing  |
+  | Workflows              | **No access**  | Writing workflows from a sandbox is a clear escalation path — agents should not edit `.github/workflows/*` |
+  | Administration         | **No access**  | No settings changes, no protections relaxed          |
+  | Webhooks               | **No access**  | Webhook control is a back door to repo events        |
+  | Secrets / Variables    | **No access**  | Never hand the agent the keys to other tools         |
+  | Environments           | **No access**  | Same reasoning as Secrets                            |
+  | Codespaces / Pages     | **No access**  | Out of scope for typical agent work                  |
+
+  Anything not listed: leave at *No access*. The above set is enough for the workflows the permissive level was designed for (`gh pr create`, `gh issue comment`, branch push, PR review). Add more only when an agent task actually fails, and revisit this list when GitHub adds new permission scopes.
+
+- **Click "Generate token"** and copy the value somewhere safe (you cannot see it again).
+
+Then point `gh` inside the sandbox at that token instead of your daily one. The cleanest way is to keep the token out of `~/.config/gh/` (which is bind-mounted read-only) and pass it as an environment variable — `GH_TOKEN` is already in the permissive fragment's `[env].passthrough`:
+
+```bash
+export GH_TOKEN='github_pat_...'   # from "Generate token"
+zd                                  # launch the dashboard normally
+```
+
+`gh` inside the sandbox finds `GH_TOKEN` via the passthrough, ignores the broader OAuth token in `~/.config/gh/hosts.yml` (which the agent can still read but `gh` does not prefer when `GH_TOKEN` is set), and operates with the narrow permissions you granted. When you stop the dashboard, `unset GH_TOKEN` if you want the host shell to fall back to your daily token.
+
+If you would rather keep the token in a file: GitHub also accepts the fine-grained PAT through `gh auth login --with-token`, which writes it to `hosts.yml` instead of relying on the env var. Pick whichever fits your habits — the security gain comes from the token's scope, not from how it's stored.
+
 **What you'd see inside.**
 
 ```
