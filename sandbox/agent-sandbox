@@ -2455,6 +2455,21 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                         f"'{agent_name}', then export the matching "
                         f"host env var."
                     )
+                # OAuth note for agents that commonly authenticate
+                # without an API key on the host (gemini browser login,
+                # claude /login). Paranoid relies on a host-side API
+                # key the proxy can inject — OAuth-only setups won't
+                # work at this level.
+                oauth_note = ""
+                if agent_name in ("gemini", "claude"):
+                    oauth_note = (
+                        f"\nNote: {agent_name} OAuth/browser-login users "
+                        f"have no API key in their host env, so paranoid "
+                        f"cannot inject one — pick `--sandbox-level "
+                        f"normal` or `permissive` instead, or switch to "
+                        f"API-key auth (see "
+                        f"docs/documentation/dashboard/sandbox-levels.md)."
+                    )
                 print(
                     "Error: [security] unshare_net = true requires at "
                     f"least one credential rule (e.g. {examples} in "
@@ -2463,7 +2478,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                     "has no path to any LLM API.\n"
                     f"{quick}\n"
                     f"You can also add a key to [env.extra] in "
-                    f"{config_path} or pick a profile with `-P`.",
+                    f"{config_path} or pick a profile with `-P`."
+                    f"{oauth_note}",
                     file=sys.stderr,
                 )
             sys.exit(1)

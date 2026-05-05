@@ -221,7 +221,7 @@ docker: command not found
 
 ## 3. How to choose a level
 
-- **paranoid** when you are running an agent on an untrusted prompt, an unfamiliar repository, or any input you wouldn't paste into a root shell. The agent still does its job for the LLM API path; everything else is denied.
+- **paranoid** when you are running an agent on an untrusted prompt, an unfamiliar repository, or any input you wouldn't paste into a root shell. The agent still does its job for the LLM API path; everything else is denied. Paranoid requires an **API key on the host** (e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`) so the credential proxy has something to inject — OAuth/browser-login flows (gemini's Google sign-in, claude's `/login`) deposit a refresh token in the agent's config dir but leave no key in the env, which paranoid cannot use. If your agent is authenticated via OAuth, pick `normal` or `permissive` instead, or switch the agent to API-key auth before running paranoid. See §8 for per-agent specifics.
 - **normal** for daily work on your own code, where you want the agent to read/write the project, talk to its model, and not much else. This is the right default for most users most of the time.
 - **permissive** when you specifically need the agent to inspect or open PRs against GitHub and you accept that `~/.config/gh` is now visible inside the sandbox. The trade-off is real: a prompt-injected agent at this level can read your `gh` token and act as you on GitHub, scoped to whatever permissions that token holds.
 - **custom** (see below) when none of the three fit — for example if you need AWS Bedrock, a private Hugging Face mirror, or a corporate proxy.
@@ -418,6 +418,33 @@ The result is identical to the user: the agent sees its own auth/state at startu
 - **`lince-codex-with-aws`** — same pattern as the Claude + Bedrock example in §6; replace the `credentials` entry with whatever Bedrock auth scheme your codex setup uses, and grant read access to `~/.aws` for the SDK.
 
 For the master mechanics (file-naming convention, append-merge semantics, choosing a backend), see §4 and §6 above — those rules apply unchanged to codex.
+
+### 7.2 Gemini (Google)
+
+Gemini's level mappings follow the same shape as Claude's, with one important caveat around authentication.
+
+| Aspect                                  | paranoid                                  | normal                         | permissive                                              |
+|-----------------------------------------|-------------------------------------------|--------------------------------|---------------------------------------------------------|
+| Network (allowed destinations)          | `generativelanguage.googleapis.com` only  | inherited base                 | + GitHub + gh CLI domains                               |
+| Auth supported                          | **API key only** (`GEMINI_API_KEY` / `GOOGLE_API_KEY`) | API key OR OAuth     | API key OR OAuth                                        |
+| Filesystem (`~/.gemini`)                | per-run ephemeral scratch                 | as today                       | as today + read on `~/.config/gh`, `~/.cache`, `~/.ssh/known_hosts` |
+| `gh` CLI                                | no                                        | no                             | yes                                                     |
+
+**Paranoid requires API-key auth.** The credential proxy works by injecting an `x-goog-api-key` header on outbound HTTPS to `generativelanguage.googleapis.com`; it needs the key on the host side at startup. The browser/OAuth login flow gemini ships with deposits a refresh token in `~/.gemini/oauth_creds.json` but does **not** set `GEMINI_API_KEY` in your shell. The shipped `sandbox/profiles/gemini-paranoid.toml` auto-maps both `GEMINI_API_KEY` and `GOOGLE_API_KEY` (deduped to the same domain) — if neither is set in the host env, `_collect_proxy_rules` drops both and the paranoid bail-out fires with a clear `Note: gemini OAuth/browser-login users...` line.
+
+Two ways to use gemini paranoid:
+
+1. **Switch to API-key auth.** Get a key from <https://aistudio.google.com/apikey> and `export GEMINI_API_KEY='AIza...'` before launching the dashboard. The paranoid fragment auto-maps it; the proxy injects it on outbound calls and gemini never sees the raw value inside the sandbox.
+2. **Stay on OAuth, drop to `normal` or `permissive`.** Both levels keep `~/.gemini/` accessible and let gemini refresh its OAuth token against `oauth2.googleapis.com` directly. You lose the kernel network isolation paranoid offers, but OAuth keeps working.
+
+The paranoid fragment intentionally does **not** allowlist `accounts.google.com` / `oauth2.googleapis.com`. Doing so would let a prompt-injected agent at paranoid speak to broad Google OAuth infrastructure (account discovery, scope-elevation flows) — a bigger trust boundary than just talking to the model API. Users who explicitly want OAuth + paranoid can extend `[security].allow_domains` in their own `~/.agent-sandbox/config.toml`, but that is an opt-in trade-off documented per-user, not the shipped default.
+
+**Common custom levels for gemini.**
+
+- **Vertex AI users**: ship `lince-gemini-vertex.json` extending `lince-gemini` with `network.allow_domain = ["aiplatform.googleapis.com"]` and the appropriate Vertex credential. Skip the GenLang credential rule and rely on Vertex's own auth.
+- **API-key user who also wants gh**: just use `permissive` — it adds the GitHub allowlist on top of the gemini API.
+
+For master mechanics (file-naming convention, fragment lookup, custom levels), see §4 and §6.
 
 ## 9. Future work
 
