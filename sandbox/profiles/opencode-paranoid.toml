@@ -1,0 +1,30 @@
+# Sandbox-policy fragment: opencode — paranoid level.
+# See docs/documentation/dashboard/sandbox-levels.md. Lists are
+# append-merged with the user's ~/.agent-sandbox/config.toml.
+#
+# OpenCode is a multi-provider router. The Bun/Landlock SIGABRT bug
+# only affects the nono backend (Landlock LSM), so this fragment does
+# NOT need a special inner-command shape — bwrap doesn't trigger the
+# bug. The plugin-level Bun resolution is a nono-only concern.
+
+[env.extra]
+# Auto-map the providers known to the credential proxy. Empty host
+# vars are silently dropped, so the user gets rules only for providers
+# they actually have configured. For routers/providers not in
+# CREDENTIAL_PROXY_RULES (groq, mistral, deepseek, ...), ship a custom
+# level fragment that extends [security].allow_domains.
+ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
+ANTHROPIC_AUTH_TOKEN = "$ANTHROPIC_AUTH_TOKEN"
+OPENAI_API_KEY = "$OPENAI_API_KEY"
+GEMINI_API_KEY = "$GEMINI_API_KEY"
+GOOGLE_API_KEY = "$GOOGLE_API_KEY"
+
+[agents.opencode]
+# Per-run ephemeral copy of ~/.config/opencode (rsync-seeded, bind-mounted,
+# removed on exit). Nested subdirs are supported by the helper.
+scratch_home_dirs = [".config/opencode"]
+
+[security]
+credential_proxy = true
+unshare_net = true
+allow_domains = []

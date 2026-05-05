@@ -1,0 +1,33 @@
+{
+  "extends": "lince-pi",
+  "meta": {
+    "name": "lince-pi-paranoid",
+    "description": "Pi paranoid: only LLM providers known to nono's credential proxy (anthropic, openai, gemini) are reachable; ~/.pi is isolated to a per-agent scratch HOME. Pi supports 18+ providers but only the three above ship with credential injection — for the others (mistral, groq, deepseek, cerebras, openrouter, AWS Bedrock, ...) ship a custom level fragment that extends `network.allow_domain`. environment.passthrough below is intentionally narrow: only the providers covered by credential injection cross into the sandbox."
+  },
+  "filesystem": {
+    "allow": ["$WORKDIR", "$HOME"],
+    "read": []
+  },
+  "network": {
+    "credentials": ["anthropic", "openai", "gemini"]
+  },
+  "environment": {
+    "passthrough": [
+      "TERM",
+      "COLORTERM",
+      "TERM_PROGRAM",
+      "LANG",
+      "LC_ALL",
+      "EDITOR",
+      "VISUAL",
+      "ZELLIJ",
+      "ZELLIJ_SESSION_NAME",
+      "LINCE_AGENT_ID",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "OPENAI_API_KEY",
+      "OPENAI_BASE_URL",
+      "GEMINI_API_KEY"
+    ]
+  }
+}

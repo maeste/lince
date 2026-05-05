@@ -1,0 +1,25 @@
+{
+  "extends": "lince-pi",
+  "meta": {
+    "name": "lince-pi-permissive",
+    "description": "Pi permissive: full multi-provider env passthrough (all 18+ providers Pi supports) + GitHub allowlist; reads ~/.config/gh, ~/.cache, ~/.ssh/known_hosts so gh CLI works. No docker, no direct git push. environment.passthrough is inherited from lince-pi (extends)."
+  },
+  "filesystem": {
+    "allow": ["$WORKDIR"],
+    "read": [
+      "$HOME/.config/gh",
+      "$HOME/.cache",
+      "$HOME/.ssh/known_hosts",
+      "$HOME/.local/lib"
+    ]
+  },
+  "network": {
+    "network_profile": "developer",
+    "credentials": ["anthropic", "openai", "gemini"],
+    "allow_domain": [
+      "api.github.com",
+      "github.com",
+      "objects.githubusercontent.com"
+    ]
+  }
+}

@@ -1,10 +1,10 @@
 ---
 id: LINCE-100
 title: Three sandbox levels — gemini follow-up
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-05 19:02'
+updated_date: '2026-05-05 20:52'
 labels:
   - sandbox
   - lince-dashboard
@@ -87,6 +87,30 @@ If Gemini OAuth requires additional Google domains:
 - [ ] #6 OAuth flow behavior documented for paranoid (allow refresh or require pre-existing token)
 - [ ] #7 Master doc page extended with gemini-specific rows and OAuth trade-off explanation for paranoid (allow refresh vs. require pre-existing token)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Plan
+
+1. **Nono profiles** (lince-dashboard/nono-profiles/):
+   - `lince-gemini-paranoid.json`: extends lince-gemini, `network.credentials = ["gemini"]`, no extra reads.
+   - `lince-gemini-permissive.json`: extends lince-gemini, gemini credentials + GitHub allow_domain + standard permissive reads.
+
+2. **Sandbox fragments** (sandbox/profiles/):
+   - `gemini-paranoid.toml`: `[env.extra]` auto-maps GEMINI_API_KEY + GOOGLE_API_KEY (both deduped to `generativelanguage.googleapis.com`); `[agents.gemini].scratch_home_dirs = [".gemini"]`; `credential_proxy=true` + `unshare_net=true` + `allow_domains=[]`.
+   - `gemini-permissive.toml`: standard GitHub allowlist, `block_git_push=true`, GH_TOKEN/GITHUB_TOKEN passthrough.
+
+3. **OAuth decision** (paranoid): API-key auth required. accounts.google.com / oauth2.googleapis.com are NOT allowed in paranoid — OAuth-only users should pick `normal` or `permissive`. Documented in JSON `meta.description` and TOML header.
+
+4. **agents-defaults.toml**: collapse `[agents.gemini]` (unsandboxed), `[agents.gemini-bwrap]`, `[agents.gemini-nono]` → single `[agents.gemini]` (sandboxed default, `sandbox_level="normal"`) + `[agents.gemini-unsandboxed]`.
+
+5. **agents-template.toml**: add `[agents.gemini-paranoid]` and `[agents.gemini-permissive]` (uncommented).
+
+6. **plugin/src/agent.rs**: add gemini match arm to `synthesize_sandboxed_command` — `inner_command = ["gemini"]`, `agent_home_subdir = ".gemini"`. Also fix the bash wrapper to mkdir the nested home subdir and skip rsync if source is missing.
+
+7. install.sh / sandbox install.sh: no changes needed (both loop over the directory).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -199,4 +223,26 @@ This task is updated to:
 3. The new `[agents.gemini]` entry in `agents-defaults.toml` is the only loaded gemini entry; it carries `sandbox_level = "normal"`.
 
 Nothing else in the existing plan changes — the nono profiles, bwrap fragments, plugin match arm, OAuth decision, and `scratch_home_dirs` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
+
+## Implementation
+
+- Nono profiles: `lince-gemini-paranoid.json`, `lince-gemini-permissive.json` shipped.
+- Sandbox fragments: `sandbox/profiles/gemini-paranoid.toml` (with `[env.extra]` + `scratch_home_dirs=[".gemini"]`) and `sandbox/profiles/gemini-permissive.toml`.
+- `agents-defaults.toml`: collapsed gemini, gemini-bwrap, gemini-nono → `[agents.gemini]` (sandboxed, `sandbox_level="normal"`) + `[agents.gemini-unsandboxed]`.
+- `agents-template.toml`: added `[agents.gemini-paranoid]` and `[agents.gemini-permissive]`.
+- `plugin/src/agent.rs`: added gemini match arm. WASM build clean.
+
+## OAuth decision (paranoid)
+
+Paranoid does NOT allow `accounts.google.com` / `oauth2.googleapis.com`. Rationale: keep the surface minimal and avoid a broad Google OAuth domain in the allowlist. Trade-off: OAuth-authenticated gemini users must pick `normal` or `permissive` (or extend `[security].allow_domains` in their own config). Documented in `lince-gemini-paranoid.json` `meta.description` and `gemini-paranoid.toml` header.
+
+## Verification done
+
+- All TOML/JSON parse.
+- WASM plugin builds clean (release + dev).
+- `apply-sandbox-levels.py paranoid,permissive` correctly picks up `gemini-paranoid` and `gemini-permissive`.
+
+Master doc page extension (acceptance criterion #7) deferred — no docs/ tree exists yet for the dashboard sandbox-levels page; will land alongside the umbrella docs task.
+
+Runtime sanity checks (curl/printenv inside paranoid) require a host with the gemini binary + a GEMINI_API_KEY, so left for the user to verify before pushing.
 <!-- SECTION:NOTES:END -->

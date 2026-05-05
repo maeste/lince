@@ -130,6 +130,25 @@ fn synthesize_sandboxed_command(
             ],
             ".codex",
         ),
+        "gemini" => (vec!["gemini".to_string()], ".gemini"),
+        // Bun-based binaries crash (SIGABRT) when spawned as subprocesses
+        // under Landlock, which nono uses on Linux. Resolve the native
+        // .opencode binary on each launch and exec it directly, bypassing
+        // the Node.js launcher's spawnSync. The bwrap (agent-sandbox)
+        // backend doesn't use Landlock, so this wrapper is harmless there
+        // — but synthesize_sandboxed_command's bwrap branch goes through
+        // the agent-sandbox CLI and never sees inner_command anyway.
+        "opencode" => (
+            vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                "exec \"$(dirname \"$(readlink -f \"$(which opencode)\")\")/.opencode\" \"$@\""
+                    .to_string(),
+                "--".to_string(),
+            ],
+            ".config/opencode",
+        ),
+        "pi" => (vec!["pi".to_string()], ".pi"),
         _ => return None,
     };
 
@@ -168,9 +187,11 @@ fn synthesize_sandboxed_command(
                 let bash = String::from(
                     "set -e; \
                      SCRATCH=\"${XDG_RUNTIME_DIR:-/tmp}/lince-@@AGENT_ID@@\"; \
-                     mkdir -p -- \"$SCRATCH\"; \
+                     mkdir -p -- \"$SCRATCH/@@HOME_SUBDIR@@\"; \
                      trap 'rm -rf -- \"$SCRATCH\"' EXIT; \
-                     rsync -a --delete -- \"$HOME/@@HOME_SUBDIR@@/\" \"$SCRATCH/@@HOME_SUBDIR@@/\"; \
+                     if [ -d \"$HOME/@@HOME_SUBDIR@@\" ]; then \
+                       rsync -a --delete -- \"$HOME/@@HOME_SUBDIR@@/\" \"$SCRATCH/@@HOME_SUBDIR@@/\"; \
+                     fi; \
                      HOME=\"$SCRATCH\" nono run --profile @@NONO_PROFILE@@ --workdir @@PROJECT_DIR@@ -- @@INNER_COMMAND@@",
                 )
                 .replace("@@HOME_SUBDIR@@", agent_home_subdir)
