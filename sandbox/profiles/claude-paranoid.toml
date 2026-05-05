@@ -43,4 +43,12 @@ ANTHROPIC_AUTH_TOKEN = "$ANTHROPIC_AUTH_TOKEN"
 [security]
 credential_proxy = true
 unshare_net = true
-allow_domains = ["api.anthropic.com"]
+# allow_domains lists EXTRA hosts the agent can reach via the proxy, on
+# top of the domains already covered by credential rules
+# (api.anthropic.com is auto-included because we have an Anthropic
+# credential rule — no need to repeat it here). Empty by default.
+# Extend in your own ~/.agent-sandbox/config.toml — the lists are
+# append-merged:
+#   [security]
+#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+allow_domains = []

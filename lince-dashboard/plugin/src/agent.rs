@@ -89,12 +89,22 @@ pub fn resolve_nono_profile(agent_type: &str, level: &str) -> String {
 /// (backend, level) pair. Returns `None` if the agent type doesn't yet have
 /// a known inner-command shape (follow-up tasks add agents incrementally).
 ///
-/// The returned template still contains `{agent_id}` / `{project_dir}`
-/// placeholders — pass it through `expand_command_template` before exec.
+/// `agent_id` and `project_dir` are baked in directly: the
+/// non-bash-wrapper branches (bwrap, normal nono) emit them as separate
+/// argv elements where shell parsing doesn't apply, and the paranoid
+/// nono bash wrapper substitutes them with `shell_quote()` so paths
+/// containing whitespace, `"`, or `$` can't break the wrapper or open a
+/// shell-injection surface (defense-in-depth: project_dir comes from
+/// local UI, but quoting costs nothing).
+///
+/// The returned argv is final — no more placeholder substitution needed
+/// downstream.
 fn synthesize_sandboxed_command(
     agent_type: &str,
     backend: &SandboxBackend,
     level: &str,
+    agent_id: &str,
+    project_dir: &str,
 ) -> Option<Vec<String>> {
     let base = agent_type_base_name(agent_type);
     let inner_command: Vec<String> = match base {
@@ -114,9 +124,9 @@ fn synthesize_sandboxed_command(
                 "agent-sandbox".to_string(),
                 "run".to_string(),
                 "-p".to_string(),
-                "{project_dir}".to_string(),
+                project_dir.to_string(),
                 "--id".to_string(),
-                "{agent_id}".to_string(),
+                agent_id.to_string(),
             ];
             if level != "normal" {
                 cmd.push("--sandbox-level".to_string());
@@ -141,6 +151,11 @@ fn synthesize_sandboxed_command(
                 // No `exec` so the bash process stays alive to honor the EXIT
                 // trap; SIGKILL bypasses cleanup but that's acceptable for an
                 // ephemeral scratch dir.
+                //
+                // All caller-supplied values (agent_id, project_dir, profile,
+                // inner command) are shell_quote'd before substitution, so the
+                // wrapper is safe even if any of them contain shell
+                // metacharacters.
                 let agent_home_subdir = match base {
                     "claude" => ".claude",
                     // follow-ups add codex/.codex, gemini/.gemini, etc.
@@ -148,14 +163,16 @@ fn synthesize_sandboxed_command(
                 };
                 let bash = String::from(
                     "set -e; \
-                     SCRATCH=\"${XDG_RUNTIME_DIR:-/tmp}/lince-{agent_id}\"; \
+                     SCRATCH=\"${XDG_RUNTIME_DIR:-/tmp}/lince-AGENT_ID\"; \
                      mkdir -p -- \"$SCRATCH\"; \
                      trap 'rm -rf -- \"$SCRATCH\"' EXIT; \
                      rsync -a --delete -- \"$HOME/AGENT_HOME_SUBDIR/\" \"$SCRATCH/AGENT_HOME_SUBDIR/\"; \
-                     HOME=\"$SCRATCH\" nono run --profile NONO_PROFILE --workdir \"{project_dir}\" -- INNER_COMMAND",
+                     HOME=\"$SCRATCH\" nono run --profile NONO_PROFILE --workdir PROJECT_DIR -- INNER_COMMAND",
                 )
                 .replace("AGENT_HOME_SUBDIR", agent_home_subdir)
+                .replace("AGENT_ID", &shell_quote(agent_id))
                 .replace("NONO_PROFILE", &shell_quote(&nono_profile))
+                .replace("PROJECT_DIR", &shell_quote(project_dir))
                 .replace("INNER_COMMAND", &inner_str);
                 vec!["bash".to_string(), "-c".to_string(), bash]
             } else {
@@ -165,7 +182,7 @@ fn synthesize_sandboxed_command(
                     "--profile".to_string(),
                     nono_profile,
                     "--workdir".to_string(),
-                    "{project_dir}".to_string(),
+                    project_dir.to_string(),
                     "--".to_string(),
                 ];
                 cmd.extend(inner_command);
@@ -260,8 +277,19 @@ fn spawn_inner(
         // agents-defaults.toml.
         let cmd_template_owned;
         let cmd_template: &[String] = if let Some(level) = &type_config.sandbox_level {
-            match synthesize_sandboxed_command(agent_type, &type_config.sandbox_backend, level) {
+            match synthesize_sandboxed_command(
+                agent_type,
+                &type_config.sandbox_backend,
+                level,
+                &id,
+                &project_dir,
+            ) {
                 Some(t) => {
+                    // Synthesized argv is already final — agent_id and
+                    // project_dir baked in (shell-quoted where they end up
+                    // inside a bash wrapper). expand_command_template still
+                    // runs over it and is a no-op since there are no
+                    // placeholders left.
                     cmd_template_owned = t;
                     &cmd_template_owned
                 }

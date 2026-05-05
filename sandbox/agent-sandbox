@@ -406,6 +406,13 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
         hosts are: any domain that has a credential rule, plus everything in
         ``allow_domains``. Hosts in ``blocked_hosts`` are always rejected,
         regardless of allowlist state — that check happens earlier.
+
+        Case contract: ``host`` is a Host-header value (already lowercased
+        by the caller for the do_CONNECT/_handle_forward paths), and
+        ``allow_domains`` is lowercased once at construction
+        (``CredentialProxy.__init__``). Credential-rule domains in
+        ``CREDENTIAL_PROXY_RULES`` are also lowercase. Don't mix in
+        non-lowercased values without normalizing.
         """
         bare = host.split(":")[0]
         if bare in self.allow_domains:
@@ -642,14 +649,14 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
         """
         self._bump_count()
 
-        # In HTTP_PROXY mode the agent sends an absolute URL. Otherwise we
-        # reconstruct from Host header. We don't upgrade plain HTTP to HTTPS
-        # — pass the scheme the agent asked for.
-        if self.path.startswith(("http://", "https://")):
-            upstream_url = self.path
-        else:
-            host = self.headers.get("Host", "")
-            upstream_url = f"http://{host}{self.path}"
+        # _forward_passthrough is only reachable from _handle_forward AFTER
+        # an allow_domains match, and that match only succeeds in HTTP_PROXY
+        # mode (where self.path is an absolute URL like
+        # "http://github.com/foo"). In BASE_URL mode the Host header is
+        # 127.0.0.1:PORT and never matches an external allow_domain entry,
+        # so the relative-URL fallback would be unreachable — drop it
+        # rather than carry dead code.
+        upstream_url = self.path
 
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else None
@@ -2382,6 +2389,10 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             )
             sys.exit(1)
         SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+        # Per-pid socket path: agent-sandbox doesn't fork or daemonize, so
+        # the pid is stable for the lifetime of one `run` invocation and
+        # collisions are not a concern. If we ever introduce a long-lived
+        # daemon that forks, switch to a uuid or include the agent_id.
         proxy_unix_socket = str(
             SANDBOX_DIR / f"proxy-{os.getpid()}.sock"
         )
@@ -2431,13 +2442,22 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             ">/dev/null 2>&1 &\n"
             "SOCAT_PID=$!\n"
             'trap "kill $SOCAT_PID 2>/dev/null" EXIT\n'
-            # Wait briefly for socat to bind before handing off to bwrap.
+            # Wait for socat to bind, then verify before handing off to
+            # bwrap. Without this fail-fast, a socat that never binds (e.g.
+            # binary missing inside the netns or address-in-use) would
+            # leave the agent running with a dead proxy — every API call
+            # would silently fail with ECONNREFUSED.
+            "READY=0\n"
             "for _ in 1 2 3 4 5 6 7 8 9 10; do\n"
             "  if (exec 3<>/dev/tcp/127.0.0.1/8118) 2>/dev/null; then\n"
-            "    exec 3>&-; break\n"
+            "    exec 3>&-; READY=1; break\n"
             "  fi\n"
             "  sleep 0.05\n"
             "done\n"
+            "if [ \"$READY\" != 1 ]; then\n"
+            "  echo \"agent-sandbox paranoid: socat failed to bind 127.0.0.1:8118 inside the sandbox netns; aborting\" >&2\n"
+            "  exit 1\n"
+            "fi\n"
             'exec "$@"\n'
         )
         # `unshare -U -n -r` makes us UID 0 in a fresh user+net namespace
