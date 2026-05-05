@@ -9,20 +9,31 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# CLI flag: --sandbox-levels=paranoid,permissive (or LINCE_SANDBOX_LEVELS env).
-# Suppresses the interactive prompt when set. `normal` is always included
-# implicitly (it's the dashboard default).
+# CLI flag / env var: which extra sandbox levels to enable in the N-picker.
+# `normal` is always implicit (the dashboard ships it as the default level
+# in agents-defaults.toml). The interactive selection lives in the top-level
+# quickstart.sh; install.sh only honours the resolved choice it forwards.
+#
+#   --sandbox-levels=paranoid,permissive
+#   LINCE_SANDBOX_LEVELS=paranoid env: same effect.
+#
+# Empty string means "normal only" (no extras). Unset means "normal only" too;
+# install.sh does not prompt the user — when run standalone, edit the user's
+# config.toml manually or pass the flag.
+SANDBOX_LEVELS_OPT_SET=false
 SANDBOX_LEVELS_OPT=""
 for arg in "$@"; do
     case "$arg" in
-        --sandbox-levels=*) SANDBOX_LEVELS_OPT="${arg#*=}" ;;
+        --sandbox-levels=*)
+            SANDBOX_LEVELS_OPT="${arg#*=}"
+            SANDBOX_LEVELS_OPT_SET=true
+            ;;
         --help|-h)
             echo "Usage: $0 [--sandbox-levels=paranoid,permissive]"
             echo ""
-            echo "  --sandbox-levels=LIST   Comma-separated list of sandbox levels"
-            echo "                          to enable in the N-picker (in addition to"
-            echo "                          'normal', which is always on). Suppresses"
-            echo "                          the interactive prompt."
+            echo "  --sandbox-levels=LIST   Comma-separated list of extra sandbox"
+            echo "                          levels (paranoid, permissive). Empty or"
+            echo "                          unset = normal only."
             echo "                          Same as setting LINCE_SANDBOX_LEVELS."
             exit 0 ;;
     esac
@@ -317,21 +328,11 @@ else
     echo -e "${YELLOW}  ⚠ agents-template.toml not found — skipping${NC}"
 fi
 
-# Decide which extra sandbox levels to enable in the N-picker.
-# Precedence: --sandbox-levels=... flag > LINCE_SANDBOX_LEVELS env > prompt.
-SELECTED_LEVELS="${SANDBOX_LEVELS_OPT:-${LINCE_SANDBOX_LEVELS:-}}"
-if [ -z "$SELECTED_LEVELS" ] && [ -t 0 ] && [ -t 1 ] && [ -f "$AGENTS_TEMPLATE_DST" ]; then
-    echo ""
-    echo "  Sandbox levels for the N-picker:"
-    echo "    [x] normal       (always on — the default level)"
-    echo "    [ ] paranoid     (kernel-isolated network, ephemeral home scratch)"
-    echo "    [ ] permissive   (gh CLI + GitHub allowlist)"
-    if confirm "  Enable paranoid?"; then
-        SELECTED_LEVELS="paranoid"
-    fi
-    if confirm "  Enable permissive?"; then
-        SELECTED_LEVELS="${SELECTED_LEVELS:+$SELECTED_LEVELS,}permissive"
-    fi
+# Resolve the level selection: explicit flag wins; else env var; else normal-only.
+if [ "$SANDBOX_LEVELS_OPT_SET" = true ]; then
+    SELECTED_LEVELS="$SANDBOX_LEVELS_OPT"
+else
+    SELECTED_LEVELS="${LINCE_SANDBOX_LEVELS:-}"
 fi
 
 if [ -n "$SELECTED_LEVELS" ] && [ -f "$AGENTS_TEMPLATE_DST" ]; then
