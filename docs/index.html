@@ -58,6 +58,7 @@
         <a href="#sandbox" class="hover:text-white transition-colors">Sandbox</a>
         <a href="#install" class="hover:text-white transition-colors">Install</a>
         <a href="#repos" class="hover:text-white transition-colors">Repos</a>
+        <a href="/changelog/" class="hover:text-white transition-colors">Changelog</a>
         <a href="/documentation/" class="hover:text-white transition-colors">Docs</a>
         <a href="https://github.com/RisorseArtificiali/lince" class="hover:text-white transition-colors">GitHub</a>
       </div>
@@ -88,6 +89,28 @@
         </button>
       </div>
       <p class="text-xs text-muted">Linux (fully supported) &middot; macOS (experimental) &middot; <a href="https://github.com/RisorseArtificiali/lince/issues/22" class="text-accent hover:underline">Windows (planned)</a></p>
+    </div>
+  </section>
+
+  <!-- What's new -->
+  <section class="border-t border-border">
+    <div class="max-w-5xl mx-auto px-6 py-12">
+      <a href="/changelog/#2026-05-05" class="feature-card rounded-lg p-6 block group">
+        <div class="flex items-baseline gap-3 mb-2 flex-wrap">
+          <span class="text-accent font-mono text-xs tracking-wider uppercase">What's new</span>
+          <time class="font-mono text-xs text-muted" datetime="2026-05-05">2026-05-05</time>
+        </div>
+        <h3 class="text-lg font-semibold mb-2 group-hover:text-accent transition-colors">
+          Three-level sandbox model across all agents
+        </h3>
+        <p class="text-sm text-muted leading-relaxed">
+          Every supported agent &mdash; Claude, Codex, Gemini, OpenCode, Pi &mdash; now runs at three
+          discrete sandbox levels (<span class="font-mono">paranoid</span> /
+          <span class="font-mono">normal</span> / <span class="font-mono">permissive</span>),
+          with ephemeral scratch homes for paranoid and an install-time picker for which variants you want.
+        </p>
+        <p class="text-sm text-accent mt-3 group-hover:underline">Read the changelog &rarr;</p>
+      </a>
     </div>
   </section>
 
