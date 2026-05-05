@@ -1845,9 +1845,13 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     if unshare_net:
         cmd += ["--unshare-net"]
         if proxy_unix_socket:
+            # Bind the host-side socket file into a path that lives on the
+            # sandbox tmpfs (--tmpfs /tmp earlier in this command), since
+            # /run/ is mounted read-only via the --ro-bind / /. The socat
+            # wrapper below uses the same target path.
             cmd += [
                 "--bind", proxy_unix_socket,
-                "/run/lince-proxy.sock",
+                "/tmp/lince-proxy.sock",
             ]
 
     # --- 12. Environment: clearenv + explicit whitelist -----------------------
@@ -1963,7 +1967,7 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
             "set -e; "
             "ip link set lo up; "
             "socat TCP-LISTEN:8118,bind=127.0.0.1,reuseaddr,fork "
-            "UNIX-CONNECT:/run/lince-proxy.sock >/dev/null 2>&1 & "
+            "UNIX-CONNECT:/tmp/lince-proxy.sock >/dev/null 2>&1 & "
             # Wait briefly for the socat listener to be bound before
             # handing control to the agent (otherwise the first request
             # races against bind() and fails with ECONNREFUSED).
