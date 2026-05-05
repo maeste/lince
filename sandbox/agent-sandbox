@@ -1656,9 +1656,7 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                     agent_config: dict | None = None,
                     agent_id: str | None = None,
                     agent_name: str = "claude",
-                    proxy_env: dict[str, str] | None = None,
-                    unshare_net: bool = False,
-                    proxy_unix_socket: str = "") -> list[str]:
+                    proxy_env: dict[str, str] | None = None) -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
@@ -1837,22 +1835,12 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
         cmd += ["--new-session"]
     cmd += ["--die-with-parent"]
 
-    # Paranoid network isolation: kernel-enforced via bwrap's own --unshare-net
-    # (separate netns with only its own loopback). The agent reaches the
-    # credential proxy through a unix socket bind-mounted from the host: a
-    # small socat helper inside the sandbox bridges TCP localhost -> that
-    # unix socket. See the wrapper assembled below at the agent-cmd append.
-    if unshare_net:
-        cmd += ["--unshare-net"]
-        if proxy_unix_socket:
-            # Bind the host-side socket file into a path that lives on the
-            # sandbox tmpfs (--tmpfs /tmp earlier in this command), since
-            # /run/ is mounted read-only via the --ro-bind / /. The socat
-            # wrapper below uses the same target path.
-            cmd += [
-                "--bind", proxy_unix_socket,
-                "/tmp/lince-proxy.sock",
-            ]
+    # Paranoid network isolation is set up OUTSIDE this function: the caller
+    # wraps the bwrap invocation in `unshare -U -n -r` (creating a userns
+    # where we have CAP_NET_ADMIN over the new netns), brings up loopback,
+    # starts socat to bridge in-netns TCP to the host-side proxy unix socket,
+    # then exec's bwrap. bwrap inherits that netns via the default
+    # --share-net behavior, so we do nothing here.
 
     # --- 12. Environment: clearenv + explicit whitelist -----------------------
     cmd += ["--clearenv"]
@@ -1955,31 +1943,6 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                 args_source.append(da)
 
     agent_cmd = [agent_cfg["command"]] + args_source + list(agent_extra_args)
-
-    # Paranoid wrapper: bring up loopback inside the new netns, run a TCP
-    # listener that bridges to the bind-mounted unix socket, then exec the
-    # real agent. The agent's HTTP_PROXY env var points at this listener
-    # (set in cmd_run when unshare_net is True). PORT 8118 is fixed and
-    # internal — it never collides with anything because the netns is
-    # isolated.
-    if unshare_net and proxy_unix_socket:
-        bash_init = (
-            "set -e; "
-            "ip link set lo up; "
-            "socat TCP-LISTEN:8118,bind=127.0.0.1,reuseaddr,fork "
-            "UNIX-CONNECT:/tmp/lince-proxy.sock >/dev/null 2>&1 & "
-            # Wait briefly for the socat listener to be bound before
-            # handing control to the agent (otherwise the first request
-            # races against bind() and fails with ECONNREFUSED).
-            "for _ in 1 2 3 4 5 6 7 8 9 10; do "
-            "  if (exec 3<>/dev/tcp/127.0.0.1/8118) 2>/dev/null; then "
-            "    exec 3>&-; break; "
-            "  fi; "
-            "  sleep 0.05; "
-            "done; "
-            "exec \"$@\""
-        )
-        agent_cmd = ["/bin/bash", "-c", bash_init, "lince-paranoid-init"] + agent_cmd
 
     if log_file:
         # Use `script` to record the full terminal session.
@@ -2399,9 +2362,49 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                           extra_rw_cli=args.rw, extra_ro_cli=args.ro,
                           agent_config=agent_cfg, agent_id=args.id,
                           agent_name=agent_name,
-                          proxy_env=proxy_env if proxy_env else None,
-                          unshare_net=unshare_net,
-                          proxy_unix_socket=proxy_unix_socket)
+                          proxy_env=proxy_env if proxy_env else None)
+
+    # Paranoid wrap: create a userns + fresh netns OUTSIDE bwrap so we can
+    # bring up loopback (needs CAP_NET_ADMIN, which non-setuid bwrap drops
+    # before exec) and run socat as the TCP-localhost-to-unix-socket bridge.
+    # bwrap itself runs WITHOUT --unshare-net, inheriting our netns via
+    # default --share-net. Inside bwrap the agent sees 127.0.0.1:8118 as a
+    # working listener and the host filesystem (and the bridge) is
+    # unreachable except via the socket.
+    if unshare_net:
+        for tool in ("unshare", "ip", "socat"):
+            if not shutil.which(tool):
+                print(
+                    f"Error: paranoid sandbox needs '{tool}' on the host "
+                    f"(it's invoked outside bwrap to set up the isolated "
+                    f"network namespace and bridge to the credential "
+                    f"proxy). Install it via your package manager, or "
+                    f"switch sandbox_backend to nono.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        bash_setup = (
+            "set -e\n"
+            "ip link set lo up\n"
+            f"socat TCP-LISTEN:8118,bind=127.0.0.1,reuseaddr,fork "
+            f"UNIX-CONNECT:{shlex.quote(proxy_unix_socket)} "
+            ">/dev/null 2>&1 &\n"
+            "SOCAT_PID=$!\n"
+            'trap "kill $SOCAT_PID 2>/dev/null" EXIT\n'
+            # Wait briefly for socat to bind before handing off to bwrap.
+            "for _ in 1 2 3 4 5 6 7 8 9 10; do\n"
+            "  if (exec 3<>/dev/tcp/127.0.0.1/8118) 2>/dev/null; then\n"
+            "    exec 3>&-; break\n"
+            "  fi\n"
+            "  sleep 0.05\n"
+            "done\n"
+            'exec "$@"\n'
+        )
+        cmd = [
+            "unshare", "-U", "-n", "-r",
+            "bash", "-c", bash_setup, "lince-paranoid-netns",
+            *cmd,
+        ]
 
     if args.dry_run:
         print("# bwrap command that would be executed:\n")
