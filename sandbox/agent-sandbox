@@ -2343,12 +2343,27 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     proxy_unix_socket: str = ""
     if unshare_net:
         if proxy is None:
-            print(
-                "Error: [security] unshare_net = true requires "
-                "credential_proxy = true (the sandbox has no other path "
-                "out and no credentials would be injectable).",
-                file=sys.stderr,
-            )
+            if not proxy_enabled:
+                print(
+                    "Error: [security] unshare_net = true requires "
+                    "[security] credential_proxy = true. Without the "
+                    "proxy the network-isolated sandbox has no path out.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "Error: [security] unshare_net = true requires at "
+                    "least one credential rule (e.g. ANTHROPIC_API_KEY "
+                    "in [env.extra] or in the active provider profile), "
+                    "otherwise the proxy doesn't start and the sandbox "
+                    "has no path to any LLM API.\n"
+                    "Quick fix: export ANTHROPIC_API_KEY in your host "
+                    "shell — the paranoid fragment auto-maps it via "
+                    "[env.extra]. If you use a different provider, add "
+                    "its key to your [env.extra] in "
+                    f"{config_path} or pick a profile with `-P`.",
+                    file=sys.stderr,
+                )
             sys.exit(1)
         if not shutil.which("socat"):
             print(

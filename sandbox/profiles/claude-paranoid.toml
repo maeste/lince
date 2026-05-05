@@ -31,6 +31,15 @@
 [claude]
 use_real_config = false
 
+[env.extra]
+# Auto-pick the user's host Anthropic credential so the credential proxy
+# has something to inject without requiring `-P someprofile` or a manual
+# entry in the user's [env.extra]. Both forms are recognized — whichever
+# is set in the host env wins; the unset one expands to empty and is
+# silently dropped by the proxy rule collector.
+ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
+ANTHROPIC_AUTH_TOKEN = "$ANTHROPIC_AUTH_TOKEN"
+
 [security]
 credential_proxy = true
 unshare_net = true
