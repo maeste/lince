@@ -131,13 +131,9 @@ fn synthesize_sandboxed_command(
             ".codex",
         ),
         "gemini" => (vec!["gemini".to_string()], ".gemini"),
-        // Bun-based binaries crash (SIGABRT) when spawned as subprocesses
-        // under Landlock, which nono uses on Linux. Resolve the native
-        // .opencode binary on each launch and exec it directly, bypassing
-        // the Node.js launcher's spawnSync. The bwrap (agent-sandbox)
-        // backend doesn't use Landlock, so this wrapper is harmless there
-        // — but synthesize_sandboxed_command's bwrap branch goes through
-        // the agent-sandbox CLI and never sees inner_command anyway.
+        // Bun-based binaries SIGABRT when spawned under Landlock, so
+        // resolve and exec the native .opencode to skip the Node
+        // launcher's spawnSync.
         "opencode" => (
             vec![
                 "bash".to_string(),
@@ -179,26 +175,25 @@ fn synthesize_sandboxed_command(
                 .collect::<Vec<_>>()
                 .join(" ");
             if level == "paranoid" {
-                // Bash wrapper: mkdir scratch under $XDG_RUNTIME_DIR, rsync
-                // ~/.<agent>/ into it, run nono with HOME=scratch, rm scratch
-                // on EXIT. No `exec` so the trap fires. Caller-supplied values
-                // are shell_quote'd before substitution. `@@…@@` sentinels
-                // can't accidentally substring-overlap each other.
-                let bash = String::from(
+                // Bash wrapper: rsync ~/.<agent>/ into a scratch under
+                // $XDG_RUNTIME_DIR, run nono with HOME=scratch, rm scratch
+                // on EXIT. No `exec` so the EXIT trap fires. Caller-supplied
+                // values are shell_quote'd before substitution.
+                let bash = format!(
                     "set -e; \
-                     SCRATCH=\"${XDG_RUNTIME_DIR:-/tmp}/lince-@@AGENT_ID@@\"; \
-                     mkdir -p -- \"$SCRATCH/@@HOME_SUBDIR@@\"; \
+                     SCRATCH=\"${{XDG_RUNTIME_DIR:-/tmp}}/lince-{agent_id}\"; \
+                     mkdir -p -- \"$SCRATCH/{home_subdir}\"; \
                      trap 'rm -rf -- \"$SCRATCH\"' EXIT; \
-                     if [ -d \"$HOME/@@HOME_SUBDIR@@\" ]; then \
-                       rsync -a --delete -- \"$HOME/@@HOME_SUBDIR@@/\" \"$SCRATCH/@@HOME_SUBDIR@@/\"; \
+                     if [ -d \"$HOME/{home_subdir}\" ]; then \
+                       rsync -a --delete -- \"$HOME/{home_subdir}/\" \"$SCRATCH/{home_subdir}/\"; \
                      fi; \
-                     HOME=\"$SCRATCH\" nono run --profile @@NONO_PROFILE@@ --workdir @@PROJECT_DIR@@ -- @@INNER_COMMAND@@",
-                )
-                .replace("@@HOME_SUBDIR@@", agent_home_subdir)
-                .replace("@@AGENT_ID@@", &shell_quote(agent_id))
-                .replace("@@NONO_PROFILE@@", &shell_quote(&nono_profile))
-                .replace("@@PROJECT_DIR@@", &shell_quote(project_dir))
-                .replace("@@INNER_COMMAND@@", &inner_str);
+                     HOME=\"$SCRATCH\" nono run --profile {nono_profile} --workdir {project_dir} -- {inner}",
+                    agent_id = shell_quote(agent_id),
+                    home_subdir = agent_home_subdir,
+                    nono_profile = shell_quote(&nono_profile),
+                    project_dir = shell_quote(project_dir),
+                    inner = inner_str,
+                );
                 vec!["bash".to_string(), "-c".to_string(), bash]
             } else {
                 let mut cmd = vec![

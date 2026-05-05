@@ -282,6 +282,13 @@ DEFAULT_BLOCKED_HOSTS: set[str] = {
     "100.100.100.200",  # Alibaba Cloud
 }
 
+# Agents whose default auth flow is OAuth/browser-login rather than an
+# API key — used to tailor the paranoid bail-out message. Paranoid
+# can't inject a credential the agent doesn't have on the host, so
+# OAuth users need to drop to normal/permissive (or switch to API-key
+# auth). See docs/documentation/dashboard/sandbox-levels.md.
+OAUTH_CAPABLE_AGENTS: frozenset[str] = frozenset({"gemini", "claude"})
+
 _proxy_logger = logging.getLogger("agent-sandbox.proxy")
 
 # Headers to strip when forwarding through the credential proxy.
@@ -2422,46 +2429,31 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                     file=sys.stderr,
                 )
             else:
-                # Tell the user *which* env vars the active fragment
-                # auto-maps. collected_env still holds the post-expansion
-                # values; an empty string means "host var unset".
-                # CREDENTIAL_PROXY_RULES is the universe of keys that
-                # would have produced a rule if set.
-                expected = [
+                # Reaching here means the fragment ran but produced no
+                # rules — either it auto-maps known keys none of which
+                # are exported, or it doesn't auto-map anything.
+                fragment_keys = [
                     k for k in collected_env
                     if k in CREDENTIAL_PROXY_RULES
                 ]
-                if expected:
-                    unset = [k for k in expected if not collected_env[k]]
+                if fragment_keys:
+                    keys_for_msg = ", ".join(fragment_keys)
                     quick = (
-                        f"Quick fix: export {unset[0]} (or another from "
-                        f"{', '.join(expected)}) in your host shell — "
-                        f"the paranoid fragment for agent '{agent_name}' "
-                        f"auto-maps it via [env.extra]."
-                        if unset else
-                        f"All of {', '.join(expected)} are already set "
-                        f"but none matched a known proxy rule. This "
-                        f"shouldn't happen — please file a bug."
+                        f"Quick fix: export {fragment_keys[0]} (or "
+                        f"another from {keys_for_msg}) in your host "
+                        f"shell — the paranoid fragment for agent "
+                        f"'{agent_name}' auto-maps it via [env.extra]."
                     )
-                    examples = ", ".join(expected)
                 else:
-                    # Fragment doesn't auto-map any known credential.
-                    # List the global rule table so the user knows what
-                    # the proxy would accept.
-                    examples = ", ".join(CREDENTIAL_PROXY_RULES.keys())
+                    keys_for_msg = ", ".join(CREDENTIAL_PROXY_RULES.keys())
                     quick = (
-                        f"Quick fix: add one of [{examples}] to "
+                        f"Quick fix: add one of [{keys_for_msg}] to "
                         f"[env.extra] in your fragment for agent "
                         f"'{agent_name}', then export the matching "
                         f"host env var."
                     )
-                # OAuth note for agents that commonly authenticate
-                # without an API key on the host (gemini browser login,
-                # claude /login). Paranoid relies on a host-side API
-                # key the proxy can inject — OAuth-only setups won't
-                # work at this level.
                 oauth_note = ""
-                if agent_name in ("gemini", "claude"):
+                if agent_name in OAUTH_CAPABLE_AGENTS:
                     oauth_note = (
                         f"\nNote: {agent_name} OAuth/browser-login users "
                         f"have no API key in their host env, so paranoid "
@@ -2472,7 +2464,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                     )
                 print(
                     "Error: [security] unshare_net = true requires at "
-                    f"least one credential rule (e.g. {examples} in "
+                    f"least one credential rule (e.g. {keys_for_msg} in "
                     "[env.extra] or in the active provider profile), "
                     "otherwise the proxy doesn't start and the sandbox "
                     "has no path to any LLM API.\n"
