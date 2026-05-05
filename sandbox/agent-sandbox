@@ -284,8 +284,19 @@ DEFAULT_BLOCKED_HOSTS: set[str] = {
 _proxy_logger = logging.getLogger("agent-sandbox.proxy")
 
 # Headers to strip when forwarding through the credential proxy.
+# - host / connection / proxy-connection / transfer-encoding: hop-by-hop
+#   or otherwise meaningless once we re-frame the response.
+# - date / server: send_response() emits its own copies; forwarding the
+#   upstream values produces duplicate headers, which strict HTTP/1.1
+#   clients (some Anthropic SDKs included) treat as malformed and the
+#   socket gets closed mid-stream.
+# - content-length: when upstream uses Transfer-Encoding: chunked,
+#   http.client decodes it for us so the bytes we forward are no longer
+#   the wire length. Our response uses Connection: close instead so the
+#   client reads until EOF.
 _PROXY_SKIP_HEADERS = frozenset({
     "host", "transfer-encoding", "connection", "proxy-connection",
+    "date", "server", "content-length",
 })
 
 
@@ -575,6 +586,10 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
             for hdr, val in resp.getheaders():
                 if hdr.lower() not in _PROXY_SKIP_HEADERS:
                     self.send_header(hdr, val)
+            # We strip Content-Length and Transfer-Encoding above; signal
+            # end-of-response via connection close so the client reads
+            # until EOF without depending on either framing.
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.flush()
             # Stream response: use small reads and flush after each
@@ -652,6 +667,7 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
             for hdr, val in resp.getheaders():
                 if hdr.lower() not in _PROXY_SKIP_HEADERS:
                     self.send_header(hdr, val)
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.flush()
             while True:
