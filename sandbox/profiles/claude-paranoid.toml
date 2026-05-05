@@ -1,23 +1,37 @@
 # Sandbox-policy fragment: claude — paranoid level.
 #
-# Loaded by `agent-sandbox run --sandbox-level paranoid` and merged on top of
-# the user's resolved config (deep merge; lists are appended). See lince-98
-# for the design rationale.
+# Loaded by `agent-sandbox run --sandbox-level paranoid` and deep-merged on
+# top of the user's resolved config. Lists like home_ro_dirs and
+# allow_domains are appended (not replaced).
 #
-# Paranoid intent on bwrap:
-#   - Force isolated copy of ~/.claude (use_real_config = false), so anything
-#     the agent writes stays inside ~/.agent-sandbox/claude-config/, not the
-#     real config dir.
-#   - Ensure the credential proxy is on so API keys never enter the sandbox.
+# Paranoid means kernel-enforced isolation:
+#   - use_real_config = false: agent writes to ~/.agent-sandbox/claude-config/,
+#     real ~/.claude is untouched.
+#   - credential_proxy = true: API keys live on the host keystore/env, never
+#     in the sandbox; the proxy injects them at request time.
+#   - unshare_net = true: the agent runs in a fresh network namespace
+#     (bwrap --unshare-net) with only its own loopback. No route to
+#     anywhere — kernel rejects raw socket connections to attacker.com or
+#     anywhere else. The credential proxy is reached via a unix socket
+#     bind-mounted into the sandbox + an in-sandbox socat bridge that the
+#     agent talks to as plain TCP localhost.
+#   - allow_domains: hosts the proxy is allowed to forward to (whether by
+#     credential injection for known providers, or by pass-through for
+#     extras like pypi.org). Anything else gets 403 from the proxy.
 #
-# NOTE: kernel-level network isolation (--unshare-net) is intentionally NOT
-# enabled here. With --unshare-net the sandbox gets its own loopback and can
-# no longer reach the host-side credential proxy at 127.0.0.1:PORT, breaking
-# all LLM API calls. Tightening this path requires a unix-socket proxy or an
-# in-namespace proxy — tracked as a follow-up issue.
+# To extend paranoid (e.g. paranoid + pypi.org), don't fork this file —
+# just add to your ~/.agent-sandbox/config.toml:
+#
+#   [security]
+#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+#
+# The lists are append-merged, so the final allowlist is the base
+# (api.anthropic.com) plus your extras.
 
 [claude]
 use_real_config = false
 
 [security]
 credential_proxy = true
+unshare_net = true
+allow_domains = ["api.anthropic.com"]
