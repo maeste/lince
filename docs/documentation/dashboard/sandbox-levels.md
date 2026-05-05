@@ -357,7 +357,7 @@ Codex's level mappings follow the same shape as Claude's, with a few codex-speci
 | Network (allowed destinations)          | OpenAI API only                        | OpenAI API only              | inherited base                 | + GitHub + gh CLI domains                               |
 | Network isolation enforcement           | kernel (netns) + proxy allowlist       | kernel (Landlock + nono policy) | inherited                  | proxy allowlist                                         |
 | `OPENAI_API_KEY` handling               | proxy-injected, **stripped** from env  | proxy-injected, stripped     | passthrough                    | passthrough (codex usually picks token from `~/.codex`) |
-| Filesystem (~/.codex)                   | bind-mounted RW (real)                 | per-agent scratch HOME       | as today                       | as today + read on `~/.config/gh`, `~/.cache`, `~/.ssh/known_hosts` |
+| Filesystem (~/.codex)                   | per-run ephemeral scratch (rsync-seeded, discarded on exit) | per-agent scratch HOME       | as today                       | as today + read on `~/.config/gh`, `~/.cache`, `~/.ssh/known_hosts` |
 | `gh` CLI                                | no                                     | no                           | no                             | yes                                                     |
 | `disable_inner_sandbox_args`            | preserved (`--sandbox danger-full-access`) | preserved                | preserved                      | preserved                                               |
 
@@ -370,7 +370,14 @@ Both paths must keep `--sandbox danger-full-access` on the codex argv across all
 
 **`OPENAI_API_KEY` handling per level.** Normal and permissive pass `OPENAI_API_KEY` through to the codex process unchanged. Paranoid strips it from the sandbox environment entirely and lets the host-side credential proxy inject the `Authorization: Bearer <key>` header on outbound HTTPS — same model as Claude's `ANTHROPIC_API_KEY` in paranoid. The shipped `sandbox/profiles/codex-paranoid.toml` auto-maps `OPENAI_API_KEY = "$OPENAI_API_KEY"` in `[env.extra]` so the proxy has something to inject without requiring a manual entry in the user's config; if the host env var is unset the rule is silently dropped (same as Claude).
 
-**Scratch ~/.codex on bwrap paranoid.** Unlike Claude (`[claude] use_real_config = false` redirects to `~/.agent-sandbox/claude-config/`), codex has no equivalent host-side scratch mechanism in `agent-sandbox` today. Under bwrap paranoid, the real `~/.codex` is still bind-mounted read-write inside the sandbox. Under nono paranoid, the `lince-dashboard` plugin synthesizes a per-agent bash wrapper that rsyncs `~/.codex` into a scratch HOME under `$XDG_RUNTIME_DIR` and discards it on exit — the agent sees a fresh, isolated config dir. **For threat models that require codex's persistent state to be untouchable, prefer nono paranoid over bwrap paranoid.**
+**Scratch ~/.codex (both backends).** Unlike Claude — whose `[claude] use_real_config = false` mechanism redirects writes to a *persistent* `~/.agent-sandbox/claude-config/` shared across runs — codex paranoid uses a *per-run ephemeral* scratch:
+
+- **bwrap paranoid**: `sandbox/profiles/codex-paranoid.toml` ships `[agents.codex] scratch_home_dirs = [".codex"]`. `agent-sandbox` (run-side, before launching bwrap) creates a temp dir under `$XDG_RUNTIME_DIR`, rsyncs `~/.codex/` into it, bind-mounts the scratch on top of `~/.codex` inside the sandbox, and `rm -rf`s the scratch in the run's `finally` block. Real `~/.codex` is never bound RW into the sandbox.
+- **nono paranoid**: the `lince-dashboard` plugin synthesizes a per-agent bash wrapper that rsyncs `~/.codex` into a scratch `HOME` under `$XDG_RUNTIME_DIR` and discards it on exit — same outcome, different code path.
+
+The result is identical to the user: the agent sees its own auth/state at startup, can write to its config dir freely during the run, and those writes are gone when the run ends. No cross-run state leakage; no risk of a paranoid run mutating your real codex config. The mechanism is generic — `scratch_home_dirs` is read from the resolved `agent_cfg`, so any other agent (or any other home subdir) can opt in via a fragment without touching `agent-sandbox` itself.
+
+`rsync` is required on the host for `scratch_home_dirs` to function; `agent-sandbox` errors out at startup with a clear message if it's missing.
 
 **Common custom levels for codex.** The same `sandbox_level` knob accepts arbitrary suffixes — drop a profile at `~/.config/nono/profiles/lince-codex-<name>.json` (or a TOML fragment under `~/.agent-sandbox/profiles/`) and reference it via `sandbox_level = "<name>"`. Two common patterns:
 

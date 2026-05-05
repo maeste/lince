@@ -25,6 +25,15 @@
 # agents-defaults.toml — it is appended to codex's argv in build_bwrap_cmd.
 # Nothing extra is needed in this fragment.
 #
+# Note on the ephemeral ~/.codex scratch: `scratch_home_dirs = [".codex"]`
+# below tells agent-sandbox to rsync the real `~/.codex` into a per-run
+# temp dir under $XDG_RUNTIME_DIR at spawn, bind-mount it over `~/.codex`
+# inside bwrap, and remove it on exit. The agent sees its own auth/state
+# but writes are isolated; the kernel-isolated network namespace plus the
+# scratch HOME together give bwrap paranoid the same isolation guarantees
+# as nono paranoid (which runs the equivalent rsync inside its bash
+# wrapper synthesized by the lince-dashboard plugin).
+#
 # To extend paranoid (e.g. paranoid + Azure OpenAI), don't fork this file —
 # just add to your ~/.agent-sandbox/config.toml:
 #
@@ -41,6 +50,15 @@
 # returns "" and _collect_proxy_rules silently drops it — same behavior as
 # claude-paranoid.toml.
 OPENAI_API_KEY = "$OPENAI_API_KEY"
+
+[agents.codex]
+# Per-run ephemeral copy of `~/.codex`: agent-sandbox rsyncs the real dir
+# into a temp path under $XDG_RUNTIME_DIR before launching bwrap, mounts
+# it over `~/.codex` inside the sandbox, and removes it after the agent
+# exits. Codex sees its own auth/state but cannot persist changes to the
+# real config. Mirrors what the nono paranoid bash wrapper does for the
+# same agent.
+scratch_home_dirs = [".codex"]
 
 [security]
 credential_proxy = true
