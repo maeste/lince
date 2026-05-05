@@ -2400,6 +2400,21 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             "done\n"
             'exec "$@"\n'
         )
+        # `unshare -U -n -r` makes us UID 0 in a fresh user+net namespace
+        # (CAP_NET_ADMIN is only granted to the userns root, not to plain
+        # creators — verified empirically: --map-current-user fails ip link
+        # with EPERM). Then we re-map the inner UID back to the real user
+        # via bwrap's own --unshare-user / --uid / --gid, otherwise the
+        # agent inherits getuid()==0 and Claude Code refuses
+        # --dangerously-skip-permissions.
+        real_uid = os.getuid()
+        real_gid = os.getgid()
+        cmd = [
+            cmd[0], "--unshare-user",
+            "--uid", str(real_uid),
+            "--gid", str(real_gid),
+            *cmd[1:],
+        ]
         cmd = [
             "unshare", "-U", "-n", "-r",
             "bash", "-c", bash_setup, "lince-paranoid-netns",
