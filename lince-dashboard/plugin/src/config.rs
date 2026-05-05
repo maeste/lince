@@ -68,6 +68,19 @@ pub struct AgentTypeConfig {
     /// Defaults to `AgentSandbox` for backward compatibility.
     #[serde(default)]
     pub sandbox_backend: SandboxBackend,
+    /// Sandbox isolation level for this agent type.
+    ///
+    /// Free-form profile suffix, **not a closed enum**: `paranoid` / `normal`
+    /// / `permissive` are the shipped defaults; any other value resolves to a
+    /// user-supplied profile (`lince-<agent>-<value>.json` for nono,
+    /// `<agent>-<value>.toml` for agent-sandbox). See
+    /// `docs/documentation/dashboard/sandbox-levels.md`.
+    ///
+    /// When `None`, the legacy static `command` template is used as-is.
+    /// When `Some`, the plugin synthesizes the command from
+    /// `(agent_type, sandbox_backend, sandbox_level)`.
+    #[serde(default)]
+    pub sandbox_level: Option<String>,
 }
 
 /// Agent pane layout mode.

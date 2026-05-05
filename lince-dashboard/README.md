@@ -77,7 +77,10 @@ Press `n` to spawn an agent (quick name prompt), or `N` for the full wizard (typ
 | **[Usage Guide](https://lince.sh/documentation/#/dashboard/usage-guide)** | Keybindings, wizard, features, voice relay |
 | **[Configuration Reference](https://lince.sh/documentation/#/dashboard/config-reference)** | Dashboard config.toml and agents-defaults.toml |
 | **[Agent Examples](https://lince.sh/documentation/#/dashboard/agent-examples)** | Default agents, custom agents, multi-provider setups |
+| **[Sandbox Levels](https://lince.sh/documentation/#/dashboard/sandbox-levels)** | Three shipped levels (paranoid/normal/permissive), how to choose, and how to ship a custom level |
 | **[Multi-Agent Guide](MULTI-AGENT-GUIDE.md)** | What changed for multi-agent support |
+
+Each agent can run at one of three sandbox levels — `paranoid`, `normal`, `permissive` — selected via `sandbox_level` in `agents-defaults.toml` or per-agent in `config.toml`. The level controls network reach (Anthropic-only vs. + GitHub) and filesystem exposure (scratch config vs. real `~/.claude` vs. `~/.config/gh` for `gh` CLI). The same knob accepts custom values pointing at your own profile files. See the [Sandbox Levels doc](https://lince.sh/documentation/#/dashboard/sandbox-levels) for the full reference.
 
 ## Architecture
 

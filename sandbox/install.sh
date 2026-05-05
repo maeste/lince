@@ -51,6 +51,19 @@ if command -v nono >/dev/null 2>&1; then
     echo -e "${GREEN}  ✓ nono $(nono --version 2>/dev/null | head -1)${NC}"
 fi
 
+# socat is required for paranoid sandbox level on bwrap (it bridges
+# TCP-localhost-in-sandbox -> bind-mounted unix socket -> host proxy).
+# Not a hard prerequisite — paranoid is opt-in — but warn early so users
+# don't hit it at run time.
+if [ "$OS_NAME" != "Darwin" ] && [ "$HAS_BWRAP" = true ]; then
+    if command -v socat >/dev/null 2>&1; then
+        echo -e "${GREEN}  ✓ socat $(socat -V 2>&1 | head -1 | awk '{print $3}') (needed for paranoid sandbox level)${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ socat not found — needed only if you use sandbox_level=\"paranoid\" with bwrap${NC}"
+        echo -e "${YELLOW}    Install: dnf install socat   |   apt install socat   |   pacman -S socat${NC}"
+    fi
+fi
+
 # Platform-specific checks
 if [ "$OS_NAME" = "Darwin" ]; then
     # macOS: bwrap is not available, nono is required
@@ -97,6 +110,24 @@ if [ -f "$DEFAULTS_SRC" ]; then
     echo -e "${GREEN}  ✓ Installed: $CONFIG_DIR/agents-defaults.toml${NC}"
     cp "$DEFAULTS_SRC" "$HOME/.local/bin/agents-defaults.toml"
     echo -e "${GREEN}  ✓ Installed: ~/.local/bin/agents-defaults.toml${NC}"
+fi
+
+# Install built-in sandbox-policy fragments (paranoid/normal/permissive +
+# any custom-shipped ones). agent-sandbox loads these via --sandbox-level.
+# Fragment search order in the script: ./.agent-sandbox/profiles → ~/.agent-sandbox/profiles → <script-dir>/profiles.
+PROFILES_SRC="$SCRIPT_DIR/profiles"
+PROFILES_DST="$CONFIG_DIR/profiles"
+if [ -d "$PROFILES_SRC" ]; then
+    mkdir -p "$PROFILES_DST"
+    count=0
+    for fragment in "$PROFILES_SRC"/*.toml; do
+        [ -f "$fragment" ] || continue
+        cp "$fragment" "$PROFILES_DST/"
+        count=$((count + 1))
+    done
+    if [ "$count" -gt 0 ]; then
+        echo -e "${GREEN}  ✓ Installed $count sandbox-policy fragment(s) to $PROFILES_DST${NC}"
+    fi
 fi
 echo ""
 

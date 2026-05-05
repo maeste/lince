@@ -423,6 +423,19 @@ else
     [ "$HAS_NONO" = true ] && echo "  ✓ nono installed (alternative)"
 fi
 echo ""
+if [ "$HAS_NONO" = true ]; then
+    echo -e "${GREEN}Sandbox levels (paranoid/normal/permissive):${NC}"
+    echo "  Paranoid level needs the Anthropic API key in nono's keystore so"
+    echo "  the credential proxy can inject it at runtime. Populate it once:"
+    if [ "$OS_NAME" = "Darwin" ]; then
+        echo "    security add-generic-password -s nono -a anthropic_api_key -w 'sk-ant-...'"
+    else
+        echo "    secret-tool store --label 'nono anthropic' service nono account anthropic_api_key"
+    fi
+    echo "  See https://nono.sh/docs/cli/features/credential-injection.md for"
+    echo "  1Password / Apple Passwords integration."
+    echo ""
+fi
 echo -e "${GREEN}Usage:${NC}"
 echo "  source ~/.bashrc   # reload aliases"
 echo "  zd                 # launch dashboard layout"

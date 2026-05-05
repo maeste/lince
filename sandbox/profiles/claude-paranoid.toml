@@ -1,0 +1,54 @@
+# Sandbox-policy fragment: claude — paranoid level.
+#
+# Loaded by `agent-sandbox run --sandbox-level paranoid` and deep-merged on
+# top of the user's resolved config. Lists like home_ro_dirs and
+# allow_domains are appended (not replaced).
+#
+# Paranoid means kernel-enforced isolation:
+#   - use_real_config = false: agent writes to ~/.agent-sandbox/claude-config/,
+#     real ~/.claude is untouched.
+#   - credential_proxy = true: API keys live on the host keystore/env, never
+#     in the sandbox; the proxy injects them at request time.
+#   - unshare_net = true: the agent runs in a fresh network namespace
+#     (bwrap --unshare-net) with only its own loopback. No route to
+#     anywhere — kernel rejects raw socket connections to attacker.com or
+#     anywhere else. The credential proxy is reached via a unix socket
+#     bind-mounted into the sandbox + an in-sandbox socat bridge that the
+#     agent talks to as plain TCP localhost.
+#   - allow_domains: hosts the proxy is allowed to forward to (whether by
+#     credential injection for known providers, or by pass-through for
+#     extras like pypi.org). Anything else gets 403 from the proxy.
+#
+# To extend paranoid (e.g. paranoid + pypi.org), don't fork this file —
+# just add to your ~/.agent-sandbox/config.toml:
+#
+#   [security]
+#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+#
+# The lists are append-merged, so the final allowlist is the base
+# (api.anthropic.com) plus your extras.
+
+[claude]
+use_real_config = false
+
+[env.extra]
+# Auto-pick the user's host Anthropic credential so the credential proxy
+# has something to inject without requiring `-P someprofile` or a manual
+# entry in the user's [env.extra]. Both forms are recognized — whichever
+# is set in the host env wins; the unset one expands to empty and is
+# silently dropped by the proxy rule collector.
+ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
+ANTHROPIC_AUTH_TOKEN = "$ANTHROPIC_AUTH_TOKEN"
+
+[security]
+credential_proxy = true
+unshare_net = true
+# allow_domains lists EXTRA hosts the agent can reach via the proxy, on
+# top of the domains already covered by credential rules
+# (api.anthropic.com is auto-included because we have an Anthropic
+# credential rule — no need to repeat it here). Empty by default.
+# Extend in your own ~/.agent-sandbox/config.toml — the lists are
+# append-merged:
+#   [security]
+#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+allow_domains = []

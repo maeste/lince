@@ -1,0 +1,14 @@
+{
+  "extends": "lince-claude",
+  "meta": {
+    "name": "lince-claude-paranoid",
+    "description": "Claude Code, paranoid sandbox: only Anthropic API reachable via nono credential proxy; ~/.claude isolated to a per-agent scratch dir (rsync'd at spawn, deleted on stop)."
+  },
+  "filesystem": {
+    "allow": ["$WORKDIR", "$HOME"],
+    "read": []
+  },
+  "network": {
+    "credentials": ["anthropic"]
+  }
+}
