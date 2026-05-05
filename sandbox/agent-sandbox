@@ -978,29 +978,37 @@ _SANDBOX_LEVEL_LIST_APPEND_KEYS = frozenset({
 })
 
 
-def load_sandbox_level_fragment(level: str) -> dict | None:
+def load_sandbox_level_fragment(level: str, agent: str = "claude") -> dict | None:
     """Locate and load a sandbox-policy fragment for the given level name.
 
-    Search order:
-      1. ./.agent-sandbox/profiles/<level>.toml   (project-local override)
-      2. ~/.agent-sandbox/profiles/<level>.toml   (user-installed)
-      3. <script-dir>/profiles/<level>.toml       (built-in, ships with the script)
+    Tries the agent-specific name first (``<agent>-<level>.toml``) so the
+    shipped fragments like ``claude-paranoid.toml`` are picked up, then
+    falls back to the bare level name (``<level>.toml``) so users can
+    write a single cross-agent fragment when they want one.
 
-    Returns the fragment dict, or None if no file was found (caller surfaces
-    a user-visible error in that case so typos don't silently no-op).
+    Search order, each tried as <agent>-<level>.toml then <level>.toml:
+      1. ./.agent-sandbox/profiles/   (project-local override)
+      2. ~/.agent-sandbox/profiles/   (user-installed)
+      3. <script-dir>/profiles/       (built-in, ships with the script)
+
+    Returns the fragment dict, or None if no file was found (caller
+    surfaces a user-visible error so typos don't silently no-op).
     """
     if not level:
         return None
     script_dir = Path(__file__).resolve().parent
-    candidates = [
-        Path.cwd() / ".agent-sandbox" / "profiles" / f"{level}.toml",
-        SANDBOX_DIR / "profiles" / f"{level}.toml",
-        script_dir / "profiles" / f"{level}.toml",
+    base_dirs = [
+        Path.cwd() / ".agent-sandbox" / "profiles",
+        SANDBOX_DIR / "profiles",
+        script_dir / "profiles",
     ]
-    for p in candidates:
-        if p.is_file():
-            with open(p, "rb") as fh:
-                return tomllib.load(fh)
+    name_candidates = [f"{agent}-{level}.toml", f"{level}.toml"]
+    for d in base_dirs:
+        for name in name_candidates:
+            p = d / name
+            if p.is_file():
+                with open(p, "rb") as fh:
+                    return tomllib.load(fh)
     return None
 
 
@@ -2140,15 +2148,19 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     # Apply sandbox-policy fragment if --sandbox-level was passed. Levels are
     # free-form: paranoid/normal/permissive ship as built-in fragments under
     # <script-dir>/profiles/, and users can drop their own at
-    # ~/.agent-sandbox/profiles/<name>.toml.
+    # ~/.agent-sandbox/profiles/<name>.toml. Lookup tries
+    # <agent>-<level>.toml first (shipped as e.g. claude-paranoid.toml),
+    # then falls back to the bare <level>.toml.
     sandbox_level = getattr(args, "sandbox_level", None)
     if sandbox_level and sandbox_level != "normal":
-        fragment = load_sandbox_level_fragment(sandbox_level)
+        fragment = load_sandbox_level_fragment(sandbox_level, agent=args.agent)
         if fragment is None:
             print(
-                f"Error: unknown sandbox level '{sandbox_level}' "
-                f"(no fragment file found in ./.agent-sandbox/profiles/, "
-                f"~/.agent-sandbox/profiles/, or alongside agent-sandbox).",
+                f"Error: unknown sandbox level '{sandbox_level}' for "
+                f"agent '{args.agent}' (looked for "
+                f"{args.agent}-{sandbox_level}.toml then "
+                f"{sandbox_level}.toml in ./.agent-sandbox/profiles/, "
+                f"~/.agent-sandbox/profiles/, and alongside agent-sandbox).",
                 file=sys.stderr,
             )
             sys.exit(1)
