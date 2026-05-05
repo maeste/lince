@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use zellij_tile::prelude::*;
 
-use crate::config::{AgentLayout, AgentTypeConfig, DashboardConfig, DEFAULT_SANDBOX_COMMAND};
+use crate::config::{
+    shell_escape, AgentLayout, AgentTypeConfig, DashboardConfig, DEFAULT_SANDBOX_COMMAND,
+};
 use crate::sandbox_backend::SandboxBackend;
 
 /// Name of the lifecycle wrapper script for agents without native hooks.
@@ -161,19 +163,24 @@ fn synthesize_sandboxed_command(
                     // follow-ups add codex/.codex, gemini/.gemini, etc.
                     _ => return None,
                 };
+                // Sentinels use `@@…@@` rather than bare uppercase words so
+                // accidental substring overlap is impossible (e.g. a
+                // hypothetical future `AGENT_IDENTITY` placeholder would
+                // collide with `AGENT_ID` if we used bare words). With the
+                // chosen format, replacement order is irrelevant.
                 let bash = String::from(
                     "set -e; \
-                     SCRATCH=\"${XDG_RUNTIME_DIR:-/tmp}/lince-AGENT_ID\"; \
+                     SCRATCH=\"${XDG_RUNTIME_DIR:-/tmp}/lince-@@AGENT_ID@@\"; \
                      mkdir -p -- \"$SCRATCH\"; \
                      trap 'rm -rf -- \"$SCRATCH\"' EXIT; \
-                     rsync -a --delete -- \"$HOME/AGENT_HOME_SUBDIR/\" \"$SCRATCH/AGENT_HOME_SUBDIR/\"; \
-                     HOME=\"$SCRATCH\" nono run --profile NONO_PROFILE --workdir PROJECT_DIR -- INNER_COMMAND",
+                     rsync -a --delete -- \"$HOME/@@HOME_SUBDIR@@/\" \"$SCRATCH/@@HOME_SUBDIR@@/\"; \
+                     HOME=\"$SCRATCH\" nono run --profile @@NONO_PROFILE@@ --workdir @@PROJECT_DIR@@ -- @@INNER_COMMAND@@",
                 )
-                .replace("AGENT_HOME_SUBDIR", agent_home_subdir)
-                .replace("AGENT_ID", &shell_quote(agent_id))
-                .replace("NONO_PROFILE", &shell_quote(&nono_profile))
-                .replace("PROJECT_DIR", &shell_quote(project_dir))
-                .replace("INNER_COMMAND", &inner_str);
+                .replace("@@HOME_SUBDIR@@", agent_home_subdir)
+                .replace("@@AGENT_ID@@", &shell_quote(agent_id))
+                .replace("@@NONO_PROFILE@@", &shell_quote(&nono_profile))
+                .replace("@@PROJECT_DIR@@", &shell_quote(project_dir))
+                .replace("@@INNER_COMMAND@@", &inner_str);
                 vec!["bash".to_string(), "-c".to_string(), bash]
             } else {
                 let mut cmd = vec![
@@ -193,17 +200,19 @@ fn synthesize_sandboxed_command(
     })
 }
 
-/// Minimal POSIX shell single-quote escaping for embedding strings inside
-/// `bash -c '...'` wrappers. We only use this on agent-internal values
-/// (profile names, binary paths from agents-defaults.toml), never on
-/// untrusted input.
+/// POSIX shell quoting for embedding strings inside `bash -c '...'`
+/// wrappers. Strings containing only alphanumerics and a few obviously
+/// safe punctuation chars pass through unchanged for readability;
+/// anything else is wrapped in single quotes, with embedded single
+/// quotes escaped via the standard `'\''` idiom that lives in
+/// `shell_escape`.
 fn shell_quote(s: &str) -> String {
     if s.chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.' | ':'))
     {
         s.to_string()
     } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
+        format!("'{}'", shell_escape(s))
     }
 }
 
@@ -275,43 +284,38 @@ fn spawn_inner(
         // (agent_type, backend, level) instead of using the static template.
         // This is what enables the single-entry-per-agent model in
         // agents-defaults.toml.
-        let cmd_template_owned;
-        let cmd_template: &[String] = if let Some(level) = &type_config.sandbox_level {
-            match synthesize_sandboxed_command(
+        // Two paths produce the agent command: synthesize_sandboxed_command
+        // bakes agent_id/project_dir directly into argv (with shell_quote
+        // for values that end up inside a bash wrapper), so its output is
+        // final and skips expand_command_template. The legacy/static path
+        // (no sandbox_level set, or agent type not yet covered) goes
+        // through the placeholder-substitution helper as before.
+        let synthesized = type_config.sandbox_level.as_deref().and_then(|level| {
+            synthesize_sandboxed_command(
                 agent_type,
                 &type_config.sandbox_backend,
                 level,
                 &id,
                 &project_dir,
-            ) {
-                Some(t) => {
-                    // Synthesized argv is already final — agent_id and
-                    // project_dir baked in (shell-quoted where they end up
-                    // inside a bash wrapper). expand_command_template still
-                    // runs over it and is a no-op since there are no
-                    // placeholders left.
-                    cmd_template_owned = t;
-                    &cmd_template_owned
-                }
-                None => {
-                    // Agent doesn't yet support sandbox_level (follow-up task).
-                    // Fall back to the static command and surface a soft warning.
-                    eprintln!(
-                        "lince-dashboard: sandbox_level={} not yet supported for agent_type={} — using static command",
-                        level, agent_type
-                    );
-                    &type_config.command
-                }
-            }
+            )
+            .or_else(|| {
+                eprintln!(
+                    "lince-dashboard: sandbox_level={} not yet supported for agent_type={} — using static command",
+                    level, agent_type
+                );
+                None
+            })
+        });
+        if let Some(argv) = synthesized {
+            expanded.extend(argv);
         } else {
-            &type_config.command
-        };
-        expanded.extend(expand_command_template(
-            cmd_template,
-            &id,
-            &project_dir,
-            profile.as_deref(),
-        ));
+            expanded.extend(expand_command_template(
+                &type_config.command,
+                &id,
+                &project_dir,
+                profile.as_deref(),
+            ));
+        }
         // For agent-sandbox (bwrap) agents, pass the profile via -P flag so
         // agent-sandbox can resolve the profile's env vars internally.
         // Nono agents already have --profile baked into their command template.

@@ -386,14 +386,18 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
 
     # --- Metadata / blocked host guard ------------------------------------
 
+    @staticmethod
+    def _bare_host(host: str) -> str:
+        """Strip the optional ``:port`` suffix from a Host-header value."""
+        return host.split(":", 1)[0]
+
     def _is_blocked(self, host: str) -> bool:
         """Return True if *host* is in the blocked set."""
-        bare = host.split(":")[0]
-        return bare in self.blocked_hosts
+        return self._bare_host(host) in self.blocked_hosts
 
     def _find_rule_for_host(self, host: str) -> dict | None:
         """Return the credential rule matching *host*, or None."""
-        bare = host.split(":")[0]
+        bare = self._bare_host(host)
         for rule in self.credential_rules:
             if rule["domain"] == bare:
                 return rule
@@ -414,13 +418,10 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
         ``CREDENTIAL_PROXY_RULES`` are also lowercase. Don't mix in
         non-lowercased values without normalizing.
         """
-        bare = host.split(":")[0]
+        bare = self._bare_host(host)
         if bare in self.allow_domains:
             return True
-        for rule in self.credential_rules:
-            if rule["domain"] == bare:
-                return True
-        return False
+        return self._find_rule_for_host(host) is not None
 
     # --- Request counting -------------------------------------------------
 
@@ -2389,6 +2390,27 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             )
             sys.exit(1)
         SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+        # Sweep socket files left over by previous paranoid runs that
+        # exited via SIGKILL or crash (the normal cleanup is in
+        # CredentialProxy.stop, which doesn't fire on SIGKILL). Each file
+        # is a few bytes but they accumulate over time. We unlink any
+        # `proxy-PID.sock` whose pid is no longer alive.
+        for stale in SANDBOX_DIR.glob("proxy-*.sock"):
+            try:
+                stale_pid = int(stale.stem.removeprefix("proxy-"))
+            except ValueError:
+                continue
+            try:
+                os.kill(stale_pid, 0)  # raises if pid is gone
+            except ProcessLookupError:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+            except PermissionError:
+                # PID exists but is owned by someone else — leave alone.
+                pass
+
         # Per-pid socket path: agent-sandbox doesn't fork or daemonize, so
         # the pid is stable for the lifetime of one `run` invocation and
         # collisions are not a concern. If we ever introduce a long-lived
