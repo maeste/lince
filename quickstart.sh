@@ -56,16 +56,12 @@ BACKENDS=(
 # Track backend selection state (1=selected, 0=not)
 BACKEND_SELECTED=(1 0 0)  # bwrap on by default
 
-# Available sandbox levels: key|display_name|description
-# normal is locked-on (the default level the dashboard ships); paranoid and
-# permissive are opt-in extra entries pulled from agents-template.toml into
-# the user's config.toml.
+# Sandbox levels: name|description. Index 0 (normal) is locked on.
 LEVELS=(
-    "normal|normal|always on — the default level"
-    "paranoid|paranoid|kernel-isolated network, ephemeral home scratch"
-    "permissive|permissive|gh CLI + GitHub allowlist"
+    "normal|always on — the default level"
+    "paranoid|kernel-isolated network, ephemeral home scratch"
+    "permissive|gh CLI + GitHub allowlist"
 )
-# Index 0 (normal) is locked on; 1 (paranoid) and 2 (permissive) default off.
 LEVEL_SELECTED=(1 0 0)
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -90,6 +86,12 @@ print_banner() {
 
 print_separator() {
     echo -e "${DIM}────────────────────────────────────────────────────${NC}"
+}
+
+# Move cursor up N lines and clear to end of screen — used by the
+# multi-select TUIs to redraw their menu in place.
+redraw_up() {
+    echo -en "\033[$1A\033[J"
 }
 
 # ── TUI: Backend selection (multi-select) ───────────────────────────
@@ -195,9 +197,7 @@ select_backends() {
                 ;;
         esac
 
-        # Move cursor up to redraw
-        local lines_up=$(( ${#BACKENDS[@]} + 3 ))
-        echo -en "\033[${lines_up}A\033[J"
+        redraw_up $(( ${#BACKENDS[@]} + 3 ))
     done
 
     # Build selected backends list
@@ -247,10 +247,6 @@ select_backends() {
 }
 
 # ── TUI: Sandbox-level selection (multi-select) ─────────────────────
-# Pulls extra paranoid / permissive agent entries out of
-# agents-template.toml and (later) into the user's config.toml. normal
-# is locked on — it's the level [agents.<name>] in agents-defaults.toml
-# already ships with.
 select_sandbox_levels() {
     echo ""
     print_separator
@@ -261,15 +257,14 @@ select_sandbox_levels() {
     echo -e "  in the N-picker. Variants are pulled from agents-template.toml"
     echo -e "  and added to your config.toml."
     echo ""
-    echo -e "  ${DIM}Per-agent feature support is implicit: agents that don't ship a${NC}"
-    echo -e "  ${DIM}block for a level are silently skipped.${NC}"
+    echo -e "  ${DIM}Agents that don't ship a block for a level are skipped.${NC}"
     echo ""
     echo -e "  ${DIM}Toggle with number keys, press Enter when done:${NC}"
     echo ""
 
     while true; do
         for i in "${!LEVELS[@]}"; do
-            IFS='|' read -r key name desc <<< "${LEVELS[$i]}"
+            IFS='|' read -r name desc <<< "${LEVELS[$i]}"
             if [ $i -eq 0 ]; then
                 echo -e "  ${GREEN}[x]${NC} ${BOLD}$((i+1))) $name${NC} ${DIM}— $desc${NC} ${DIM}(locked)${NC}"
             elif [ "${LEVEL_SELECTED[$i]}" = "1" ]; then
@@ -286,7 +281,7 @@ select_sandbox_levels() {
         case "$REPLY" in
             [1-9])
                 local idx=$((REPLY - 1))
-                # Index 0 = normal, locked on. Ignore.
+                # idx 0 (normal) is locked.
                 if [ $idx -gt 0 ] && [ $idx -lt ${#LEVELS[@]} ]; then
                     if [ "${LEVEL_SELECTED[$idx]}" = "1" ]; then
                         LEVEL_SELECTED[$idx]=0
@@ -300,17 +295,15 @@ select_sandbox_levels() {
                 ;;
         esac
 
-        local lines_up=$(( ${#LEVELS[@]} + 3 ))
-        echo -en "\033[${lines_up}A\033[J"
+        redraw_up $(( ${#LEVELS[@]} + 3 ))
     done
 
-    # Build SELECTED_LEVELS as a comma-list of extras (excluding normal).
     SELECTED_LEVELS=""
     for i in "${!LEVELS[@]}"; do
         [ $i -eq 0 ] && continue
         if [ "${LEVEL_SELECTED[$i]}" = "1" ]; then
-            IFS='|' read -r key _ _ <<< "${LEVELS[$i]}"
-            SELECTED_LEVELS="${SELECTED_LEVELS:+$SELECTED_LEVELS,}$key"
+            IFS='|' read -r name _ <<< "${LEVELS[$i]}"
+            SELECTED_LEVELS="${SELECTED_LEVELS:+$SELECTED_LEVELS,}$name"
         fi
     done
 
@@ -380,9 +373,7 @@ select_agents() {
                 ;;
         esac
 
-        # Move cursor up to redraw (number of agents + 2 lines for prompt)
-        local lines_up=$(( ${#AGENTS[@]} + 3 ))
-        echo -en "\033[${lines_up}A\033[J"
+        redraw_up $(( ${#AGENTS[@]} + 3 ))
     done
 
     # Build selected agents list

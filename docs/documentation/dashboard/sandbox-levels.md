@@ -245,30 +245,32 @@ The dashboard ships only the `normal` level enabled out of the box — that's th
 
 There are two paths.
 
-### 5.1 During install
+### 5.1 Through the quickstart TUI
 
-`install.sh` prompts for which extra levels to enable across all supported agents:
+`quickstart.sh` Step 2 ("Sandbox levels") is a number-toggle multi-select where `normal` is locked on and `paranoid` / `permissive` are togglable:
 
 ```
-  Sandbox levels for the N-picker:
-    [x] normal       (always on — the default level)
-    [ ] paranoid     (kernel-isolated network, ephemeral home scratch)
-    [ ] permissive   (gh CLI + GitHub allowlist)
-  Enable paranoid? (y/n):
-  Enable permissive? (y/n):
+  Step 2: Sandbox levels
+
+    [x] 1) normal — always on — the default level (locked)
+    [ ] 2) paranoid — kernel-isolated network, ephemeral home scratch
+    [ ] 3) permissive — gh CLI + GitHub allowlist
+
+    Press 2-3 to toggle, Enter to confirm
+    >
 ```
 
-For each level you say yes to, the installer reads `lince-dashboard/agents-template.toml`, finds every `[agents.<agent>-<level>]` block, and appends it (with its `[agents.<agent>-<level>.env_vars]` companion, if present) into your `~/.config/lince-dashboard/config.toml`. Re-running install does not duplicate blocks already present — it's safe to re-run any time.
+Press `2` and/or `3` to toggle, `Enter` to confirm. The selection is forwarded to `lince-dashboard/install.sh` as `--sandbox-levels=...` (you can also set `LINCE_SANDBOX_LEVELS` for headless installs). For each selected level, `install.sh` reads `lince-dashboard/agents-template.toml`, finds every `[agents.<agent>-<level>]` block, and appends it (with its `[agents.<agent>-<level>.env_vars]` companion, if present) into your `~/.config/lince-dashboard/config.toml`. Re-running is safe — already-present blocks are not duplicated.
 
-For headless installs (CI, scripted setup), pass `--sandbox-levels=paranoid,permissive` or set `LINCE_SANDBOX_LEVELS=paranoid,permissive` to skip the prompt.
+`install.sh` invoked **standalone** (without going through the quickstart) does not prompt. Pass `--sandbox-levels=paranoid,permissive` or set `LINCE_SANDBOX_LEVELS` to opt in.
 
-**Per-agent feature support is implicit.** Only agents that ship a `[agents.<agent>-<level>]` block in `agents-template.toml` get a variant for that level. Agents without one are silently skipped — your selection is honoured for every agent that does support the level. Today claude and codex support both paranoid and permissive; gemini, opencode, and pi will follow once their respective tasks land (LINCE-100/101/102), and the install prompt will pick them up automatically.
+**Per-agent feature support is implicit.** Only agents that ship a `[agents.<agent>-<level>]` block in `agents-template.toml` get a variant for that level. Agents without one are silently skipped — your selection is honoured for every agent that does support the level. Today claude and codex support both paranoid and permissive; gemini, opencode, and pi follow once their respective tasks land (LINCE-100/101/102), and the multi-select picks them up automatically.
 
 ### 5.2 After install (manual)
 
 Open `~/.config/lince-dashboard/agents-template.toml` (installed by `install.sh` as a copy-paste source — **not** loaded by the dashboard), copy any `[agents.<agent>-<level>]` block (and its `[agents.<agent>-<level>.env_vars]` companion) into your `~/.config/lince-dashboard/config.toml`, and restart the dashboard. The plugin merges your `config.toml` on top of `agents-defaults.toml` and the new entry shows up in the picker.
 
-This is the same mechanism the install prompt uses internally — the prompt is just the bulk-apply UX. Use the manual path when you want a single agent at a single level, or when you're hand-curating your config.
+This is the same mechanism the quickstart TUI uses internally — the TUI is just the bulk-apply UX. Use the manual path when you want a single agent at a single level, or when you're hand-curating your config.
 
 ## 6. Customization
 

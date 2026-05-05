@@ -9,17 +9,8 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# CLI flag / env var: which extra sandbox levels to enable in the N-picker.
-# `normal` is always implicit (the dashboard ships it as the default level
-# in agents-defaults.toml). The interactive selection lives in the top-level
-# quickstart.sh; install.sh only honours the resolved choice it forwards.
-#
-#   --sandbox-levels=paranoid,permissive
-#   LINCE_SANDBOX_LEVELS=paranoid env: same effect.
-#
-# Empty string means "normal only" (no extras). Unset means "normal only" too;
-# install.sh does not prompt the user — when run standalone, edit the user's
-# config.toml manually or pass the flag.
+# --sandbox-levels=... / LINCE_SANDBOX_LEVELS: extra levels beyond `normal`.
+# Resolved interactively by quickstart.sh and forwarded to install.sh.
 SANDBOX_LEVELS_OPT_SET=false
 SANDBOX_LEVELS_OPT=""
 for arg in "$@"; do
@@ -339,7 +330,6 @@ if [ -n "$SELECTED_LEVELS" ] && [ -f "$AGENTS_TEMPLATE_DST" ]; then
     if ! command -v python3 >/dev/null 2>&1; then
         echo -e "${YELLOW}  ⚠ python3 not found — cannot apply --sandbox-levels; skipping${NC}"
     else
-        touch "$USER_CONFIG"
         added=$(python3 "$SCRIPT_DIR/scripts/apply-sandbox-levels.py" \
                     "$AGENTS_TEMPLATE_DST" "$USER_CONFIG" "$SELECTED_LEVELS")
         if [ -n "$added" ]; then

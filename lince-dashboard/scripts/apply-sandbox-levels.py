@@ -30,11 +30,6 @@ def split_sections(text: str) -> dict[str, str]:
     return sections
 
 
-def has_section(cfg_text: str, agent_name: str) -> bool:
-    pattern = rf"^\[agents\.{re.escape(agent_name)}\]\s*$"
-    return re.search(pattern, cfg_text, re.M) is not None
-
-
 def main(argv: list[str]) -> int:
     if len(argv) != 4:
         print(__doc__, file=sys.stderr)
@@ -53,21 +48,22 @@ def main(argv: list[str]) -> int:
 
     template_text = template_path.read_text()
     sections = split_sections(template_text)
-
     cfg_text = cfg_path.read_text() if cfg_path.exists() else ""
+    existing = {m.group(1) for m in SECTION_RE.finditer(cfg_text)}
 
     added: list[str] = []
     for level in levels:
         head_re = re.compile(rf"^\[agents\.([\w-]+)-{re.escape(level)}\]\s*$", re.M)
         for hm in head_re.finditer(template_text):
             agent_name = f"{hm.group(1)}-{level}"
-            if has_section(cfg_text, agent_name):
+            block_key = f"[agents.{agent_name}]"
+            if block_key in existing:
                 continue
-            block = sections.get(f"[agents.{agent_name}]", "")
-            env_block = sections.get(f"[agents.{agent_name}.env_vars]", "")
+            block = sections.get(block_key, "")
             if not block:
                 continue
             cfg_text = cfg_text.rstrip() + "\n\n" + block
+            env_block = sections.get(f"[agents.{agent_name}.env_vars]", "")
             if env_block:
                 cfg_text = cfg_text.rstrip() + "\n\n" + env_block
             added.append(agent_name)
