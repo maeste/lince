@@ -4,7 +4,7 @@ title: Three sandbox levels — opencode follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 13:42'
+updated_date: '2026-05-05 19:02'
 labels:
   - sandbox
   - lince-dashboard
@@ -12,6 +12,7 @@ labels:
 milestone: m-13
 dependencies:
   - LINCE-98
+  - LINCE-104
 references:
   - 'https://github.com/RisorseArtificiali/lince/issues/51'
   - 'https://github.com/RisorseArtificiali/lince/issues/47'
@@ -171,4 +172,38 @@ curl -s https://attacker.com 2>&1   # netns-level fail
 - `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
 
 For the Bun/Landlock workaround specifically, the existing `[agents.opencode-nono]` entry in `agents-defaults.toml` is the canonical reference.
+
+## 2026-05-05 — helper available since LINCE-99: `scratch_home_dirs`
+
+LINCE-99 introduced a generic, agent-agnostic ephemeral scratch mechanism in `sandbox/agent-sandbox`. Use it instead of hand-rolling per-agent scratch logic on the bwrap path.
+
+**What it does.** `agent_cfg.scratch_home_dirs` (list[str], default `[]`). When non-empty, `cmd_run` (bwrap path) creates a `tempfile.mkdtemp` per entry under `$XDG_RUNTIME_DIR` (or `/tmp`), `rsync -a`-seeds it from the real `~/<subdir>` if it exists, bind-mounts it over `$HOME/<subdir>` inside bwrap, and `shutil.rmtree`s it in the run's `finally` block. `build_bwrap_cmd` filters those subdirs out of `home_ro_dirs`/`home_rw_dirs` so the real dir is never bound — even briefly. Requires `rsync` on the host; agent-sandbox errors out with a clear install hint if it's missing.
+
+**Nested subdirs supported.** The implementation matches by absolute target path (`home_p / sub_clean`), so `.config/opencode` works as well as a flat name like `.codex`. rsync `-a` on a destination with a trailing slash creates the parent dir (`.config/`) automatically when seeding from source.
+
+**For opencode.** Add to `sandbox/profiles/opencode-paranoid.toml`:
+```toml
+[agents.opencode]
+scratch_home_dirs = [".config/opencode"]
+```
+No other code change needed for the bwrap-paranoid scratch — agent-sandbox handles rsync, bind, and cleanup.
+
+**For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic stays — add the opencode match arm with `agent_home_subdir = ".config/opencode"`. Note that the **Bun/Landlock workaround** must still compose with the paranoid bash wrapper: pick option (a) or (b) from the existing notes §2 — the scratch_home_dirs helper is orthogonal to the inner-command shape.
+
+**Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
+
+## 2026-05-05 — organisation change: variants go in agents-template.toml (LINCE-104)
+
+LINCE-104 splits `lince-dashboard/agents-defaults.toml` (loaded) from a new `lince-dashboard/agents-template.toml` (reference-only, not loaded). After LINCE-104 lands:
+
+- `agents-defaults.toml` carries only the **active** opencode entry: a single `[agents.opencode]` with `sandbox_level = "normal"` + `sandbox_backend`, plus `[agents.opencode-unsandboxed]` if kept separate. **No commented variant blocks.**
+- `agents-template.toml` carries the **alternative variants** as fully uncommented TOML: `[agents.opencode-paranoid]` and `[agents.opencode-permissive]`. Users copy what they want into their own `~/.config/lince-dashboard/config.toml`.
+
+This task is updated to:
+
+1. Depend on LINCE-104 (so the file split exists before opencode variants are written).
+2. Add `[agents.opencode-paranoid]` and `[agents.opencode-permissive]` to `agents-template.toml` (not as commented blocks anywhere).
+3. The new `[agents.opencode]` entry in `agents-defaults.toml` is the only loaded opencode entry; it carries `sandbox_level = "normal"`.
+
+Nothing else in the existing plan changes — the Bun/Landlock workaround, LLM-endpoint allowlist decision, plugin match arm, and `scratch_home_dirs = [".config/opencode"]` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
 <!-- SECTION:NOTES:END -->

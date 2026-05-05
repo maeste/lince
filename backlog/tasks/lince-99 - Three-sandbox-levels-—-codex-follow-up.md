@@ -1,10 +1,11 @@
 ---
 id: LINCE-99
 title: Three sandbox levels — codex follow-up
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - claude
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-05 13:42'
+updated_date: '2026-05-05 17:19'
 labels:
   - sandbox
   - lince-dashboard
@@ -82,14 +83,63 @@ LLM provider for proxy/credential injection: **openai** (nono keystore account: 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 agents-defaults.toml has a single [agents.codex] with sandbox_level/sandbox_backend; codex-nono removed
-- [ ] #2 Codex internal sandbox conflict preserved across all three levels (no regression in disable_inner_sandbox_args = ['--sandbox', 'danger-full-access'])
-- [ ] #3 OPENAI_API_KEY: passthrough in normal/permissive, proxy-injected in paranoid (no env var leak)
+- [x] #1 agents-defaults.toml has a single [agents.codex] with sandbox_level/sandbox_backend; codex-nono removed
+- [x] #2 Codex internal sandbox conflict preserved across all three levels (no regression in disable_inner_sandbox_args = ['--sandbox', 'danger-full-access'])
+- [x] #3 OPENAI_API_KEY: passthrough in normal/permissive, proxy-injected in paranoid (no env var leak)
 - [ ] #4 sandbox_level=paranoid on nono: only api.openai.com reachable; arbitrary outbound fails
 - [ ] #5 sandbox_level=permissive: gh auth + gh pr work; docker ps fails
-- [ ] #6 N-picker shows 'OpenAI Codex' once
-- [ ] #7 Master doc page (sandbox-levels.md) extended with codex-specific rows: per-level behavior, codex quirks (inner-sandbox conflict, bwrap_conflict), OPENAI_API_KEY handling per level
+- [x] #6 N-picker shows 'OpenAI Codex' once
+- [x] #7 Master doc page (sandbox-levels.md) extended with codex-specific rows: per-level behavior, codex quirks (inner-sandbox conflict, bwrap_conflict), OPENAI_API_KEY handling per level
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+## Implementation plan
+
+Branch: `feature/lince-99-sandbox-levels-codex` (off main).
+
+### 1. New files
+
+**Nono profiles** (`lince-dashboard/nono-profiles/`):
+- `lince-codex-paranoid.json` — extends `lince-codex`; `network.credentials = ["openai"]`; `filesystem.allow = ["$WORKDIR", "$HOME"]` (per-agent scratch HOME, real home not mounted; bash wrapper supplies the per-agent scratch); no `allow_domain` (auto-included from credential rule, mirroring claude-paranoid).
+- `lince-codex-permissive.json` — extends `lince-codex`; `network.credentials = ["openai"]` + `allow_domain: [api.github.com, github.com, objects.githubusercontent.com]` + `network_profile: "developer"`; `filesystem.read` adds `$HOME/.config/gh`, `$HOME/.cache`, `$HOME/.ssh/known_hosts`.
+
+**Bwrap fragments** (`sandbox/profiles/`):
+- `codex-paranoid.toml` — `[env.extra] OPENAI_API_KEY = "$OPENAI_API_KEY"` (auto-rule); `[security] credential_proxy = true`, `unshare_net = true`, `allow_domains = []` (api.openai.com auto-included). NO `[claude]` block (codex has its own state in `~/.codex` — see "scratch limitation" below).
+- `codex-permissive.toml` — `[sandbox] home_ro_dirs = [".config/gh", ".cache", ".ssh/known_hosts"]`; `[env] passthrough = ["GH_TOKEN", "GITHUB_TOKEN"]`; `[security] credential_proxy = true`, `block_git_push = true`, `allow_domains = ["api.github.com", "github.com", "objects.githubusercontent.com"]`.
+
+### 2. Modified files
+
+**`lince-dashboard/agents-defaults.toml`**:
+- Rename `[agents.codex]` (current, unsandboxed) → `[agents.codex-unsandboxed]` to match claude pattern.
+- Remove `[agents.codex-bwrap]` and `[agents.codex-nono]`.
+- Add a single new `[agents.codex]` entry: `sandboxed = true`, `sandbox_level = "normal"`, `bwrap_conflict = true`, `disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]`, `home_ro_dirs = ["~/.codex/"]`, `ignore_wrapper_start = true`, `env_vars.OPENAI_API_KEY = "$OPENAI_API_KEY"`, color `cyan`. Mirror claude's commented `-paranoid` / `-permissive` example blocks.
+
+**`lince-dashboard/plugin/src/agent.rs`** — `synthesize_sandboxed_command`:
+- Add `"codex"` match arm: `inner_command = ["codex", "--full-auto", "--sandbox", "danger-full-access"]` (hardcode disable_inner_sandbox_args for nono path; bwrap path goes through agent-sandbox which reads `agent_cfg.disable_inner_sandbox_args` from sandbox/agents-defaults.toml as today).
+- Add `agent_home_subdir = ".codex"` for paranoid bash wrapper.
+- For **AgentSandbox** (bwrap) backend: always emit `--agent <base>` so codex (and future gemini/opencode/pi) lands in agent-sandbox's per-agent dispatch. Claude's case is unchanged in behavior because `--agent claude` matches the script default.
+
+**`docs/documentation/dashboard/sandbox-levels.md`**:
+- Append a "### 8. Per-agent specifics — codex" section: per-level table row(s), inner-sandbox conflict (`--sandbox danger-full-access`) note, OPENAI_API_KEY proxy injection, brief note on common custom levels (e.g. `lince-codex-with-azure` for Azure OpenAI).
+- Brief footnote: under bwrap paranoid, real `~/.codex` is still bind-mounted RW (no codex-side `use_real_config` mechanism today); under nono paranoid, the bash wrapper rsyncs to a scratch HOME and discards on stop. nono is the strongest paranoid backend for codex.
+
+### 3. install.sh
+No change — `lince-dashboard/install.sh` already copies every `lince-*.json` and the bwrap fragment files are picked up by agent-sandbox from its profiles dir on a fresh install.
+
+### 4. Manual verification (per AC)
+1. `agent-sandbox run -a codex --sandbox-level paranoid --dry-run -p .` → bwrap argv contains `--unshare-user --uid <real_uid>`, no OPENAI_API_KEY, HTTP_PROXY set, codex receives `--sandbox danger-full-access`.
+2. nono paranoid sandbox: `curl https://attacker.com` fails kernel-side, `curl -x http://127.0.0.1:8118 https://api.openai.com/v1/models` returns 200.
+3. permissive: `gh auth status` works, `docker ps` fails (binary not present).
+4. N-picker: only one entry labeled "OpenAI Codex" (the new `[agents.codex]`); `codex-unsandboxed` shows separately.
+
+### 5. Out of scope (explicit)
+- Bwrap-paranoid scratch `~/.codex` (would need a codex analog of `[claude] use_real_config = false`; not blocking ACs since #4 specifies nono for paranoid network isolation).
+- docker / podman in permissive.
+- direct `git push` (gh-only).
+- gemini / opencode / pi (separate tasks).
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
@@ -177,4 +227,27 @@ ls ~/.agent-sandbox/proxy-*.sock 2>/dev/null
 - `405c3a11` / `5f987859` — review fixes (fail-fast socat, drop redundant `allow_domains`, dedupe shell_quote, stale-socket sweep)
 
 Reading the diffs of those commits is faster than re-discovering the same problem from a stack trace.
+
+## 2026-05-05 — implementation landed on branch `feature/lince-99-sandbox-levels-codex` (uncommitted, awaiting user manual test before push)
+
+### Files
+New:
+- `lince-dashboard/nono-profiles/lince-codex-paranoid.json`
+- `lince-dashboard/nono-profiles/lince-codex-permissive.json`
+- `sandbox/profiles/codex-paranoid.toml`
+- `sandbox/profiles/codex-permissive.toml`
+
+Modified:
+- `lince-dashboard/agents-defaults.toml` — collapsed `[agents.codex]` (legacy unsandboxed) + `[agents.codex-bwrap]` + `[agents.codex-nono]` into a single `[agents.codex]` with `sandbox_level="normal"` + `bwrap_conflict=true` + `disable_inner_sandbox_args=["--sandbox","danger-full-access"]`. Renamed legacy unsandboxed entry to `[agents.codex-unsandboxed]` (mirrors `claude-unsandboxed`). Removed the `[agents.codex-nono]` block from the nono-variants comment block. Added commented `[agents.codex-paranoid]` / `[agents.codex-permissive]` example blocks.
+- `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command` — added `"codex"` arm to `inner_command` (with `--sandbox danger-full-access` baked in for the nono path), added `"codex" => ".codex"` to the `agent_home_subdir` match, and made the AgentSandbox branch always emit `--agent <base>` so codex/future-agents dispatch correctly (claude default is unchanged).
+- `docs/documentation/dashboard/sandbox-levels.md` — new §7 “Per-agent specifics — codex” with per-level table, inner-sandbox-conflict note, OPENAI_API_KEY-per-level note, and bwrap-paranoid scratch-`~/.codex` limitation. Added OpenAI keystore commands to §6.
+
+### Build / static checks
+- `cargo build --target wasm32-wasip1` succeeds.
+- All four new TOML/JSON files parse cleanly with python `tomllib`/`json`.
+- agent-sandbox dry-run not exercised — no `~/.agent-sandbox/config.toml` on this host. AC #4 / #5 need runtime validation by the user.
+
+### Notes / deviations from plan
+- For bwrap paranoid, real `~/.codex` is still bind-mounted RW (no codex analog of `[claude] use_real_config = false`). Documented as a limitation in §7; recommendation is to use nono paranoid for the strongest codex isolation. The `home_rw_dirs` append-merge semantics of `merge_sandbox_level` make subtracting from the `[agents.codex]` `home_ro_dirs` impractical from a fragment.
+- `_collect_proxy_rules` already handles unset `OPENAI_API_KEY` (silent drop), so the auto-mapping in `codex-paranoid.toml`'s `[env.extra]` is safe even without the host var set.
 <!-- SECTION:NOTES:END -->

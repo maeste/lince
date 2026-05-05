@@ -109,12 +109,27 @@ fn synthesize_sandboxed_command(
     project_dir: &str,
 ) -> Option<Vec<String>> {
     let base = agent_type_base_name(agent_type);
-    let inner_command: Vec<String> = match base {
-        "claude" => vec![
-            "claude".to_string(),
-            "--dangerously-skip-permissions".to_string(),
-        ],
-        // codex/gemini/opencode/pi land in follow-up tasks (lince-99..102).
+    // Per-agent dispatch: (inner argv, $HOME subdir for the paranoid scratch).
+    // codex's `--sandbox danger-full-access` disables its own filesystem
+    // sandbox so it doesn't fight ours; the bwrap path also reads
+    // disable_inner_sandbox_args from agents-defaults.toml.
+    let (inner_command, agent_home_subdir): (Vec<String>, &str) = match base {
+        "claude" => (
+            vec![
+                "claude".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+            ".claude",
+        ),
+        "codex" => (
+            vec![
+                "codex".to_string(),
+                "--full-auto".to_string(),
+                "--sandbox".to_string(),
+                "danger-full-access".to_string(),
+            ],
+            ".codex",
+        ),
         _ => return None,
     };
 
@@ -129,6 +144,8 @@ fn synthesize_sandboxed_command(
                 project_dir.to_string(),
                 "--id".to_string(),
                 agent_id.to_string(),
+                "--agent".to_string(),
+                base.to_string(),
             ];
             if level != "normal" {
                 cmd.push("--sandbox-level".to_string());
@@ -143,31 +160,11 @@ fn synthesize_sandboxed_command(
                 .collect::<Vec<_>>()
                 .join(" ");
             if level == "paranoid" {
-                // Self-contained bash wrapper:
-                //   1. Make a per-agent scratch dir under $XDG_RUNTIME_DIR
-                //   2. rsync the real ~/.<agent>/ into the scratch dir so
-                //      modifications inside the sandbox stay isolated
-                //   3. Re-run nono with HOME pointed at the scratch dir
-                //   4. On exit (clean or trapped SIGINT/SIGTERM), rm -rf scratch
-                //
-                // No `exec` so the bash process stays alive to honor the EXIT
-                // trap; SIGKILL bypasses cleanup but that's acceptable for an
-                // ephemeral scratch dir.
-                //
-                // All caller-supplied values (agent_id, project_dir, profile,
-                // inner command) are shell_quote'd before substitution, so the
-                // wrapper is safe even if any of them contain shell
-                // metacharacters.
-                let agent_home_subdir = match base {
-                    "claude" => ".claude",
-                    // follow-ups add codex/.codex, gemini/.gemini, etc.
-                    _ => return None,
-                };
-                // Sentinels use `@@…@@` rather than bare uppercase words so
-                // accidental substring overlap is impossible (e.g. a
-                // hypothetical future `AGENT_IDENTITY` placeholder would
-                // collide with `AGENT_ID` if we used bare words). With the
-                // chosen format, replacement order is irrelevant.
+                // Bash wrapper: mkdir scratch under $XDG_RUNTIME_DIR, rsync
+                // ~/.<agent>/ into it, run nono with HOME=scratch, rm scratch
+                // on EXIT. No `exec` so the trap fires. Caller-supplied values
+                // are shell_quote'd before substitution. `@@…@@` sentinels
+                // can't accidentally substring-overlap each other.
                 let bash = String::from(
                     "set -e; \
                      SCRATCH=\"${XDG_RUNTIME_DIR:-/tmp}/lince-@@AGENT_ID@@\"; \

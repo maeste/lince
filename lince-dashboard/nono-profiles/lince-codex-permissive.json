@@ -1,0 +1,25 @@
+{
+  "extends": "lince-codex",
+  "meta": {
+    "name": "lince-codex-permissive",
+    "description": "Codex permissive: OpenAI API + GitHub allowlist; reads ~/.config/gh, ~/.cache, ~/.ssh/known_hosts so gh CLI works. No docker, no direct git push."
+  },
+  "filesystem": {
+    "allow": ["$WORKDIR"],
+    "read": [
+      "$HOME/.config/gh",
+      "$HOME/.cache",
+      "$HOME/.ssh/known_hosts",
+      "$HOME/.local/lib"
+    ]
+  },
+  "network": {
+    "network_profile": "developer",
+    "credentials": ["openai"],
+    "allow_domain": [
+      "api.github.com",
+      "github.com",
+      "objects.githubusercontent.com"
+    ]
+  }
+}

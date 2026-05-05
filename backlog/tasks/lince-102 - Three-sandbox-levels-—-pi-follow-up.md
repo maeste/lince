@@ -4,7 +4,7 @@ title: Three sandbox levels — pi follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-05 13:41'
+updated_date: '2026-05-05 19:02'
 labels:
   - sandbox
   - lince-dashboard
@@ -12,6 +12,7 @@ labels:
 milestone: m-13
 dependencies:
   - LINCE-98
+  - LINCE-104
 references:
   - 'https://github.com/RisorseArtificiali/lince/issues/52'
   - 'https://github.com/RisorseArtificiali/lince/issues/47'
@@ -165,4 +166,38 @@ printenv OPENAI_API_KEY    # empty
 
 - `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `7f5898c4` (BrokenPipe), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
 For pi's multi-provider model specifically, see the original PR #40 commit history (when the 18-var passthrough was added) and the `[agents.pi.env_vars]` block in `lince-dashboard/agents-defaults.toml`.
+
+## 2026-05-05 — helper available since LINCE-99: `scratch_home_dirs`
+
+LINCE-99 introduced a generic, agent-agnostic ephemeral scratch mechanism in `sandbox/agent-sandbox`. Use it instead of hand-rolling per-agent scratch logic on the bwrap path.
+
+**What it does.** `agent_cfg.scratch_home_dirs` (list[str], default `[]`). When non-empty, `cmd_run` (bwrap path) creates a `tempfile.mkdtemp` per entry under `$XDG_RUNTIME_DIR` (or `/tmp`), `rsync -a`-seeds it from the real `~/<subdir>` if it exists, bind-mounts it over `$HOME/<subdir>` inside bwrap, and `shutil.rmtree`s it in the run's `finally` block. `build_bwrap_cmd` filters those subdirs out of `home_ro_dirs`/`home_rw_dirs` so the real dir is never bound — even briefly. Requires `rsync` on the host; agent-sandbox errors out with a clear install hint if it's missing.
+
+**For pi.** Add to `sandbox/profiles/pi-paranoid.toml`:
+```toml
+[agents.pi]
+scratch_home_dirs = [".pi"]
+```
+No other code change needed for the bwrap-paranoid scratch — agent-sandbox handles rsync, bind, and cleanup.
+
+**Note on `pi_providers` filtering.** The `scratch_home_dirs` mechanism is purely about filesystem isolation of `~/.pi`. It does NOT affect env-var passthrough or proxy rule selection — those are still the architectural call this task has to make (option a/b/c in §2 of the existing notes). The two are orthogonal: scratch the config dir AND filter the env vars.
+
+**For the nono path** (synthesized by `lince-dashboard/plugin/src/agent.rs::synthesize_sandboxed_command`), the existing bash-wrapper logic stays — add the pi match arm with `agent_home_subdir = ".pi"`. Both backends now give the same user-facing guarantee: ephemeral, per-run, fresh snapshot of `~/.pi`, discarded on exit.
+
+**Reference.** See `sandbox/profiles/codex-paranoid.toml` (commit c60cadfc on `feature/lince-99-sandbox-levels-codex`) for the working pattern.
+
+## 2026-05-05 — organisation change: variants go in agents-template.toml (LINCE-104)
+
+LINCE-104 splits `lince-dashboard/agents-defaults.toml` (loaded) from a new `lince-dashboard/agents-template.toml` (reference-only, not loaded). After LINCE-104 lands:
+
+- `agents-defaults.toml` carries only the **active** pi entry: a single `[agents.pi]` with `sandbox_level = "normal"` + `sandbox_backend` + `pi_providers` (per the multi-provider design call this task makes), plus `[agents.pi-unsandboxed]` if kept separate. **No commented variant blocks.**
+- `agents-template.toml` carries the **alternative variants** as fully uncommented TOML: `[agents.pi-paranoid]` and `[agents.pi-permissive]`, each with its own `pi_providers` example values. Users copy what they want into their own `~/.config/lince-dashboard/config.toml` and edit the providers list.
+
+This task is updated to:
+
+1. Depend on LINCE-104 (so the file split exists before pi variants are written).
+2. Add `[agents.pi-paranoid]` and `[agents.pi-permissive]` to `agents-template.toml` (not as commented blocks anywhere).
+3. The new `[agents.pi]` entry in `agents-defaults.toml` is the only loaded pi entry; it carries `sandbox_level = "normal"`.
+
+Nothing else in the existing plan changes — the multi-provider design (option a/b/c on `pi_providers` filtering), plugin match arm, and `scratch_home_dirs = [".pi"]` opt-in are all unchanged. Only the destination file for the alternative-variant agent entries shifts.
 <!-- SECTION:NOTES:END -->

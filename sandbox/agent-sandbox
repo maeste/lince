@@ -213,12 +213,13 @@ HARDCODED_CLAUDE_DEFAULTS: dict = {
     "home_rw_dirs": [],
     "bwrap_conflict": False,
     "disable_inner_sandbox_args": [],
+    "scratch_home_dirs": [],
 }
 
 # Keys that every agent config must have (used for validation/defaults).
 AGENT_CONFIG_KEYS: tuple[str, ...] = (
     "command", "default_args", "env", "home_ro_dirs", "home_rw_dirs",
-    "bwrap_conflict", "disable_inner_sandbox_args",
+    "bwrap_conflict", "disable_inner_sandbox_args", "scratch_home_dirs",
 )
 
 # nono built-in profile names — agents that have a matching nono profile
@@ -1171,6 +1172,8 @@ def resolve_agent_config(config: dict, agent_name: str) -> dict:
         "home_rw_dirs": [],
         "bwrap_conflict": False,
         "disable_inner_sandbox_args": [],
+        # Subdirs bound to per-run ephemeral scratch dirs (see cmd_run §5c).
+        "scratch_home_dirs": [],
     }
 
     # --- Layer 1: shipped defaults from agents-defaults.toml -----------------
@@ -1704,7 +1707,8 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                     agent_config: dict | None = None,
                     agent_id: str | None = None,
                     agent_name: str = "claude",
-                    proxy_env: dict[str, str] | None = None) -> list[str]:
+                    proxy_env: dict[str, str] | None = None,
+                    scratch_binds: list[tuple[str, str]] | None = None) -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
@@ -1782,14 +1786,29 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
             cmd += ["--ro-bind", str(full), str(full)]
 
     # --- 5b. Agent-specific home dirs ----------------------------------------
+    # Subdirs that §5c will rebind from a scratch dir are skipped here so
+    # the real home dir is never exposed, even momentarily.
+    scratched_targets: set[str] = {target for _, target in (scratch_binds or [])}
+
+    def _is_scratched(d: str) -> bool:
+        return str(home_p / d.lstrip("/").rstrip("/")) in scratched_targets
+
     for d in agent_cfg.get("home_ro_dirs", []):
+        if _is_scratched(d):
+            continue
         full = home_p / d
         if full.exists():
             cmd += ["--ro-bind", str(full), str(full)]
     for d in agent_cfg.get("home_rw_dirs", []):
+        if _is_scratched(d):
+            continue
         full = home_p / d
         full.mkdir(parents=True, exist_ok=True)
         cmd += ["--bind", str(full), str(full)]
+
+    # --- 5c. Ephemeral scratch binds (rsync-seeded in cmd_run) ---------------
+    for scratch_path, target in scratch_binds or []:
+        cmd += ["--bind", scratch_path, target]
 
     # --- 6. Project directory (read-write) — AFTER ro mounts so it wins ------
     project = str(project_dir.resolve())
@@ -2294,6 +2313,43 @@ def cmd_run(args, agent_extra: list[str]) -> None:
 
     # --- agent-sandbox (bwrap) backend path --------------------------------
 
+    # --- Ephemeral scratch home dirs (per-run snapshot) -------------------
+    scratch_binds: list[tuple[str, str]] = []
+    scratch_subdirs = agent_cfg.get("scratch_home_dirs", [])
+    if scratch_subdirs:
+        if not shutil.which("rsync"):
+            print(
+                "Error: scratch_home_dirs requires 'rsync' on the host. "
+                "Install via your package manager (e.g. `dnf install rsync` "
+                "or `apt install rsync`).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        scratch_root = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+        home_p = Path.home()
+        for subdir in scratch_subdirs:
+            sub_clean = subdir.lstrip("/").rstrip("/")
+            if not sub_clean:
+                continue
+            scratch_path = tempfile.mkdtemp(
+                prefix=f"agent-sandbox-{agent_name}-{os.getpid()}-",
+                dir=scratch_root,
+            )
+            real = home_p / sub_clean
+            if real.is_dir():
+                rsync = subprocess.run(
+                    ["rsync", "-a", "--", f"{real}/", f"{scratch_path}/"],
+                    check=False,
+                )
+                if rsync.returncode != 0:
+                    print(
+                        f"Warning: rsync of ~/{sub_clean} to scratch "
+                        f"returned {rsync.returncode}; agent will see a "
+                        f"partially-seeded scratch dir.",
+                        file=sys.stderr,
+                    )
+            scratch_binds.append((scratch_path, str(home_p / sub_clean)))
+
     # --- Credential proxy setup -------------------------------------------
     proxy_enabled = sec.get("credential_proxy", False)
     proxy: CredentialProxy | None = None
@@ -2435,7 +2491,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                           extra_rw_cli=args.rw, extra_ro_cli=args.ro,
                           agent_config=agent_cfg, agent_id=args.id,
                           agent_name=agent_name,
-                          proxy_env=proxy_env if proxy_env else None)
+                          proxy_env=proxy_env if proxy_env else None,
+                          scratch_binds=scratch_binds or None)
 
     # Paranoid wrap: create a userns + fresh netns OUTSIDE bwrap so we can
     # bring up loopback (needs CAP_NET_ADMIN, which non-setuid bwrap drops
@@ -2550,6 +2607,12 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             f"  bwrap fix   inner sandbox disabled via "
             f"{agent_cfg.get('disable_inner_sandbox_args', [])}"
         )
+    if scratch_binds:
+        scratched = ", ".join(
+            f"~/{Path(target).relative_to(Path.home())}"
+            for _, target in scratch_binds
+        )
+        print(f"  scratch     ephemeral copy of {scratched} (discarded on exit)")
     print(f"  permissions {'ask (safe mode)' if args.safe else 'per agent defaults'}")
     if args.rw:
         print(f"  extra rw    {', '.join(args.rw)}")
@@ -2580,6 +2643,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     finally:
         if proxy:
             proxy.stop()
+        for scratch_path, _ in scratch_binds:
+            shutil.rmtree(scratch_path, ignore_errors=True)
 
 
 def cmd_diff(args) -> None:

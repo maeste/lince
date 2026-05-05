@@ -1,0 +1,23 @@
+# Sandbox-policy fragment: codex — paranoid level.
+# See docs/documentation/dashboard/sandbox-levels.md for what paranoid
+# does and how to ship a custom level. Lists are append-merged with the
+# user's ~/.agent-sandbox/config.toml.
+
+[env.extra]
+# Auto-map so the credential proxy has something to inject; unset host
+# vars are silently dropped by _collect_proxy_rules.
+OPENAI_API_KEY = "$OPENAI_API_KEY"
+
+[agents.codex]
+# Per-run ephemeral copy of ~/.codex (rsync-seeded, bind-mounted, removed
+# on exit). Mirrors what the nono paranoid bash wrapper does.
+scratch_home_dirs = [".codex"]
+
+[security]
+credential_proxy = true
+unshare_net = true
+# api.openai.com is auto-included from the credential rule. Extend by
+# appending in your own config:
+#   [security]
+#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+allow_domains = []
