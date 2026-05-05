@@ -4,7 +4,7 @@ title: Three sandbox levels — opencode follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-04 20:50'
+updated_date: '2026-05-05 13:42'
 labels:
   - sandbox
   - lince-dashboard
@@ -107,4 +107,68 @@ Master doc page (created by lince-98) already covers the overall mechanism. This
 - Document OPENCODE_API_KEY handling per level (passthrough vs. proxy injection)
 
 Do **not** re-explain the overall mechanism.
+
+## Lessons from lince-98 (don't repeat the bugs we already hit)
+
+The claude prototype landed via PR #57. opencode is the trickiest of the four follow-ups because the **Bun/Landlock workaround interacts non-trivially with the paranoid bash wrapper**.
+
+### Required for opencode (per-agent work)
+
+1. **API key auto-mapping is provider-dependent.** opencode is a router, not a single-provider client — it forwards to whichever LLM the user has configured. Auto-map the most common ones in `sandbox/profiles/opencode-paranoid.toml`'s `[env.extra]`:
+   ```toml
+   [env.extra]
+   OPENCODE_API_KEY = "$OPENCODE_API_KEY"
+   ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
+   OPENAI_API_KEY = "$OPENAI_API_KEY"
+   GEMINI_API_KEY = "$GEMINI_API_KEY"
+   ```
+   `_collect_proxy_rules` skips empties and dedups by domain. Unset vars are silently dropped, so over-mapping is safe — the user gets exactly the providers they actually have configured.
+
+2. **The Bun/Landlock workaround inside the paranoid bash wrapper is the hard bit.** opencode's existing `[agents.opencode-nono]` command (current agents-defaults.toml ~line 188) is:
+   ```
+   bash -c 'exec "$(dirname "$(readlink -f "$(which opencode)")")/.opencode" "$@"' --
+   ```
+   This bypasses the Node.js launcher's `spawnSync` (which crashes under Landlock with SIGABRT on Bun-based binaries). For paranoid+nono, the OUTER paranoid wrapper from `synthesize_sandboxed_command` is *also* a bash invocation that does scratch-copy + HOME override + nono run. The two must compose. Two safe forms:
+   - **(a) Pass the bun-resolution as `inner_command`** — the outer paranoid wrapper joins this with shell_quote, embedding the inner bash as `'bash' '-c' '<resolution-script>' '--'` after `nono run ... --`. nono treats everything after `--` as argv and exec's it without further shell interpretation. Should work; **verify that `which opencode` resolves correctly inside the nono filesystem allowlist** — opencode's binary path needs to be readable through the profile's filesystem.read.
+   - **(b) Pre-resolve the binary path on the host** before constructing the inner_command, embed the absolute path directly. Simpler runtime; loses a layer of indirection. Drawback: stale path if the user's `which opencode` changes between dashboard launches. Acceptable trade.
+   Pick (a) or (b) and document in the doc page that opencode paranoid+bwrap is NOT needed for the same reason (bwrap doesn't use Landlock; the Bun/spawnSync bug doesn't apply). For paranoid+bwrap, the inner_command is just `["opencode"]`.
+
+3. **Add an opencode match arm in `synthesize_sandboxed_command`**:
+   - `agent_home_subdir`: `.config/opencode` — note this is **not flat under `$HOME`** like `.claude` / `.codex`. The rsync source/dest paths are `"$HOME/.config/opencode/"` and `"$SCRATCH/.config/opencode/"`. The current AGENT_HOME_SUBDIR placeholder is dropped into both — it's a relative path so subdirs work, but verify the bash form once.
+   - `inner_command`: see (2) above.
+
+4. **Permissive must passthrough `GH_TOKEN` / `GITHUB_TOKEN`** — copy from `claude-permissive.toml`.
+
+5. **Do NOT enumerate `allow_domains` for known LLM providers** in paranoid. The credential rules already cover them. Ship `allow_domains = []` with the header pattern.
+
+### Things ALREADY in master code (don't redo them)
+
+- Fragment lookup with agent prefix.
+- bwrap `--unshare-net` + outer unshare wrapper + socat + UID remap.
+- Stale socket cleanup, proxy framing, BrokenPipe handling, fail-fast socat.
+- shell_quote in the bash wrapper.
+
+### Sanity checks before declaring done
+
+```bash
+agent-sandbox run -a opencode --sandbox-level paranoid -- bash
+
+# 1. opencode binary launches inside paranoid (NO SIGABRT)
+opencode --version || echo "BUG: Bun/Landlock workaround broken"
+
+# 2. Scratch copy of ~/.config/opencode
+ls -la ~/.config/opencode/
+
+# 3. Kernel-level network block
+curl -s https://attacker.com 2>&1   # netns-level fail
+
+# 4. Whichever LLM provider the user has configured works through the proxy
+# (depends on OPENCODE_API_KEY / ANTHROPIC_API_KEY / etc. on the host)
+```
+
+### Reference: lince-98 commits worth reading
+
+- `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
+
+For the Bun/Landlock workaround specifically, the existing `[agents.opencode-nono]` entry in `agents-defaults.toml` is the canonical reference.
 <!-- SECTION:NOTES:END -->

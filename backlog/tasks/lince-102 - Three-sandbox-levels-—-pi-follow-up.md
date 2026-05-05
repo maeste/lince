@@ -4,7 +4,7 @@ title: Three sandbox levels — pi follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:33'
-updated_date: '2026-05-04 20:50'
+updated_date: '2026-05-05 13:41'
 labels:
   - sandbox
   - lince-dashboard
@@ -101,4 +101,68 @@ Master doc page (created by lince-98) already covers the overall mechanism. This
 - Custom profile examples: e.g. `lince-pi-bedrock-only.json` extending normal with AWS Bedrock allowlist
 
 Do **not** re-explain the overall mechanism.
+
+## Lessons from lince-98 (don't repeat the bugs we already hit)
+
+The claude prototype landed via PR #57. pi is the most architecturally interesting of the four follow-ups because of its **18+ provider env vars** and the design question around `pi_providers` (already raised in this task's description).
+
+### Required for pi (per-agent work)
+
+1. **API key auto-mapping is the EASY part for pi.** Every provider in pi's env passthrough list (see `[agents.pi.env_vars]` ~line 214 of agents-defaults.toml) that matches a `CREDENTIAL_PROXY_RULES` entry will get a proxy rule automatically. Auto-map all of them in `sandbox/profiles/pi-paranoid.toml`:
+   ```toml
+   [env.extra]
+   ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
+   ANTHROPIC_AUTH_TOKEN = "$ANTHROPIC_AUTH_TOKEN"
+   OPENAI_API_KEY = "$OPENAI_API_KEY"
+   GEMINI_API_KEY = "$GEMINI_API_KEY"
+   GOOGLE_API_KEY = "$GOOGLE_API_KEY"
+   # ...remaining 13+ providers...
+   ```
+   `_collect_proxy_rules` (sandbox/agent-sandbox:890) skips empties and dedups by domain — so over-mapping is safe. The user only gets rules for providers they have actually exported in their host env.
+
+2. **The HARD part is `pi_providers` — design before code.** Auto-mapping all 18 vars makes paranoid "reachable to whichever providers the user has". That's already strict (kernel netns + per-domain proxy allowlist) but it's not user-controllable: a user with all 18 keys in env reaches all 18 endpoints. The description proposes a `pi_providers` config field for explicit subsetting. Two layers to decide:
+   - **(a) Whitelist at proxy level**: `pi_providers = ["anthropic"]` → proxy only inserts rules for the anthropic key, even if other keys are in env. Simplest. Implementation: pass `pi_providers` to `_collect_proxy_rules` and filter out non-matching env vars before the rule scan.
+   - **(b) Whitelist at env-passthrough level**: pi_providers also restricts which env vars cross into the sandbox. The agent inside doesn't even SEE keys for non-listed providers. Stricter. Implementation: filter `agent_cfg.env_vars` and `[env.extra]` before they hit `cmd += ["--setenv", ...]` in build_bwrap_cmd.
+   - **(c) Both**: defense in depth. Probably the right answer, but more code.
+   Document the decision in the fragment header AND in the master doc page (sandbox-levels.md). This is the architectural call this task exists to make.
+
+3. **Add a pi match arm in `synthesize_sandboxed_command`**:
+   - `agent_home_subdir`: `.pi`
+   - `inner_command`: `vec!["pi".to_string()]`
+   No internal-sandbox conflict (`bwrap_conflict = false`), no Bun workaround, no OAuth — pi is the simplest of the four for the bash-wrapper layer.
+
+4. **Permissive must passthrough `GH_TOKEN` / `GITHUB_TOKEN`** — copy from `claude-permissive.toml`.
+
+5. **Do NOT enumerate `allow_domains = ["api.anthropic.com", "api.openai.com", ...]`** in paranoid. The credential rules auto-include the matched domains. Ship `allow_domains = []` with the header pattern.
+
+### Things ALREADY in master code (don't redo them)
+
+- Fragment lookup with agent prefix.
+- bwrap `--unshare-net` + outer unshare wrapper + socat bridge + UID remap.
+- Stale socket cleanup, proxy framing fixes, BrokenPipe handling, fail-fast socat.
+- shell_quote in the bash wrapper.
+
+### Sanity checks before declaring done
+
+```bash
+agent-sandbox run -a pi --sandbox-level paranoid -- bash
+
+# 1. Scratch copy of ~/.pi
+ls -la ~/.pi/
+
+# 2. Kernel network block
+curl -s https://attacker.com 2>&1   # netns-level fail
+
+# 3. Only allowlisted providers reachable
+# With pi_providers = ["anthropic"], OPENAI_API_KEY in env:
+curl -s -x http://127.0.0.1:8118 https://api.openai.com/v1/models
+# expected: 403 from the proxy (key wasn't injected because openai is not in pi_providers)
+# AND the OPENAI_API_KEY env var should NOT be visible inside the sandbox if you went with option (b) or (c) above:
+printenv OPENAI_API_KEY    # empty
+```
+
+### Reference: lince-98 commits worth reading
+
+- `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `7f5898c4` (BrokenPipe), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
+For pi's multi-provider model specifically, see the original PR #40 commit history (when the 18-var passthrough was added) and the `[agents.pi.env_vars]` block in `lince-dashboard/agents-defaults.toml`.
 <!-- SECTION:NOTES:END -->

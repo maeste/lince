@@ -4,7 +4,7 @@ title: Three sandbox levels — gemini follow-up
 status: To Do
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-04 20:50'
+updated_date: '2026-05-05 13:40'
 labels:
   - sandbox
   - lince-dashboard
@@ -99,4 +99,71 @@ Master doc page (created by lince-98) already covers the overall mechanism. This
 - Brief note on common custom-profile patterns for gemini (e.g. Vertex AI users)
 
 Do **not** re-explain the overall mechanism.
+
+## Lessons from lince-98 (don't repeat the bugs we already hit)
+
+The claude prototype landed via PR #57. Capturing the operational gotchas here so gemini doesn't redo them.
+
+### Required for gemini (per-agent work)
+
+1. **Auto-map the API key in `sandbox/profiles/gemini-paranoid.toml`'s `[env.extra]`.**
+   Without this, the credential proxy starts with zero rules and paranoid bails out with `unshare_net = true requires credential_proxy = true` (the message blames the wrong knob — it's actually "proxy enabled but no API keys found"). Pattern:
+   ```toml
+   [env.extra]
+   GEMINI_API_KEY = "$GEMINI_API_KEY"
+   GOOGLE_API_KEY = "$GOOGLE_API_KEY"
+   ```
+   Both forms get a credential rule entry mapping to `generativelanguage.googleapis.com` (see `CREDENTIAL_PROXY_RULES` ~line 238). `_collect_proxy_rules` skips empties, so unset vars are silently dropped — safe to map both even if the user only has one.
+
+2. **OAuth-only users are a special case.** If the user authenticates Gemini via Google OAuth (browser flow) instead of API key, the host env has no `GEMINI_API_KEY` set and the rule collector returns empty. The user's `gh auth status`-equivalent for gemini is via `~/.gemini/`, which the fragment bind-mounts read-only — but for **paranoid** the scratch copy isolates that, AND the OAuth refresh endpoint is on `oauth2.googleapis.com` (not in the credential rule). Two options:
+   - (a) Document that gemini paranoid requires API key auth; OAuth-authenticated users should use normal/permissive.
+   - (b) Extend the credential rule table to allow `oauth2.googleapis.com` and `accounts.google.com` for paranoid via `[security].allow_domains`. This loosens paranoid for one agent in a way that's hard to reverse. (a) is cleaner.
+   Either way, document the decision in the master doc and in the fragment header.
+
+3. **Add a gemini match arm in `synthesize_sandboxed_command`** in `lince-dashboard/plugin/src/agent.rs`:
+   - `agent_home_subdir`: `.gemini`
+   - `inner_command`: `vec!["gemini".to_string()]`
+   No internal sandbox conflict to handle (`disable_inner_sandbox_args = []` in current `[agents.gemini-bwrap]`), so the codex-style hardcode-or-pass-agent_cfg dilemma doesn't apply to gemini. Just add the arm.
+
+4. **Permissive must passthrough `GH_TOKEN` / `GITHUB_TOKEN`** — copy from `claude-permissive.toml`. Same reasoning as claude: keyring-auth users rely on the env path.
+
+5. **Do NOT enumerate `allow_domains = ["generativelanguage.googleapis.com"]`** in the paranoid fragment. `_is_allowed_host` auto-includes credential-rule domains. Ship `allow_domains = []` with the header comment pattern from `claude-paranoid.toml`.
+
+### Things ALREADY in master code (don't redo them)
+
+- Fragment lookup tries `<agent>-<level>.toml` before `<level>.toml` — `gemini-paranoid.toml` is found automatically.
+- bwrap `--unshare-net` setup, outer `unshare -U -n -r` wrapper, socat bridge, `--uid <real_uid>` remap.
+- Stale unix-socket cleanup at startup.
+- CredentialProxy framing (Connection: close, no duplicate headers, BrokenPipe-safe).
+- socat readiness fail-fast.
+- shell_quote in the bash wrapper.
+
+### Sanity checks before declaring done
+
+```bash
+agent-sandbox run -a gemini --sandbox-level paranoid -- bash
+
+# 1. Scratch copy of ~/.gemini
+ls -la ~/.gemini/   # scratch contents, not your real ~/.gemini
+
+# 2. Kernel-level network isolation
+curl -s https://attacker.com 2>&1   # must fail at netns level (no route / DNS error)
+
+# 3. Gemini API works through the proxy
+curl -s -x http://127.0.0.1:8118 \
+  https://generativelanguage.googleapis.com/v1beta/models | head
+
+# 4. OAuth flow: document the decision (allow refresh URL via allow_domains, OR
+#    document that paranoid requires API-key auth and OAuth users should use
+#    normal/permissive)
+
+# 5. Confirm no socat / socket leak on stop (same as claude)
+pgrep -af 'socat.*8118'
+ls ~/.agent-sandbox/proxy-*.sock 2>/dev/null
+```
+
+### Reference: lince-98 commits worth reading
+
+- `077b37d3` (fragment lookup), `9b214451` (auto-map API key), `9142c367` (UID remap), `a7933b48` (unshare wrapper), `9e62cf12` (proxy framing), `7f5898c4` (BrokenPipe), `858fe521` (GH_TOKEN passthrough), `405c3a11`/`5f987859` (review fixes).
+Reading those diffs is faster than re-discovering the same problems.
 <!-- SECTION:NOTES:END -->
