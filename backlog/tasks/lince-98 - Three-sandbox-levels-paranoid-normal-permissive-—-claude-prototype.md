@@ -1,10 +1,10 @@
 ---
 id: LINCE-98
 title: Three sandbox levels (paranoid/normal/permissive) — claude prototype
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-04 20:32'
-updated_date: '2026-05-05 09:34'
+updated_date: '2026-05-05 09:35'
 labels:
   - sandbox
   - lince-dashboard
