@@ -17,6 +17,7 @@ Multi-agent TUI dashboard for Zellij. Spawn, monitor, and switch between multipl
 - [Usage Guide](dashboard/usage-guide.md) -- keybindings, wizard, features
 - [Configuration Reference](dashboard/config-reference.md) -- dashboard and agent type config
 - [Agent Examples](dashboard/agent-examples.md) -- defaults, custom agents, advanced setups
+- [Sandbox Levels](dashboard/sandbox-levels.md) -- paranoid / normal / permissive: what each level does and how to ship a custom one
 
 ## Quick Links
 

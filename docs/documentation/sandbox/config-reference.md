@@ -190,6 +190,8 @@ Security features and hardening options.
 | `new_session` | bool | `false` | New terminal session: prevents terminal escape-sequence attacks. May interfere with Ctrl+C propagation |
 | `block_git_push` | bool | `true` | Block `git push` via a wrapper script placed first in `$PATH` |
 | `credential_proxy` | bool | `false` | Credential proxy: intercept API calls and inject credentials on the host side so API keys never enter the sandbox |
+| `unshare_net` | bool | `false` | Network namespace: run the agent inside a fresh network namespace (`bwrap --unshare-net`). Combined with `credential_proxy`, the proxy is reached via a unix socket bind-mounted into the sandbox. Set automatically by the `paranoid` sandbox level |
+| `allow_domains` | list of strings | `[]` | Extra hosts the credential proxy is allowed to forward to, on top of those covered by credential rules. Anything off-list returns `403`. Append-merged with sandbox level fragments |
 
 ```toml
 [security]
@@ -197,6 +199,8 @@ unshare_pid = true
 new_session = false
 block_git_push = true
 credential_proxy = false
+unshare_net = false
+allow_domains = []
 ```
 
 ---
@@ -213,6 +217,26 @@ Optional configuration for the credential proxy (only relevant when `[security].
 [credential_proxy]
 blocked_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]
 ```
+
+---
+
+## Sandbox Levels
+
+Three named levels package the security keys above into ready-made policies, selected per run with `agent-sandbox run --sandbox-level <name>`:
+
+- `paranoid` — kernel-level network isolation (`unshare_net = true`) plus auto-enabled credential proxy. The agent's only path to the network is the bind-mounted proxy socket.
+- `normal` — the default. Network is open, credential proxy is opt-in.
+- `permissive` — adds extra read-only host paths on top of `normal`.
+
+Levels are loaded from policy fragments in `sandbox/profiles/<level>.toml` (built-in) or `~/.agent-sandbox/profiles/<level>.toml` (user-supplied) and deep-merged on top of the resolved config. List keys (`home_ro_dirs`, `allow_domains`) are append-merged, so extending a level doesn't require forking the file:
+
+```toml
+# ~/.agent-sandbox/config.toml
+[security]
+allow_domains = ["pypi.org", "files.pythonhosted.org"]
+```
+
+For the full level matrix, per-backend behavior, and custom-level recipes, see [Sandbox Levels](dashboard/sandbox-levels.md).
 
 ---
 

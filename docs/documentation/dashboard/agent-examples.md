@@ -6,30 +6,33 @@ Preset agent types, configuration patterns, and examples for adding custom agent
 
 The following agent types ship in `agents-defaults.toml` and are available in the wizard out of the box.
 
-| Key | Display Name | Short | Sandboxed | Backend | Native Hooks | Notes |
-|-----|-------------|-------|-----------|---------|--------------|-------|
-| `claude` | Claude Code | CLA | Yes | agent-sandbox | Yes | Default. Rich status via `claude-status` pipe. |
-| `claude-unsandboxed` | Claude Code (unsandboxed) | CLU | No | -- | Yes | Red `CLU!` label. Supports profile-based provider switching. |
-| `claude-nono` | Claude Code (nono) | CLA | Yes | nono | Yes | Landlock/Seatbelt sandbox. |
-| `codex` | OpenAI Codex (unsandboxed) | CDX | No | -- | No | Runs with Codex's own sandbox. |
-| `codex-bwrap` | OpenAI Codex (sandboxed) | CDX | Yes | agent-sandbox | No | bwrap isolation. `bwrap_conflict` handled automatically. |
-| `codex-nono` | OpenAI Codex (nono) | CDX | Yes | nono | No | Landlock/Seatbelt sandbox. |
-| `gemini` | Google Gemini CLI | GEM | No | -- | No | Runs directly without sandbox. |
-| `gemini-bwrap` | Google Gemini CLI (sandboxed) | GEM | Yes | agent-sandbox | No | bwrap isolation. |
-| `gemini-nono` | Google Gemini CLI (nono) | GEM | Yes | nono | No | Landlock/Seatbelt sandbox. |
-| `opencode` | OpenCode | OPC | No | -- | No | Runs directly without sandbox. |
-| `opencode-bwrap` | OpenCode (sandboxed) | OPC | Yes | agent-sandbox | No | bwrap isolation. |
-| `opencode-nono` | OpenCode (nono) | OPC | Yes | nono | No | Landlock/Seatbelt sandbox. |
+| Key | Display Name | Short | Sandboxed | Native Hooks | Notes |
+|-----|-------------|-------|-----------|--------------|-------|
+| `claude` | Claude Code | CLA | Yes | Yes | Default. Rich status via `claude-status` pipe. |
+| `claude-unsandboxed` | Claude Code (unsandboxed) | CLU | No | Yes | Red `CLU!` label. |
+| `codex` | OpenAI Codex | CDX | Yes | No | `bwrap_conflict` handled automatically. |
+| `gemini` | Google Gemini CLI | GEM | Yes | No | |
+| `opencode` | OpenCode | OPC | Yes | No | |
+| `pi` | Pi (multi-provider) | PI  | Yes | No | Provider env vars passed through (`OPENAI_API_KEY`, etc.). |
 
-## Understanding the Variants
+Each sandboxed agent ships at `sandbox_level = "normal"` by default. `paranoid` and `permissive` variants are available as commented blocks in `agents-defaults.toml` — uncomment to add them as separate entries to the N-picker. See [Sandbox Levels](dashboard/sandbox-levels.md) for what each level enforces.
 
-Most agents come in up to three variants: **direct**, **-bwrap**, and **-nono**.
+## Backend and Level Selection
 
-- **Direct** (e.g. `codex`, `gemini`) runs the agent binary as-is, relying on whatever sandbox the agent provides natively -- or no sandbox at all.
-- **-bwrap** (e.g. `codex-bwrap`, `gemini-bwrap`) wraps the agent inside `agent-sandbox` using bubblewrap for filesystem isolation. Linux only.
-- **-nono** (e.g. `codex-nono`, `gemini-nono`) wraps the agent inside `nono` using Landlock (Linux) or Seatbelt (macOS) for filesystem isolation. Cross-platform.
+Each agent is configured with two attributes that select its sandbox behavior at runtime:
 
-Choose `-bwrap` or `-nono` when you want LINCE-managed isolation regardless of the agent's own sandbox capabilities.
+- `sandbox_backend` — `"bwrap"` (Linux) or `"nono"` (macOS, also available on Linux). Defaults to bwrap on Linux and nono on macOS; can be overridden per agent.
+- `sandbox_level` — `"paranoid"` | `"normal"` | `"permissive"` (or any custom name backed by a `<name>.toml` profile fragment). Defaults to `"normal"`.
+
+```toml
+[agents.claude]
+sandbox_level = "normal"
+# sandbox_backend = "nono"   # uncomment to force nono on Linux
+```
+
+The dashboard plugin synthesizes the launch command from `(agent_type, sandbox_backend, sandbox_level)` — the legacy `command` field is kept as a fallback for entries without `sandbox_level`.
+
+The `-unsandboxed` variants (e.g. `claude-unsandboxed`) bypass agent-sandbox entirely. Use them only in trusted environments.
 
 ## Unsandboxed Mode
 
@@ -137,17 +140,17 @@ For sandboxed agents, `env_unset` is a no-op because `agent-sandbox` uses `--cle
 
 ## Handling bwrap Conflicts
 
-Some agents (like Codex) use bubblewrap internally. Nesting bwrap fails. The `-bwrap` variants handle this automatically:
+Some agents (like Codex) use bubblewrap internally. Nesting bwrap fails, so the agent's inner sandbox must be disabled before wrapping it in the LINCE bwrap jail. The default `[agents.codex]` entry handles this automatically:
 
 1. Set `bwrap_conflict = true` on the agent type.
 2. Set `disable_inner_sandbox_args` to the arguments that disable the agent's internal sandbox.
 
 ```toml
-[agents.codex-bwrap]
-command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "codex"]
+[agents.codex]
 sandboxed = true
 bwrap_conflict = true
 disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+sandbox_level = "normal"
 ```
 
 The sandbox injects `--sandbox danger-full-access` into the Codex command, disabling its internal bwrap before wrapping it in the LINCE bwrap jail.
@@ -155,7 +158,7 @@ The sandbox injects `--sandbox danger-full-access` into the Codex command, disab
 **Dry-run verification**: Always verify the final command with `--dry-run` before first use:
 
 ```bash
-agent-sandbox run -a codex-bwrap -p ~/project --dry-run
+agent-sandbox run -a codex -p ~/project --dry-run
 # Output shows: ... codex --full-auto --sandbox danger-full-access
 ```
 

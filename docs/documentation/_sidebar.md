@@ -10,3 +10,4 @@
   - [Usage Guide](dashboard/usage-guide.md)
   - [Configuration Reference](dashboard/config-reference.md)
   - [Agent Examples](dashboard/agent-examples.md)
+  - [Sandbox Levels](dashboard/sandbox-levels.md)
