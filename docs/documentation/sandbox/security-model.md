@@ -17,7 +17,7 @@ Four threat categories, ordered by likelihood:
 
 ## Defense Layers
 
-Nine layers of defense, most enabled by default:
+Ten layers of defense, most enabled by default:
 
 | Layer | Feature | Default |
 |-------|---------|---------|
@@ -25,11 +25,26 @@ Nine layers of defense, most enabled by default:
 | PID namespace | Host processes invisible to sandbox | On |
 | Env var clearing | Only whitelisted vars pass through | Always on |
 | Git push blocking | Wrapper script + sanitized gitconfig | On |
-| Credential proxy | API keys never enter sandbox | Opt-in |
+| Network namespace | Block all outbound network at the kernel (`bwrap --unshare-net`) | Opt-in (auto-on in `paranoid`) |
+| Credential proxy | API keys never enter sandbox | Opt-in (auto-on in `paranoid`) |
 | Cloud SSRF blocking | Metadata endpoints blocked by proxy | On (when proxy enabled) |
 | Config snapshots | Auto-snapshot before each run | On |
 | Project snapshots | Snapshot writable project directory | Opt-in |
 | Learn mode | Discover actual access needs via strace | On-demand |
+
+---
+
+## Sandbox Levels
+
+Defense layers compose into three named **sandbox levels**, selected per run with `--sandbox-level`:
+
+- `paranoid` — kernel-level network isolation (`unshare_net = true`) plus auto-enabled credential proxy reached via a unix socket bind-mounted into the sandbox. Only allowlisted hosts are reachable.
+- `normal` — the default. Network is open; credential proxy is opt-in.
+- `permissive` — `normal` plus extra host paths exposed read-only (e.g. `~/.config/gh`, `~/.cache`) for `gh` CLI workflows.
+
+Levels are loaded from policy fragments in `sandbox/profiles/<level>.toml` (built-in) or `~/.agent-sandbox/profiles/<level>.toml` (user-supplied) and deep-merged on top of the resolved config. List keys (`home_ro_dirs`, `allow_domains`) are append-merged so extending a level doesn't require forking the file.
+
+For the full level matrix, per-backend behavior, and how to ship a custom level, see [Sandbox Levels](dashboard/sandbox-levels.md).
 
 ---
 
@@ -58,7 +73,7 @@ Nine layers of defense, most enabled by default:
 |------------|-----|-----|
 | Read/write project directory | Agent needs to edit your code | `--bind $PWD $PWD` (writable) |
 | Read other projects | Agent may reference sibling repos | `--ro-bind ~/project ~/project` (configurable) |
-| Network access | Needed for API calls, pip, npm, git clone | No `--unshare-net` |
+| Network access | Open in `normal` and `permissive` for API calls, pip, npm, git clone. In `paranoid` only the credential proxy is reachable | No `--unshare-net` in `normal`/`permissive`; `bwrap --unshare-net` set in `paranoid` |
 | Build tools | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected (including deep subdirectories) |
 | Agent config | Settings, MCP servers, skills | Isolated copy in `~/.agent-sandbox/claude-config` |
 | Package caches | cargo, npm, go can download dependencies | Persistent writable dirs for registry/cache subdirectories |
@@ -107,7 +122,9 @@ The `push.default` git option is forced to `nothing`, so even a bare `git push` 
 
 ## Credential Proxy
 
-The credential proxy keeps API keys outside the sandbox entirely. Instead of passing `ANTHROPIC_API_KEY` into the sandbox environment, a localhost HTTP proxy runs on the host, intercepts API calls, and injects the correct authentication header. A prompt-injected agent cannot exfiltrate the key because it never exists in the sandbox's memory.
+The credential proxy keeps API keys outside the sandbox entirely. Instead of passing `ANTHROPIC_API_KEY` into the sandbox environment, a proxy runs on the host, intercepts API calls, and injects the correct authentication header. A prompt-injected agent cannot exfiltrate the key because it never exists in the sandbox's memory.
+
+In `normal` and `permissive` levels the proxy is reached via TCP loopback (`http://localhost:PORT`) and the agent's `*_BASE_URL` is rewritten to point at it. In `paranoid` the proxy is reached via a unix socket bind-mounted into the sandbox; an in-sandbox `socat` bridge presents that socket as plain TCP localhost so any SDK that uses `*_BASE_URL` works unchanged.
 
 Enable it in `config.toml`:
 
@@ -115,6 +132,8 @@ Enable it in `config.toml`:
 [security]
 credential_proxy = true
 ```
+
+`paranoid` enables `credential_proxy = true` automatically and also sets `unshare_net = true` so the agent can only reach the proxy.
 
 ### How it works
 
@@ -161,7 +180,7 @@ Static variables can also be set via `[env.extra]` for every run regardless of p
 
 | Limitation | Details |
 |------------|---------|
-| **Network is open** | Without the credential proxy, the agent can make outbound HTTP requests. This is necessary for API calls, package managers, and git clone. A prompt injection could exfiltrate project source code over the network. Enable `credential_proxy = true` to at least block API key exfiltration and cloud SSRF |
+| **Network is open in `normal`** | The default level (`normal`) leaves the network open: the agent can make outbound HTTP for API calls, package managers, and git clone. A prompt injection could exfiltrate project source code. Mitigations: enable `credential_proxy = true` to block API key exfiltration and cloud SSRF, or run with `--sandbox-level paranoid` which sets `unshare_net = true` and forces all egress through an allowlisted credential proxy |
 | **Git push bypass** | The agent could call `/usr/bin/git push` directly, bypassing the wrapper. However, without SSH keys or credential helpers, authentication fails. The wrapper is defense-in-depth |
 | **Not a VM** | bubblewrap uses Linux namespaces, a kernel feature. A kernel vulnerability in namespace handling could theoretically allow escape. For higher assurance, run the sandbox inside a VM |
 | **Linux only** | agent-sandbox requires bubblewrap, which depends on Linux kernel namespaces. macOS users can use the [nono](https://github.com/always-further/nono) backend (Landlock/Seatbelt) |

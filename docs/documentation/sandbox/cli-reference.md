@@ -32,8 +32,9 @@ Creates `~/.agent-sandbox/`, copies `~/.claude/` into an isolated config directo
 ### run
 
 ```
-agent-sandbox run [-p DIR] [-a AGENT] [-P PROFILE] [--log | --no-log]
-                  [--safe] [--dry-run] [--rw DIR] [--ro DIR] [--id ID]
+agent-sandbox run [-p DIR] [-a AGENT] [-P PROFILE] [--sandbox-level NAME]
+                  [--log | --no-log] [--safe] [--dry-run]
+                  [--rw DIR] [--ro DIR] [--id ID]
                   [-- <agent-args>]
 ```
 
@@ -48,6 +49,7 @@ On launch, a banner displays active protections (profile, project path, filesyst
 | `-p`, `--project` | `.` (cwd) | Project directory to mount writable |
 | `-a`, `--agent` | `claude` | Agent to run (looks up `[agents.<name>]` in config) |
 | `-P`, `--profile` | config default | Provider profile name (defined in `config.toml`) |
+| `--sandbox-level NAME` | per-agent default | Sandbox isolation level: `paranoid`, `normal`, `permissive`, or any custom name. Loads `sandbox/profiles/<NAME>.toml` (built-in) or `~/.agent-sandbox/profiles/<NAME>.toml` (user-supplied) and deep-merges it into the config. See [Configuration Reference](sandbox/config-reference.md#sandbox-levels) |
 | `--log` | config value | Enable session transcript logging |
 | `--no-log` | config value | Disable session transcript logging |
 | `--safe` | off | Disable `--dangerously-skip-permissions` for this run |
@@ -286,6 +288,12 @@ Enable credential proxy and verify:
 ```bash
 agent-sandbox run -P anthropic    # proxy starts automatically if configured
 agent-sandbox proxy-status
+```
+
+Run at a tighter sandbox level (kernel-enforced network isolation + credential proxy):
+```bash
+agent-sandbox run --sandbox-level paranoid
+agent-sandbox run --sandbox-level paranoid -a codex
 ```
 
 Snapshot workflow (before and after a risky session):
