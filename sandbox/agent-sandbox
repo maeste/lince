@@ -359,6 +359,13 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
     # Set by CredentialProxy before the server starts serving.
     credential_rules: list[dict] = []
     blocked_hosts: set[str] = set()
+    # Extra domains the agent is allowed to reach via the proxy without
+    # credential injection (e.g. github.com, pypi.org). Empty by default —
+    # paranoid level keeps it minimal, custom levels can extend it.
+    # When enforce_allowlist is True, ANY destination not in
+    # credential_rules.domains ∪ allow_domains is rejected with 403.
+    allow_domains: set[str] = set()
+    enforce_allowlist: bool = False
     request_count: int = 0
     _count_lock: threading.Lock = threading.Lock()
 
@@ -381,6 +388,22 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
                 return rule
         return None
 
+    def _is_allowed_host(self, host: str) -> bool:
+        """Return True if *host* is allowed to be reached through the proxy.
+
+        Checked when ``enforce_allowlist`` is True (paranoid mode). Allowed
+        hosts are: any domain that has a credential rule, plus everything in
+        ``allow_domains``. Hosts in ``blocked_hosts`` are always rejected,
+        regardless of allowlist state — that check happens earlier.
+        """
+        bare = host.split(":")[0]
+        if bare in self.allow_domains:
+            return True
+        for rule in self.credential_rules:
+            if rule["domain"] == bare:
+                return True
+        return False
+
     # --- Request counting -------------------------------------------------
 
     @classmethod
@@ -395,6 +418,13 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
         if self._is_blocked(host):
             self.send_error(403, f"Blocked host: {host}")
             _proxy_logger.info("BLOCKED CONNECT to %s", host)
+            return
+
+        # Strict allowlist enforcement (paranoid mode). When off (default),
+        # CONNECT remains permissive — backward compatible behavior.
+        if self.enforce_allowlist and not self._is_allowed_host(host):
+            self.send_error(403, f"Host not in allowlist: {host}")
+            _proxy_logger.info("DENIED CONNECT to %s (not in allowlist)", host)
             return
 
         self._bump_count()
@@ -455,6 +485,24 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
             _proxy_logger.info("BLOCKED %s to %s", method, host_header)
             return
 
+        # Resolve the actual destination host. In HTTP_PROXY mode `self.path`
+        # is an absolute URL (e.g. "http://pypi.org/foo"); in BASE_URL mode
+        # the Host header points at 127.0.0.1:PORT and the credential rule
+        # lookup falls back further down.
+        dest_host = ""
+        if self.path.startswith(("http://", "https://")):
+            parsed = urlparse(self.path)
+            dest_host = (parsed.hostname or "").lower()
+        elif host_header:
+            dest_host = host_header.split(":")[0].lower()
+
+        # Pass-through (no credential injection) for hosts in allow_domains.
+        # Used by permissive level (github.com, etc.) and by custom levels
+        # the user defines to extend paranoid with extra reachable domains.
+        if dest_host and dest_host in self.allow_domains:
+            self._forward_passthrough(method)
+            return
+
         rule = self._find_rule_for_host(host_header)
 
         # When the client SDK hits http://127.0.0.1:PORT/v1/messages the
@@ -469,6 +517,10 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
                     rule = candidate
                     break
         if rule is None:
+            if self.enforce_allowlist:
+                self.send_error(403, f"Host not in allowlist: {dest_host or host_header}")
+                _proxy_logger.info("DENIED %s to %s (not in allowlist)", method, dest_host or host_header)
+                return
             self.send_error(502, "No credential rule matches this request")
             return
 
@@ -542,6 +594,57 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
             _proxy_logger.error("Proxy forwarding error: %s", exc)
             self.send_error(502, f"Proxy error: {exc}")
 
+    # --- Pass-through forwarding (no credential injection) ---------------
+
+    def _forward_passthrough(self, method: str):
+        """Forward request as-is, no credential injection.
+
+        Used for hosts in ``allow_domains`` (e.g. permissive level allowing
+        github.com / pypi.org). HTTPS to those hosts goes through CONNECT;
+        plain HTTP arrives here when the agent uses HTTP_PROXY.
+        """
+        self._bump_count()
+
+        # In HTTP_PROXY mode the agent sends an absolute URL. Otherwise we
+        # reconstruct from Host header. We don't upgrade plain HTTP to HTTPS
+        # — pass the scheme the agent asked for.
+        if self.path.startswith(("http://", "https://")):
+            upstream_url = self.path
+        else:
+            host = self.headers.get("Host", "")
+            upstream_url = f"http://{host}{self.path}"
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+
+        fwd_headers: dict[str, str] = {}
+        for hdr, val in self.headers.items():
+            if hdr.lower() not in _PROXY_SKIP_HEADERS:
+                fwd_headers[hdr] = val
+
+        _proxy_logger.info("PASS %s %s", method, upstream_url)
+
+        try:
+            resp = _upstream_pool.request(upstream_url, method, body, fwd_headers)
+            self.send_response(resp.status)
+            for hdr, val in resp.getheaders():
+                if hdr.lower() not in _PROXY_SKIP_HEADERS:
+                    self.send_header(hdr, val)
+            self.end_headers()
+            self.wfile.flush()
+            while True:
+                chunk = resp.read(4096)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except http.client.HTTPException as exc:
+            _proxy_logger.warning("Pass-through error %s %s: %s", method, upstream_url, exc)
+            self.send_error(502, f"Pass-through error: {exc}")
+        except OSError as exc:
+            _proxy_logger.error("Pass-through socket error: %s", exc)
+            self.send_error(502, f"Pass-through error: {exc}")
+
     def do_GET(self):  # noqa: N802
         self._handle_forward("GET")
 
@@ -586,19 +689,29 @@ class CredentialProxy:
         self,
         credential_rules: list[dict],
         blocked_hosts: set[str] | None = None,
+        allow_domains: list[str] | None = None,
+        enforce_allowlist: bool = False,
     ):
         self._rules = credential_rules
         self._blocked = blocked_hosts or set(DEFAULT_BLOCKED_HOSTS)
+        self._allow_domains = {d.lower() for d in (allow_domains or [])}
+        self._enforce_allowlist = enforce_allowlist
         self._server: ThreadingTCPServer | None = None
         self._thread: threading.Thread | None = None
         self._port: int = 0
         self._start_time: float = 0.0
         self._pid_file = SANDBOX_DIR / "proxy.pid"
+        # Unix-socket bridge state (only set when start_unix_bridge is called).
+        self._unix_socket: socket.socket | None = None
+        self._unix_path: str = ""
+        self._unix_thread: threading.Thread | None = None
 
     def start(self) -> int:
         """Start the proxy server.  Returns the assigned port number."""
         _ProxyRequestHandler.credential_rules = list(self._rules)
         _ProxyRequestHandler.blocked_hosts = set(self._blocked)
+        _ProxyRequestHandler.allow_domains = set(self._allow_domains)
+        _ProxyRequestHandler.enforce_allowlist = self._enforce_allowlist
         _ProxyRequestHandler.request_count = 0
 
         ThreadingTCPServer.allow_reuse_address = True
@@ -645,6 +758,18 @@ class CredentialProxy:
 
     def stop(self):
         """Shut down the proxy server and clean up the PID file."""
+        if self._unix_socket is not None:
+            try:
+                self._unix_socket.close()
+            except OSError:
+                pass
+            self._unix_socket = None
+            if self._unix_path:
+                try:
+                    os.unlink(self._unix_path)
+                except OSError:
+                    pass
+                self._unix_path = ""
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
@@ -655,6 +780,93 @@ class CredentialProxy:
                 self._pid_file.unlink()
             except OSError:
                 pass
+
+    def start_unix_bridge(self, path: str) -> str:
+        """Start a unix-domain-socket bridge that forwards into the TCP proxy.
+
+        Used by paranoid sandboxes with --unshare-net: the sandbox's network
+        namespace has no route to the host, but a unix socket file bind-mounted
+        from the host into the sandbox stays reachable. The sandbox runs a
+        TCP-to-unix bridge (e.g. socat) so the agent's HTTP_PROXY=http://...
+        client still sees a normal TCP localhost listener.
+
+        Each accepted unix connection is bridged to a fresh TCP connection
+        to the local proxy at 127.0.0.1:self._port.
+
+        Returns the unix-socket path (echoed back for caller convenience).
+        """
+        if self._port == 0:
+            raise RuntimeError("call start() before start_unix_bridge()")
+
+        path_str = str(path)
+        try:
+            os.unlink(path_str)
+        except FileNotFoundError:
+            pass
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.bind(path_str)
+        os.chmod(path_str, 0o600)
+        sock.listen(64)
+        self._unix_socket = sock
+        self._unix_path = path_str
+
+        proxy_port = self._port
+
+        def _bridge_pair(client: socket.socket) -> None:
+            try:
+                upstream = socket.create_connection(
+                    ("127.0.0.1", proxy_port), timeout=5
+                )
+            except OSError:
+                client.close()
+                return
+
+            def _forward(src: socket.socket, dst: socket.socket) -> None:
+                try:
+                    while True:
+                        data = src.recv(65536)
+                        if not data:
+                            break
+                        dst.sendall(data)
+                except OSError:
+                    pass
+                finally:
+                    try:
+                        dst.shutdown(socket.SHUT_WR)
+                    except OSError:
+                        pass
+
+            threading.Thread(
+                target=_forward, args=(client, upstream), daemon=True
+            ).start()
+            threading.Thread(
+                target=_forward, args=(upstream, client), daemon=True
+            ).start()
+
+        def _accept_loop() -> None:
+            while True:
+                try:
+                    client, _ = sock.accept()
+                except OSError:
+                    break
+                threading.Thread(
+                    target=_bridge_pair, args=(client,), daemon=True
+                ).start()
+
+        self._unix_thread = threading.Thread(target=_accept_loop, daemon=True)
+        self._unix_thread.start()
+
+        _proxy_logger.info(
+            "Credential proxy unix-socket bridge listening on %s "
+            "(forwards to 127.0.0.1:%d)",
+            path_str, self._port,
+        )
+        return path_str
+
+    def get_unix_path(self) -> str:
+        """Return the unix-socket path if the bridge is running, else ''."""
+        return self._unix_path
 
     def is_alive(self) -> bool:
         """Return True if the proxy server thread is running."""
@@ -759,7 +971,10 @@ def load_config() -> tuple[dict, Path]:
 # sandbox-policy fragment on top of the user's resolved config. New entries
 # are de-duplicated against what's already in the base list.
 _SANDBOX_LEVEL_LIST_APPEND_KEYS = frozenset({
-    "home_ro_dirs", "home_rw_dirs", "ro_dirs", "extra_rw"
+    "home_ro_dirs", "home_rw_dirs", "ro_dirs", "extra_rw",
+    # [security].allow_domains is also append-merged so a custom level can
+    # extend (e.g. "paranoid + pypi") without restating the base set.
+    "allow_domains",
 })
 
 
@@ -1429,7 +1644,9 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                     agent_config: dict | None = None,
                     agent_id: str | None = None,
                     agent_name: str = "claude",
-                    proxy_env: dict[str, str] | None = None) -> list[str]:
+                    proxy_env: dict[str, str] | None = None,
+                    unshare_net: bool = False,
+                    proxy_unix_socket: str = "") -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
@@ -1608,6 +1825,19 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
         cmd += ["--new-session"]
     cmd += ["--die-with-parent"]
 
+    # Paranoid network isolation: kernel-enforced via bwrap's own --unshare-net
+    # (separate netns with only its own loopback). The agent reaches the
+    # credential proxy through a unix socket bind-mounted from the host: a
+    # small socat helper inside the sandbox bridges TCP localhost -> that
+    # unix socket. See the wrapper assembled below at the agent-cmd append.
+    if unshare_net:
+        cmd += ["--unshare-net"]
+        if proxy_unix_socket:
+            cmd += [
+                "--bind", proxy_unix_socket,
+                "/run/lince-proxy.sock",
+            ]
+
     # --- 12. Environment: clearenv + explicit whitelist -----------------------
     cmd += ["--clearenv"]
     cmd += ["--setenv", "HOME", home]
@@ -1709,6 +1939,31 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                 args_source.append(da)
 
     agent_cmd = [agent_cfg["command"]] + args_source + list(agent_extra_args)
+
+    # Paranoid wrapper: bring up loopback inside the new netns, run a TCP
+    # listener that bridges to the bind-mounted unix socket, then exec the
+    # real agent. The agent's HTTP_PROXY env var points at this listener
+    # (set in cmd_run when unshare_net is True). PORT 8118 is fixed and
+    # internal — it never collides with anything because the netns is
+    # isolated.
+    if unshare_net and proxy_unix_socket:
+        bash_init = (
+            "set -e; "
+            "ip link set lo up; "
+            "socat TCP-LISTEN:8118,bind=127.0.0.1,reuseaddr,fork "
+            "UNIX-CONNECT:/run/lince-proxy.sock >/dev/null 2>&1 & "
+            # Wait briefly for the socat listener to be bound before
+            # handing control to the agent (otherwise the first request
+            # races against bind() and fails with ECONNREFUSED).
+            "for _ in 1 2 3 4 5 6 7 8 9 10; do "
+            "  if (exec 3<>/dev/tcp/127.0.0.1/8118) 2>/dev/null; then "
+            "    exec 3>&-; break; "
+            "  fi; "
+            "  sleep 0.05; "
+            "done; "
+            "exec \"$@\""
+        )
+        agent_cmd = ["/bin/bash", "-c", bash_init, "lince-paranoid-init"] + agent_cmd
 
     if log_file:
         # Use `script` to record the full terminal session.
@@ -2034,7 +2289,20 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             blocked = set(
                 proxy_conf.get("blocked_hosts", DEFAULT_BLOCKED_HOSTS)
             )
-            proxy = CredentialProxy(rules, blocked_hosts=blocked)
+            # Paranoid level reads `unshare_net` + `allow_domains` from
+            # [security]. allow_domains extends what the proxy will forward
+            # without credential injection (e.g. ["pypi.org", "github.com"]
+            # in permissive). enforce_allowlist makes the proxy reject any
+            # destination that is neither a credential-rule domain nor in
+            # allow_domains — that's the application-layer half of paranoid.
+            allow_domains_cfg = list(sec.get("allow_domains", []))
+            enforce_allowlist = bool(sec.get("unshare_net", False))
+            proxy = CredentialProxy(
+                rules,
+                blocked_hosts=blocked,
+                allow_domains=allow_domains_cfg,
+                enforce_allowlist=enforce_allowlist,
+            )
             port = proxy.start()
 
             # Build env overrides: remove API keys, rewrite base URLs,
@@ -2051,13 +2319,54 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             proxy_env["HTTP_PROXY"] = proxy_base
             proxy_env["http_proxy"] = proxy_base
 
+    # Paranoid (`unshare_net`) needs a unix-socket bridge so the network-
+    # isolated sandbox can still reach the proxy via a bind-mounted socket
+    # file. We start the bridge on the host side here and pass the path to
+    # build_bwrap_cmd so it can wire the bind mount + the in-sandbox socat.
+    unshare_net = bool(sec.get("unshare_net", False))
+    proxy_unix_socket: str = ""
+    if unshare_net:
+        if proxy is None:
+            print(
+                "Error: [security] unshare_net = true requires "
+                "credential_proxy = true (the sandbox has no other path "
+                "out and no credentials would be injectable).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not shutil.which("socat"):
+            print(
+                "Error: paranoid sandbox needs 'socat' on the host (it is "
+                "bind-mounted into the sandbox to bridge TCP -> unix-socket). "
+                "Install via your package manager (e.g. `dnf install socat` "
+                "or `apt install socat`), or switch sandbox_backend to nono.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+        proxy_unix_socket = str(
+            SANDBOX_DIR / f"proxy-{os.getpid()}.sock"
+        )
+        proxy.start_unix_bridge(proxy_unix_socket)
+        # Override HTTP_PROXY so the agent points at the in-sandbox socat
+        # listener (a fixed port we set up in the bash wrapper) rather than
+        # the host-side TCP port (unreachable inside --unshare-net).
+        sandbox_proxy_port = 8118
+        sandbox_proxy_base = f"http://127.0.0.1:{sandbox_proxy_port}"
+        proxy_env["HTTP_PROXY"] = sandbox_proxy_base
+        proxy_env["http_proxy"] = sandbox_proxy_base
+        for rule in rules:
+            proxy_env[rule["base_url_env"]] = sandbox_proxy_base
+
     # Build command
     cmd = build_bwrap_cmd(config, project_dir, agent_extra, log_file,
                           profile=profile, safe_mode=args.safe,
                           extra_rw_cli=args.rw, extra_ro_cli=args.ro,
                           agent_config=agent_cfg, agent_id=args.id,
                           agent_name=agent_name,
-                          proxy_env=proxy_env if proxy_env else None)
+                          proxy_env=proxy_env if proxy_env else None,
+                          unshare_net=unshare_net,
+                          proxy_unix_socket=proxy_unix_socket)
 
     if args.dry_run:
         print("# bwrap command that would be executed:\n")
