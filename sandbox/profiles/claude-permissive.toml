@@ -19,6 +19,15 @@
 [sandbox]
 home_ro_dirs = [".config/gh", ".cache", ".ssh/known_hosts"]
 
+[env]
+# Pass host-env GitHub tokens through. gh CLI authenticated via
+# `gh auth login --with-token` reads from ~/.config/gh/hosts.yml (mounted
+# above), but users authenticated via the system keyring rely on
+# GH_TOKEN / GITHUB_TOKEN being exported in their shell — the sandbox's
+# default --clearenv would otherwise wipe them. Append-merged with the
+# user's [env].passthrough.
+passthrough = ["GH_TOKEN", "GITHUB_TOKEN"]
+
 [security]
 credential_proxy = true
 block_git_push = true

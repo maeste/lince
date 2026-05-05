@@ -975,6 +975,10 @@ _SANDBOX_LEVEL_LIST_APPEND_KEYS = frozenset({
     # [security].allow_domains is also append-merged so a custom level can
     # extend (e.g. "paranoid + pypi") without restating the base set.
     "allow_domains",
+    # [env].passthrough extends host-env vars exposed in the sandbox so
+    # fragments can add tool-specific tokens (e.g. permissive ships
+    # GH_TOKEN / GITHUB_TOKEN so `gh` keeps its env-based auth working).
+    "passthrough",
 })
 
 
