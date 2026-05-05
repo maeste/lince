@@ -9,6 +9,27 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# --sandbox-levels=... / LINCE_SANDBOX_LEVELS: extra levels beyond `normal`.
+# Resolved interactively by quickstart.sh and forwarded to install.sh.
+SANDBOX_LEVELS_OPT_SET=false
+SANDBOX_LEVELS_OPT=""
+for arg in "$@"; do
+    case "$arg" in
+        --sandbox-levels=*)
+            SANDBOX_LEVELS_OPT="${arg#*=}"
+            SANDBOX_LEVELS_OPT_SET=true
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--sandbox-levels=paranoid,permissive]"
+            echo ""
+            echo "  --sandbox-levels=LIST   Comma-separated list of extra sandbox"
+            echo "                          levels (paranoid, permissive). Empty or"
+            echo "                          unset = normal only."
+            echo "                          Same as setting LINCE_SANDBOX_LEVELS."
+            exit 0 ;;
+    esac
+done
+
 echo -e "${BLUE}================================================${NC}"
 echo -e "${BLUE}   LINCE Dashboard — Installer${NC}"
 echo -e "${BLUE}================================================${NC}"
@@ -275,17 +296,49 @@ else
 fi
 echo ""
 
-# ── Step 9: Install agents-defaults.toml ─────────────────────────────
-echo -e "${GREEN}[9/12] Installing agent defaults...${NC}"
+# ── Step 9: Install agents-defaults.toml + agents-template.toml ──────
+echo -e "${GREEN}[9/12] Installing agent defaults and templates...${NC}"
 
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
+AGENTS_TEMPLATE_SRC="$SCRIPT_DIR/agents-template.toml"
+AGENTS_TEMPLATE_DST="$CONFIG_DIR/agents-template.toml"
+USER_CONFIG="$CONFIG_DIR/config.toml"
 
 if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
     cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
     echo -e "${GREEN}  ✓ Installed: $AGENTS_DEFAULTS_DST${NC}"
 else
     echo -e "${YELLOW}  ⚠ agents-defaults.toml not found — skipping${NC}"
+fi
+
+if [ -f "$AGENTS_TEMPLATE_SRC" ]; then
+    cp "$AGENTS_TEMPLATE_SRC" "$AGENTS_TEMPLATE_DST"
+    echo -e "${GREEN}  ✓ Installed: $AGENTS_TEMPLATE_DST${NC}"
+else
+    echo -e "${YELLOW}  ⚠ agents-template.toml not found — skipping${NC}"
+fi
+
+# Resolve the level selection: explicit flag wins; else env var; else normal-only.
+if [ "$SANDBOX_LEVELS_OPT_SET" = true ]; then
+    SELECTED_LEVELS="$SANDBOX_LEVELS_OPT"
+else
+    SELECTED_LEVELS="${LINCE_SANDBOX_LEVELS:-}"
+fi
+
+if [ -n "$SELECTED_LEVELS" ] && [ -f "$AGENTS_TEMPLATE_DST" ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${YELLOW}  ⚠ python3 not found — cannot apply --sandbox-levels; skipping${NC}"
+    else
+        added=$(python3 "$SCRIPT_DIR/scripts/apply-sandbox-levels.py" \
+                    "$AGENTS_TEMPLATE_DST" "$USER_CONFIG" "$SELECTED_LEVELS")
+        if [ -n "$added" ]; then
+            echo -e "${GREEN}  ✓ Enabled levels in $USER_CONFIG:${NC}"
+            echo "$added" | sed 's/^/      • /'
+        else
+            echo -e "${GREEN}  ✓ Sandbox levels already in $USER_CONFIG (nothing to do)${NC}"
+        fi
+    fi
 fi
 echo ""
 
@@ -410,6 +463,10 @@ echo "  Hooks:    ~/.local/bin/claude-status-hook.sh"
 echo "            ~/.local/bin/codex-status-hook.sh"
 echo "  Wrapper:  ~/.local/bin/lince-agent-wrapper"
 echo "  Defaults: ~/.config/lince-dashboard/agents-defaults.toml"
+echo "  Template: ~/.config/lince-dashboard/agents-template.toml"
+if [ -n "$SELECTED_LEVELS" ]; then
+    echo "  Levels:   $SELECTED_LEVELS (added to ~/.config/lince-dashboard/config.toml)"
+fi
 echo "  Nono:     ~/.config/nono/profiles/lince-*.json"
 echo "  Skill:    ~/.claude/skills/lince-setup/"
 echo ""

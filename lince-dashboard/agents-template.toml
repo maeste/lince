@@ -1,0 +1,92 @@
+# Sandbox-level variants — alternative entries you can enable.
+#
+# THIS FILE IS NOT LOADED BY THE DASHBOARD.
+#
+# It serves two purposes:
+#
+#  1. Reference / copy-paste source. Copy any [agents.<agent>-<level>]
+#     block (and its companion [agents.<agent>-<level>.env_vars] block,
+#     if present) into your own ~/.config/lince-dashboard/config.toml
+#     and the variant shows up in the N-picker on the next dashboard
+#     launch. The plugin merges your config.toml on top of
+#     agents-defaults.toml.
+#
+#  2. Source for the install-time multi-select prompt. When you run
+#     install.sh and pick paranoid and/or permissive, every block under
+#     the matching level is appended to your config.toml — supported
+#     agents only (an agent that doesn't appear here for a given level
+#     simply doesn't support that level and is skipped).
+#
+# Per-agent feature support is implicit: presence of a block here means
+# "this agent supports this level". Adding a new agent's variants to
+# this file is enough — install.sh picks them up automatically.
+#
+# See: docs/documentation/dashboard/sandbox-levels.md
+
+# ── Claude ──────────────────────────────────────────────────────────
+
+[agents.claude-paranoid]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "claude-status"
+display_name = "Claude Code (paranoid)"
+short_label = "CLP"
+color = "green"
+sandboxed = true
+has_native_hooks = true
+home_ro_dirs = ["~/.claude/"]
+profiles = ["__discover__"]
+sandbox_level = "paranoid"
+
+[agents.claude-permissive]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "claude-status"
+display_name = "Claude Code (permissive)"
+short_label = "CL+"
+color = "yellow"
+sandboxed = true
+has_native_hooks = true
+home_ro_dirs = ["~/.claude/"]
+profiles = ["__discover__"]
+sandbox_level = "permissive"
+
+# ── Codex ───────────────────────────────────────────────────────────
+
+[agents.codex-paranoid]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "codex"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "lince-status"
+display_name = "OpenAI Codex (paranoid)"
+short_label = "CDP"
+color = "green"
+sandboxed = true
+has_native_hooks = false
+ignore_wrapper_start = true
+bwrap_conflict = true
+disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+home_ro_dirs = ["~/.codex/"]
+profiles = ["__discover__"]
+sandbox_level = "paranoid"
+
+[agents.codex-paranoid.env_vars]
+OPENAI_API_KEY = "$OPENAI_API_KEY"
+
+[agents.codex-permissive]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "codex"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "lince-status"
+display_name = "OpenAI Codex (permissive)"
+short_label = "CD+"
+color = "yellow"
+sandboxed = true
+has_native_hooks = false
+ignore_wrapper_start = true
+bwrap_conflict = true
+disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+home_ro_dirs = ["~/.codex/"]
+profiles = ["__discover__"]
+sandbox_level = "permissive"
+
+[agents.codex-permissive.env_vars]
+OPENAI_API_KEY = "$OPENAI_API_KEY"
