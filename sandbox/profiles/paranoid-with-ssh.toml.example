@@ -1,0 +1,26 @@
+# Example: paranoid + read-only access to ~/.ssh
+#
+# Use case: agent needs SSH keys (e.g. for git over SSH) while keeping
+# full paranoid isolation (kernel netns, ephemeral ~/.claude).
+#
+# Copy to ~/.agent-sandbox/profiles/paranoid-with-ssh.toml (remove .example),
+# then run:
+#
+#   agent-sandbox run --sandbox-level paranoid-with-ssh
+#
+# The `extends` field is resolved first: claude-paranoid.toml is loaded as
+# the base, then this file is merged on top. home_ro_dirs is an append-merge
+# key, so ~/.ssh is ADDED to whatever the base already exposes — nothing is
+# replaced.
+#
+# Verify from inside the sandbox:
+#
+#   agent-sandbox run -a claude --sandbox-level paranoid-with-ssh -- \
+#     bash -c 'ls ~/.ssh && echo "readable!"'
+#
+# Without this fragment, ~/.ssh is not accessible in paranoid mode.
+
+extends = "paranoid"
+
+[sandbox]
+home_ro_dirs = [".ssh"]

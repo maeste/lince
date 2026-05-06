@@ -259,13 +259,13 @@ Levels are loaded from policy fragments in `sandbox/profiles/<level>.toml` (buil
 allow_domains = ["pypi.org", "files.pythonhosted.org"]
 ```
 
-**Option B — named reusable level with `extends` (create `~/.agent-sandbox/profiles/paranoid-with-pypi.toml`):**
+**Option B — named reusable level with `extends` (create `~/.agent-sandbox/profiles/paranoid-with-ssh.toml`):**
 
 ```toml
 extends = "paranoid"
 
-[security]
-allow_domains = ["pypi.org", "files.pythonhosted.org"]
+[sandbox]
+home_ro_dirs = [".ssh"]   # read-only access to SSH keys, appended to parent's list
 ```
 
 The optional top-level `extends = "<name>"` field causes the named parent fragment to be resolved and loaded first (same 3-dir, agent-prefix search), then the child is merged on top. Chains of any depth are supported; cycles and missing parents are hard errors. The `extends` key does not appear in the final merged config.

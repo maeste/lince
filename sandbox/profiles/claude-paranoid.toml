@@ -30,16 +30,17 @@
 #   [security]
 #   allow_domains = ["pypi.org", "files.pythonhosted.org"]
 #
-# Option B — named reusable level (create ~/.agent-sandbox/profiles/paranoid-with-pypi.toml):
+# Option B — named reusable level (create ~/.agent-sandbox/profiles/paranoid-with-ssh.toml):
 #
 #   extends = "paranoid"
-#   [security]
-#   allow_domains = ["pypi.org", "files.pythonhosted.org"]
+#   [sandbox]
+#   home_ro_dirs = [".ssh"]   # read-only access to SSH keys
 #
-#   Then use:  agent-sandbox run --sandbox-level paranoid-with-pypi
+#   Then use:  agent-sandbox run --sandbox-level paranoid-with-ssh
 #
-# In both cases allow_domains lists are append-merged, so the final
-# allowlist is the paranoid base (api.anthropic.com) plus your extras.
+# home_ro_dirs is append-merged, so .ssh is ADDED on top of whatever
+# the base already exposes — nothing is replaced.
+# See sandbox/profiles/paranoid-with-ssh.toml.example for a starter file.
 
 [agents.claude]
 # Per-run ephemeral copy of ~/.claude (rsync-seeded, bind-mounted,

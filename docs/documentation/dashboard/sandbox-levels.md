@@ -391,29 +391,38 @@ The resolved config is paranoid + the two extra hosts: kernel netns isolation is
 
 When a one-off `config.toml` override is not enough — for example, you want a **named, reusable level** that you can select from the dashboard picker — add an `extends = "<parent-name>"` field at the top of a fragment file.
 
-Create `~/.agent-sandbox/profiles/paranoid-with-pypi.toml`:
+**Worked example: paranoid + read-only `~/.ssh`**
+
+Suppose you want an agent that can use SSH keys (e.g. for `git` over SSH) while keeping full paranoid isolation. Create `~/.agent-sandbox/profiles/paranoid-with-ssh.toml`:
 
 ```toml
 extends = "paranoid"
 
-[security]
-allow_domains = ["pypi.org", "files.pythonhosted.org"]
-# Append-merged on top of claude-paranoid's allow_domains.
-# Final allowlist: ["api.anthropic.com", "pypi.org", "files.pythonhosted.org"]
+[sandbox]
+home_ro_dirs = [".ssh"]
+# home_ro_dirs is an append-merge key: .ssh is ADDED on top of
+# whatever paranoid already exposes — nothing is replaced.
 ```
 
 Then run:
 
 ```bash
-agent-sandbox run --sandbox-level paranoid-with-pypi
+agent-sandbox run --sandbox-level paranoid-with-ssh
+```
+
+Verify from inside the sandbox that `~/.ssh` is readable:
+
+```bash
+agent-sandbox run -a claude --sandbox-level paranoid-with-ssh -- \
+  bash -c 'ls ~/.ssh && echo "readable!"'
 ```
 
 **How resolution works:**
 
-1. `paranoid-with-pypi.toml` is loaded; the `extends = "paranoid"` field is found.
+1. `paranoid-with-ssh.toml` is loaded; `extends = "paranoid"` is found.
 2. The parent is resolved using the same 3-dir, agent-prefix lookup (`claude-paranoid.toml` for `-a claude`).
 3. The parent fragment is loaded (recursively; chains of any depth work).
-4. The child is merged on top of the parent using the same list-append semantics (`allow_domains`, `home_ro_dirs`, etc. append; other lists replace; scalars replace).
+4. The child is merged on top of the parent: list keys (`home_ro_dirs`, `extra_rw`, `allow_domains`, …) are appended; scalars replace.
 5. The `extends` key is stripped — it never appears in the final merged config.
 
 **Errors are hard failures:**
@@ -430,7 +439,7 @@ agent-sandbox run --sandbox-level paranoid-with-pypi
 | Dashboard picker entry | No | Yes (add `[agents.<name>]` block) |
 | Per-project | Combine with project-local override | `.agent-sandbox/profiles/` |
 
-A starter file is available at `sandbox/profiles/paranoid-with-pypi.toml.example` in the repo — copy it to `~/.agent-sandbox/profiles/paranoid-with-pypi.toml` and remove the `.example` suffix.
+A starter file is available at `sandbox/profiles/paranoid-with-ssh.toml.example` in the repo — copy it to `~/.agent-sandbox/profiles/paranoid-with-ssh.toml` and remove the `.example` suffix.
 
 ### Project-local config overrides
 
