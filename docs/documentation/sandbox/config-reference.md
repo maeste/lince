@@ -2,12 +2,34 @@
 
 ## Overview
 
-The sandbox is configured through a single TOML file. It is searched in order:
+The sandbox is configured through TOML files loaded in a cascade:
 
-1. `./.agent-sandbox/config.toml` -- project-local override (takes priority)
-2. `~/.agent-sandbox/config.toml` -- global fallback
+1. `~/.agent-sandbox/config.toml` — **global config** (base layer)
+2. `./.agent-sandbox/config.toml` — **project-local config** (deep-merged on top, optional)
 
-Create the file with `agent-sandbox init`. No inline defaults exist; the sandbox refuses to start without a real config file. Project-local configs let you set different profiles, extra writable directories, or security settings per repository.
+When both files exist, agent-sandbox deep-merges the project-local file on top of the global one:
+
+- **Scalars** from the local file replace the global value.
+- **Lists** are appended and deduplicated (global entries first, local entries added at the end).
+- **Tables** (TOML sections) are merged recursively.
+
+A startup line is printed to stderr when the merge is active:
+```
+config: merged ~/.agent-sandbox/config.toml + .agent-sandbox/config.toml
+```
+
+When only one file exists, it is loaded as-is (no merge). `agent-sandbox init` creates the global config. No inline defaults exist; the sandbox refuses to start without at least one config file.
+
+**Project-local config example** — only the fields that differ from the global need to be specified:
+
+```toml
+# .agent-sandbox/config.toml
+[security]
+block_git_push = false   # allow git push in this project only
+
+[sandbox]
+extra_rw = ["/tmp/my-project-cache"]  # appended to global extra_rw
+```
 
 ---
 

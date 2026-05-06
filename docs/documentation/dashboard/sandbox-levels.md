@@ -387,6 +387,41 @@ agent-sandbox run --sandbox-level paranoid <command>
 
 The resolved config is paranoid + the two extra hosts: kernel netns isolation is unchanged, the proxy allowlist becomes `["api.anthropic.com", "pypi.org", "files.pythonhosted.org"]`, and `pip install` resolves through the proxy. This works because `allow_domains` is append-merged with the paranoid fragment's list, not overwritten.
 
+### Project-local config overrides
+
+If `./.agent-sandbox/config.toml` exists in the current directory **and** `~/.agent-sandbox/config.toml` exists as the global config, agent-sandbox **deep-merges** the project-local file on top of the global one at startup. You do not need to duplicate the entire global config just to change one setting.
+
+Merge rules:
+- **Scalars** from the local config replace the global value.
+- **Lists** are appended and deduplicated (order preserved, global entries first).
+- **Tables** (TOML sections) are merged recursively.
+
+A startup line is printed to stderr when the merge happens:
+```
+config: merged ~/.agent-sandbox/config.toml + .agent-sandbox/config.toml
+```
+
+**Minimal example — disable `block_git_push` for one project:**
+
+```toml
+# .agent-sandbox/config.toml  ← project-local, only this override needed
+[security]
+block_git_push = false
+```
+
+All other settings (API keys, extra_rw paths, credential proxy, sandbox level defaults, …) are inherited unchanged from the global config.
+
+**Example — project-specific extra writable paths:**
+
+```toml
+# .agent-sandbox/config.toml
+[sandbox]
+extra_rw = ["/tmp/project-build-cache"]
+# Result: global extra_rw entries + this path (appended, not replaced)
+```
+
+If only one of the two config files exists (the common case), behavior is unchanged — the existing file is loaded as-is.
+
 ### Trust model: why paranoid requires API-key auth (and how to opt out)
 
 Paranoid is built around one specific assumption: **the agent's credentials never enter the sandbox process tree**. The flow is:

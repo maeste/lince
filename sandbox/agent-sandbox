@@ -1067,7 +1067,29 @@ def find_config() -> Path:
 
 
 def load_config() -> tuple[dict, Path]:
-    """Load and return the sandbox configuration and its path."""
+    """Load and return the sandbox configuration and its path.
+
+    If both ~/.agent-sandbox/config.toml (global) and
+    ./.agent-sandbox/config.toml (project-local) exist, the project-local
+    config is deep-merged on top of the global one: dicts recurse, lists
+    append-and-dedup, scalars from the local config replace global ones.
+    The local path is returned so user-facing messages point at the file
+    being edited.
+    """
+    global_path = SANDBOX_DIR / "config.toml"
+    local_path = Path.cwd() / ".agent-sandbox" / "config.toml"
+
+    if global_path.is_file() and local_path.is_file():
+        with open(global_path, "rb") as fh:
+            base = tomllib.load(fh)
+        with open(local_path, "rb") as fh:
+            overlay = tomllib.load(fh)
+        print(
+            f"config: merged {global_path} + {local_path}",
+            file=sys.stderr,
+        )
+        return _deep_merge_toml(base, overlay), local_path
+
     config_path = find_config()
     with open(config_path, "rb") as fh:
         return tomllib.load(fh), config_path
