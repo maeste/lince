@@ -146,6 +146,21 @@ export PATH="$HOME/.local/bin:$PATH"
    alias zd
    ```
 
+### Ctrl+Shift+C kills agent (Terminator + Zellij)
+
+When running agents inside the LINCE Dashboard (Zellij) on **Terminator**, pressing **Ctrl+Shift+C** to copy also delivers a SIGINT to the agent in the focused pane, interrupting it. The same key combo works fine in Terminator without Zellij — the issue only appears with the Terminator + Zellij combination.
+
+**Fix**: remap Terminator's copy shortcut to a key that doesn't include Ctrl+C.
+
+Option 1 — Edit `~/.config/terminator/config`:
+```ini
+[keybindings]
+copy = <Primary>Insert
+```
+Then restart Terminator. Ctrl+Insert now copies without sending SIGINT.
+
+Option 2 — Via GUI: open **Terminator → Preferences → Keybindings**, find **copy_clipboard**, and bind it to `Ctrl+Insert` or another key that doesn't include Ctrl+C.
+
 ---
 
 ## Requirements Summary
