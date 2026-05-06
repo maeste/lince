@@ -1813,7 +1813,15 @@ def sanitize_gitconfig(source: Path, dest: Path,
         for key, val in overrides.items():
             section, _, name = key.rpartition(".")
             if section and name:
-                out.append(f"[{section}]")
+                # Gitconfig dotted sections use [section "subsection"] syntax.
+                # rpartition always gives us (everything-before-last-dot, ., name).
+                # If *section* contains dots (e.g. "credential.https://github.com")
+                # we must split it into section + quoted subsection.
+                parts = section.split(".", 1)
+                if len(parts) == 2:
+                    out.append(f'[{parts[0]} "{parts[1]}"]')
+                else:
+                    out.append(f"[{section}]")
                 out.append(f"\t{name} = {val}")
 
     dest.write_text("\n".join(out) + "\n")
