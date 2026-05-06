@@ -387,6 +387,51 @@ agent-sandbox run --sandbox-level paranoid <command>
 
 The resolved config is paranoid + the two extra hosts: kernel netns isolation is unchanged, the proxy allowlist becomes `["api.anthropic.com", "pypi.org", "files.pythonhosted.org"]`, and `pip install` resolves through the proxy. This works because `allow_domains` is append-merged with the paranoid fragment's list, not overwritten.
 
+### Extending a fragment with `extends`
+
+When a one-off `config.toml` override is not enough — for example, you want a **named, reusable level** that you can select from the dashboard picker — add an `extends = "<parent-name>"` field at the top of a fragment file.
+
+Create `~/.agent-sandbox/profiles/paranoid-with-pypi.toml`:
+
+```toml
+extends = "paranoid"
+
+[security]
+allow_domains = ["pypi.org", "files.pythonhosted.org"]
+# Append-merged on top of claude-paranoid's allow_domains.
+# Final allowlist: ["api.anthropic.com", "pypi.org", "files.pythonhosted.org"]
+```
+
+Then run:
+
+```bash
+agent-sandbox run --sandbox-level paranoid-with-pypi
+```
+
+**How resolution works:**
+
+1. `paranoid-with-pypi.toml` is loaded; the `extends = "paranoid"` field is found.
+2. The parent is resolved using the same 3-dir, agent-prefix lookup (`claude-paranoid.toml` for `-a claude`).
+3. The parent fragment is loaded (recursively; chains of any depth work).
+4. The child is merged on top of the parent using the same list-append semantics (`allow_domains`, `home_ro_dirs`, etc. append; other lists replace; scalars replace).
+5. The `extends` key is stripped — it never appears in the final merged config.
+
+**Errors are hard failures:**
+
+- **Missing parent**: `Error: sandbox-level fragment 'unknown' not found.` — lists all searched paths.
+- **Cycle**: `Error: fragment cycle detected: a.toml → b.toml → a.toml` — the sandbox refuses to start.
+
+**When to use `extends` vs `config.toml`:**
+
+| | `config.toml` | `extends` fragment |
+|---|---|---|
+| Scope | Applies to every run | Only when `--sandbox-level` matches |
+| Reusable named level | No | Yes |
+| Dashboard picker entry | No | Yes (add `[agents.<name>]` block) |
+| Per-project | Combine with project-local override | `.agent-sandbox/profiles/` |
+
+A starter file is available at `sandbox/profiles/paranoid-with-pypi.toml.example` in the repo — copy it to `~/.agent-sandbox/profiles/paranoid-with-pypi.toml` and remove the `.example` suffix.
+
 ### Project-local config overrides
 
 If `./.agent-sandbox/config.toml` exists in the current directory **and** `~/.agent-sandbox/config.toml` exists as the global config, agent-sandbox **deep-merges** the project-local file on top of the global one at startup. You do not need to duplicate the entire global config just to change one setting.
@@ -636,6 +681,6 @@ For master mechanics (file-naming convention, fragment lookup, custom levels), s
 
 ## 9. Future work
 
-The new `sandbox_level` model is what the upcoming wizard ('N' picker) UX changes are built on — the picker becomes a two-axis chooser (agent type x sandbox level) instead of needing a separate `agents.*` entry per variant. Progress is tracked in [GitHub issue #53](https://github.com/RisorseArtificiali/lince/issues/53). [GitHub issue #54](https://github.com/RisorseArtificiali/lince/issues/54) tracks fragment-level `extends` inheritance so custom fragments can declare a parent level explicitly instead of relying on deep-merge order — a smaller, separate scope from the now-completed bwrap paranoid network hardening.
+The new `sandbox_level` model is what the upcoming wizard ('N' picker) UX changes are built on — the picker becomes a two-axis chooser (agent type x sandbox level) instead of needing a separate `agents.*` entry per variant. Progress is tracked in [GitHub issue #53](https://github.com/RisorseArtificiali/lince/issues/53). Fragment-level `extends` inheritance ([#54](https://github.com/RisorseArtificiali/lince/issues/54)) is now implemented — see §6 "Extending a fragment with `extends`".
 
 For the manual test plan used to validate this feature, see [`sandbox-levels-testing.md`](./sandbox-levels-testing.md).

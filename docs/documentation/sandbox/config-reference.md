@@ -250,13 +250,25 @@ Three named levels package the security keys above into ready-made policies, sel
 - `normal` — the default. Network is open, credential proxy is opt-in.
 - `permissive` — adds extra read-only host paths on top of `normal`.
 
-Levels are loaded from policy fragments in `sandbox/profiles/<level>.toml` (built-in) or `~/.agent-sandbox/profiles/<level>.toml` (user-supplied) and deep-merged on top of the resolved config. List keys (`home_ro_dirs`, `allow_domains`) are append-merged, so extending a level doesn't require forking the file:
+Levels are loaded from policy fragments in `sandbox/profiles/<level>.toml` (built-in) or `~/.agent-sandbox/profiles/<level>.toml` (user-supplied) and deep-merged on top of the resolved config. List keys (`home_ro_dirs`, `allow_domains`) are append-merged, so extending a level doesn't require forking the file.
+
+**Option A — one-off override in `~/.agent-sandbox/config.toml`:**
 
 ```toml
-# ~/.agent-sandbox/config.toml
 [security]
 allow_domains = ["pypi.org", "files.pythonhosted.org"]
 ```
+
+**Option B — named reusable level with `extends` (create `~/.agent-sandbox/profiles/paranoid-with-pypi.toml`):**
+
+```toml
+extends = "paranoid"
+
+[security]
+allow_domains = ["pypi.org", "files.pythonhosted.org"]
+```
+
+The optional top-level `extends = "<name>"` field causes the named parent fragment to be resolved and loaded first (same 3-dir, agent-prefix search), then the child is merged on top. Chains of any depth are supported; cycles and missing parents are hard errors. The `extends` key does not appear in the final merged config.
 
 For the full level matrix, per-backend behavior, and custom-level recipes, see [Sandbox Levels](dashboard/sandbox-levels.md).
 

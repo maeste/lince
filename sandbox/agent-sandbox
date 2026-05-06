@@ -1110,6 +1110,91 @@ _SANDBOX_LEVEL_LIST_APPEND_KEYS = frozenset({
 })
 
 
+def _find_fragment_path(name: str, agent: str) -> Path | None:
+    """Return the resolved absolute path of a fragment, or None if not found.
+
+    Search order, each tried as <agent>-<name>.toml then <name>.toml:
+      1. ./.agent-sandbox/profiles/   (project-local override)
+      2. ~/.agent-sandbox/profiles/   (user-installed)
+      3. <script-dir>/profiles/       (built-in, ships with the script)
+    """
+    script_dir = Path(__file__).resolve().parent
+    base_dirs = [
+        Path.cwd() / ".agent-sandbox" / "profiles",
+        SANDBOX_DIR / "profiles",
+        script_dir / "profiles",
+    ]
+    for d in base_dirs:
+        for candidate in (f"{agent}-{name}.toml", f"{name}.toml"):
+            p = d / candidate
+            if p.is_file():
+                return p.resolve()
+    return None
+
+
+def _resolve_fragment_extends(
+    name: str, agent: str, *, _chain: list[Path] | None = None
+) -> dict:
+    """Recursively load a fragment, resolving ``extends`` inheritance.
+
+    The optional top-level field ``extends = "<parent-name>"`` in a fragment
+    causes the parent to be resolved first (same 3-dir, agent-prefix lookup),
+    then the child is deep-merged on top using ``merge_sandbox_level``
+    semantics (whitelisted append for list keys, replace for others).
+
+    *_chain* tracks the absolute paths of all fragments in the current
+    resolution chain; a path appearing twice is a cycle → hard error.
+    A referenced parent that cannot be found is also a hard error.
+
+    The ``extends`` key is stripped from the returned dict.
+    """
+    if _chain is None:
+        _chain = []
+
+    path = _find_fragment_path(name, agent)
+    if path is None:
+        script_dir = Path(__file__).resolve().parent
+        searched = "\n".join(
+            f"  {d / c}"
+            for d in [
+                Path.cwd() / ".agent-sandbox" / "profiles",
+                SANDBOX_DIR / "profiles",
+                script_dir / "profiles",
+            ]
+            for c in (f"{agent}-{name}.toml", f"{name}.toml")
+        )
+        print(
+            f"Error: sandbox-level fragment '{name}' not found.\nSearched:\n{searched}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if path in _chain:
+        idx = _chain.index(path)
+        cycle = " → ".join(p.name for p in _chain[idx:]) + f" → {path.name}"
+        print(f"Error: fragment cycle detected: {cycle}", file=sys.stderr)
+        sys.exit(1)
+
+    _chain.append(path)
+
+    with open(path, "rb") as fh:
+        fragment = tomllib.load(fh)
+
+    parent_name = fragment.pop("extends", None)
+    if parent_name is not None:
+        if not isinstance(parent_name, str):
+            print(
+                f"Error: 'extends' in {path.name} must be a string, "
+                f"got {type(parent_name).__name__}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        parent = _resolve_fragment_extends(parent_name, agent, _chain=_chain)
+        return merge_sandbox_level(parent, fragment)
+
+    return fragment
+
+
 def load_sandbox_level_fragment(level: str, agent: str = "claude") -> dict | None:
     """Locate and load a sandbox-policy fragment for the given level name.
 
@@ -1123,25 +1208,19 @@ def load_sandbox_level_fragment(level: str, agent: str = "claude") -> dict | Non
       2. ~/.agent-sandbox/profiles/   (user-installed)
       3. <script-dir>/profiles/       (built-in, ships with the script)
 
-    Returns the fragment dict, or None if no file was found (caller
-    surfaces a user-visible error so typos don't silently no-op).
+    If the fragment contains ``extends = "<parent-name>"`` at the top level,
+    the parent is resolved recursively (same lookup) and deep-merged first;
+    the child is then merged on top using ``merge_sandbox_level`` semantics.
+    Cycles and missing parents are hard errors.
+
+    Returns the fully-resolved fragment dict, or None if the top-level
+    fragment file was not found (caller surfaces a user-visible error).
     """
     if not level:
         return None
-    script_dir = Path(__file__).resolve().parent
-    base_dirs = [
-        Path.cwd() / ".agent-sandbox" / "profiles",
-        SANDBOX_DIR / "profiles",
-        script_dir / "profiles",
-    ]
-    name_candidates = [f"{agent}-{level}.toml", f"{level}.toml"]
-    for d in base_dirs:
-        for name in name_candidates:
-            p = d / name
-            if p.is_file():
-                with open(p, "rb") as fh:
-                    return tomllib.load(fh)
-    return None
+    if _find_fragment_path(level, agent) is None:
+        return None
+    return _resolve_fragment_extends(level, agent)
 
 
 def merge_sandbox_level(base: dict, overlay: dict) -> dict:

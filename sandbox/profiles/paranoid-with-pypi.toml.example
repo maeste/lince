@@ -1,0 +1,18 @@
+# Example: paranoid + PyPI access
+#
+# Copy this file to ~/.agent-sandbox/profiles/paranoid-with-pypi.toml
+# (remove the .example suffix), then run:
+#
+#   agent-sandbox run --sandbox-level paranoid-with-pypi
+#
+# The `extends` field is resolved first: claude-paranoid.toml is loaded as
+# the base, then this file is merged on top using append-merge semantics for
+# list keys (allow_domains, home_ro_dirs, extra_rw, …).
+#
+# Result: full paranoid isolation (kernel netns, ephemeral ~/.claude) PLUS
+# access to pypi.org and files.pythonhosted.org through the credential proxy.
+
+extends = "paranoid"
+
+[security]
+allow_domains = ["pypi.org", "files.pythonhosted.org"]
