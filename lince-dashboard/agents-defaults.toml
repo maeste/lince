@@ -21,11 +21,25 @@
 #   docs/documentation/dashboard/sandbox-levels.md
 #   https://lince.sh/documentation/#/dashboard/sandbox-levels
 #
-# Alternative paranoid / permissive variants live in `agents-template.toml`
-# (sibling file, NOT loaded by the dashboard). To enable them, either re-run
-# install.sh and pick the levels in the prompt, or copy the desired blocks
-# from `~/.config/lince-dashboard/agents-template.toml` into your own
-# `~/.config/lince-dashboard/config.toml`.
+# sandbox_level here is the *default selection* in the wizard's SandboxLevel
+# step. Users can override it per-spawn via the [N] wizard — no need to
+# maintain separate paranoid/permissive agent-type entries any more.
+#
+# Custom sandbox levels are auto-discovered by the wizard — drop a profile
+# file under one of these paths and it will appear in the SandboxLevel step:
+#   - nono backend (always agent-specific):
+#       ~/.config/nono/profiles/lince-<agent>-<level>.json
+#       (e.g. lince-claude-strict.json adds "strict" for claude only)
+#   - agent-sandbox backend (either form is supported):
+#       ~/.agent-sandbox/profiles/<agent>-<level>.toml   (agent-specific)
+#       ~/.agent-sandbox/profiles/<level>.toml           (applies to all agents)
+# The shipped defaults paranoid/normal/permissive always appear regardless of
+# what's on disk.
+#
+# Alternative paranoid / permissive variants in `agents-template.toml`
+# (sibling file, NOT loaded by the dashboard) are now redundant with the
+# wizard. They continue to work if already present in config.toml, but
+# new installs need only this file.
 
 [agents.claude]
 # Legacy fallback command — ignored when sandbox_level is set (the plugin
@@ -193,6 +207,50 @@ sandbox_level = "normal"          # paranoid | normal | permissive (or custom; s
 # `sandbox_level = "<custom>"` here. See sandbox-levels.md.
 
 [agents.pi.env_vars]
+ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
+ANTHROPIC_BASE_URL = "$ANTHROPIC_BASE_URL"
+OPENAI_API_KEY = "$OPENAI_API_KEY"
+OPENAI_BASE_URL = "$OPENAI_BASE_URL"
+AZURE_OPENAI_API_KEY = "$AZURE_OPENAI_API_KEY"
+AZURE_OPENAI_BASE_URL = "$AZURE_OPENAI_BASE_URL"
+GEMINI_API_KEY = "$GEMINI_API_KEY"
+GOOGLE_CLOUD_PROJECT = "$GOOGLE_CLOUD_PROJECT"
+GOOGLE_CLOUD_LOCATION = "$GOOGLE_CLOUD_LOCATION"
+DEEPSEEK_API_KEY = "$DEEPSEEK_API_KEY"
+MISTRAL_API_KEY = "$MISTRAL_API_KEY"
+GROQ_API_KEY = "$GROQ_API_KEY"
+CEREBRAS_API_KEY = "$CEREBRAS_API_KEY"
+CLOUDFLARE_API_KEY = "$CLOUDFLARE_API_KEY"
+CLOUDFLARE_ACCOUNT_ID = "$CLOUDFLARE_ACCOUNT_ID"
+XAI_API_KEY = "$XAI_API_KEY"
+OPENROUTER_API_KEY = "$OPENROUTER_API_KEY"
+AI_GATEWAY_API_KEY = "$AI_GATEWAY_API_KEY"
+ZAI_API_KEY = "$ZAI_API_KEY"
+OPENCODE_API_KEY = "$OPENCODE_API_KEY"
+FIREWORKS_API_KEY = "$FIREWORKS_API_KEY"
+KIMI_API_KEY = "$KIMI_API_KEY"
+MINIMAX_API_KEY = "$MINIMAX_API_KEY"
+MINIMAX_CN_API_KEY = "$MINIMAX_CN_API_KEY"
+AWS_PROFILE = "$AWS_PROFILE"
+AWS_REGION = "$AWS_REGION"
+AWS_ACCESS_KEY_ID = "$AWS_ACCESS_KEY_ID"
+AWS_SECRET_ACCESS_KEY = "$AWS_SECRET_ACCESS_KEY"
+AWS_SESSION_TOKEN = "$AWS_SESSION_TOKEN"
+AWS_BEARER_TOKEN_BEDROCK = "$AWS_BEARER_TOKEN_BEDROCK"
+AWS_ENDPOINT_URL_BEDROCK_RUNTIME = "$AWS_ENDPOINT_URL_BEDROCK_RUNTIME"
+
+[agents.pi-unsandboxed]
+command = ["pi"]
+pane_title_pattern = "pi"
+status_pipe_name = "lince-status"
+display_name = "Pi (unsandboxed)"
+short_label = "PIU"
+color = "red"
+sandboxed = false
+has_native_hooks = true
+profiles = ["__discover__"]
+
+[agents.pi-unsandboxed.env_vars]
 ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
 ANTHROPIC_BASE_URL = "$ANTHROPIC_BASE_URL"
 OPENAI_API_KEY = "$OPENAI_API_KEY"

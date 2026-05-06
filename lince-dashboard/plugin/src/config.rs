@@ -254,6 +254,14 @@ pub struct DashboardConfig {
     /// in `~/.config/lince-dashboard/config.toml`.
     #[serde(default)]
     pub sandbox_colors: SandboxColors,
+    /// Custom sandbox levels discovered from the filesystem, keyed by
+    /// `<backend>:<base>` (e.g. `"nono:claude"` or `"agent-sandbox:claude"`).
+    /// Populated asynchronously by `discover_sandbox_levels_async()` reading
+    /// profile files matching `~/.config/nono/profiles/lince-<base>-*.json` and
+    /// `~/.agent-sandbox/profiles/<base>-*.toml`. Combined with the shipped
+    /// `paranoid`/`normal`/`permissive` defaults by `supported_sandbox_levels()`.
+    #[serde(skip)]
+    pub discovered_sandbox_levels: HashMap<String, Vec<String>>,
 }
 
 impl Default for DashboardConfig {
@@ -273,6 +281,7 @@ impl Default for DashboardConfig {
             agent_types: HashMap::new(),
             sandbox_backend: BackendConfig::default(),
             sandbox_colors: SandboxColors::default(),
+            discovered_sandbox_levels: HashMap::new(),
         }
     }
 }
@@ -376,6 +385,11 @@ pub fn run_typed_command_with(args: &[&str], cmd_type: &str, extra: &[(&str, &st
 
 /// Command type for async path tab-completion via `run_command`.
 pub const CMD_PATH_COMPLETE: &str = "path_complete";
+
+/// Command type for async discovery of custom sandbox-level profiles.
+/// Output format: lines of `<backend>:<base>:<level>` (or `<backend>:<base>:` for the
+/// suffix-less "normal" profile). See `discover_sandbox_levels_async()`.
+pub const CMD_DISCOVER_SANDBOX_LEVELS: &str = "discover_sandbox_levels";
 
 /// Extract profile details from a TOML table (the value side of a `[*.profiles.<name>]` entry).
 fn parse_profile_details(profile_table: &toml::Table) -> ProfileDetails {
@@ -503,6 +517,83 @@ pub fn discover_profiles_async(sandbox_config_path: Option<&str>, launch_dir: Op
     }
 
     run_typed_command(&["sh", "-c", &script], CMD_DISCOVER_PROFILES);
+}
+
+/// Kick off async discovery of custom sandbox-level profile files.
+///
+/// Globs:
+/// - `~/.config/nono/profiles/lince-<base>-*.json` (nono: per-agent only)
+/// - `~/.agent-sandbox/profiles/<base>-<level>.toml` (agent-sandbox: per-agent)
+/// - `~/.agent-sandbox/profiles/<level>.toml` (agent-sandbox: agent-agnostic,
+///   matches agent-sandbox's own resolution order — see its source for the
+///   comment "tried as <agent>-<level>.toml then <level>.toml"). Agent-agnostic
+///   levels are emitted once per known base so the cache is populated uniformly.
+///
+/// Filenames are emitted as `<backend>:<base>:<level>` lines on stdout.
+/// Result arrives in `Event::RunCommandResult` with context
+/// `type=discover_sandbox_levels`; the handler parses and populates
+/// `DashboardConfig.discovered_sandbox_levels`.
+pub fn discover_sandbox_levels_async(bases: &[String]) {
+    if bases.is_empty() {
+        return;
+    }
+    let mut script = String::new();
+    // Per-base globs: nono (always per-agent) + agent-sandbox <base>-<level>.toml.
+    for base in bases {
+        let b = shell_escape(base);
+        script.push_str(&format!(
+            "find \"$HOME/.config/nono/profiles\" -maxdepth 1 -type f \
+                -name 'lince-{base}-*.json' 2>/dev/null \
+                | sed -n 's|.*/lince-{base}-\\(.*\\)\\.json$|nono:{base}:\\1|p';\n",
+            base = b,
+        ));
+        script.push_str(&format!(
+            "find \"$HOME/.agent-sandbox/profiles\" -maxdepth 1 -type f \
+                -name '{base}-*.toml' 2>/dev/null \
+                | sed -n 's|.*/{base}-\\(.*\\)\\.toml$|agent-sandbox:{base}:\\1|p';\n",
+            base = b,
+        ));
+    }
+    // Agent-agnostic agent-sandbox profiles: any *.toml whose stem doesn't start
+    // with `<known-base>-`. Each such level applies to ALL bases, so we emit one
+    // line per base. Skip-patterns are quoted shell `case` patterns built from
+    // the same base list to avoid double-counting per-base files.
+    let bases_quoted: Vec<String> = bases.iter().map(|b| format!("'{}'", shell_escape(b))).collect();
+    let skip_patterns: Vec<String> = bases.iter().map(|b| format!("{}-*", shell_escape(b))).collect();
+    script.push_str(&format!(
+        "find \"$HOME/.agent-sandbox/profiles\" -maxdepth 1 -type f -name '*.toml' 2>/dev/null \
+         | while IFS= read -r f; do \
+             name=$(basename \"$f\" .toml); \
+             case \"$name\" in {skip}) continue;; esac; \
+             for base in {bases}; do \
+                 printf 'agent-sandbox:%s:%s\\n' \"$base\" \"$name\"; \
+             done; \
+         done\n",
+        skip = skip_patterns.join("|"),
+        bases = bases_quoted.join(" "),
+    ));
+    run_typed_command(&["sh", "-c", &script], CMD_DISCOVER_SANDBOX_LEVELS);
+}
+
+/// Parse the stdout of `discover_sandbox_levels_async()` into a
+/// `<backend>:<base> -> [level, ...]` map. Empty / malformed lines are skipped.
+pub fn parse_discovered_sandbox_levels(stdout: &[u8]) -> HashMap<String, Vec<String>> {
+    let output = String::from_utf8_lossy(stdout);
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for line in output.lines() {
+        // Format: backend:base:level — parse from the right so base names with
+        // `-` (none today, future-proofing) survive.
+        let mut parts = line.splitn(3, ':');
+        let backend = match parts.next() { Some(s) if !s.is_empty() => s, _ => continue };
+        let base = match parts.next() { Some(s) if !s.is_empty() => s, _ => continue };
+        let level = match parts.next() { Some(s) if !s.is_empty() => s, _ => continue };
+        let key = format!("{}:{}", backend, base);
+        let bucket = out.entry(key).or_default();
+        if !bucket.iter().any(|l| l == level) {
+            bucket.push(level.to_string());
+        }
+    }
+    out
 }
 
 /// Kick off async loading of agent type defaults from
@@ -676,6 +767,149 @@ impl DashboardConfig {
             .filter(|p| disc.contains(p))
             .cloned()
             .collect()
+    }
+
+    /// Return the supported sandbox levels for a given agent type and backend.
+    ///
+    /// Combines the shipped defaults (`paranoid`, `normal`, `permissive`) with
+    /// custom levels discovered from the filesystem (see
+    /// `discover_sandbox_levels_async()`). The standard order is preserved;
+    /// custom levels are appended in alphabetical order. Duplicates are
+    /// removed.
+    ///
+    /// Returns an empty vec for unsandboxed agents or when the agent type has
+    /// no `sandbox_level` field — the wizard uses that as the skip signal.
+    /// `backend == None` returns just the standard defaults (no per-backend
+    /// custom merge), used when the backend hasn't been picked yet.
+    pub fn supported_sandbox_levels(
+        &self,
+        agent_type: &str,
+        backend: Option<&crate::sandbox_backend::SandboxBackend>,
+    ) -> Vec<String> {
+        let cfg = match self.agent_types.get(agent_type) {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        if !cfg.sandboxed || cfg.sandbox_level.is_none() {
+            return Vec::new();
+        }
+        let mut levels: Vec<String> = vec![
+            "paranoid".to_string(),
+            "normal".to_string(),
+            "permissive".to_string(),
+        ];
+        if let Some(b) = backend {
+            // Cache key MUST match the prefix that `discover_sandbox_levels_async`
+            // emits ("agent-sandbox:" / "nono:") — NOT `display_name()`, which
+            // returns "bwrap" for AgentSandbox and would silently miss the cache.
+            // `None` has no custom-profile concept (no fs lookup), so skip.
+            use crate::sandbox_backend::SandboxBackend;
+            let backend_key = match b {
+                SandboxBackend::AgentSandbox => "agent-sandbox",
+                SandboxBackend::Nono => "nono",
+                SandboxBackend::None => return levels,
+            };
+            let base = crate::agent::agent_type_base_name(agent_type);
+            let key = format!("{}:{}", backend_key, base);
+            if let Some(custom) = self.discovered_sandbox_levels.get(&key) {
+                let mut extras: Vec<String> = custom
+                    .iter()
+                    .filter(|l| !levels.iter().any(|s| s == *l))
+                    .cloned()
+                    .collect();
+                extras.sort();
+                levels.extend(extras);
+            }
+        }
+        levels
+    }
+
+    /// Enumerate unique *base* agent names with display names, sorted alphabetically.
+    /// Variants like `<base>-unsandboxed` / `<base>-paranoid` collapse into one
+    /// entry per base — the wizard recovers backend / level via subsequent steps.
+    ///
+    /// Display name preference: canonical sandboxed entry's `display_name` first,
+    /// then fall back to the unsandboxed variant with `" (unsandboxed)"` stripped,
+    /// finally to the bare base name.
+    pub fn base_agents(&self) -> Vec<(String, String)> {
+        use std::collections::BTreeSet;
+        let mut bases: BTreeSet<String> = BTreeSet::new();
+        for key in self.agent_types.keys() {
+            bases.insert(crate::agent::agent_type_base_name(key).to_string());
+        }
+        bases
+            .into_iter()
+            .map(|base| {
+                let display = if let Some(cfg) = self.agent_types.get(&base) {
+                    cfg.display_name.clone()
+                } else if let Some(cfg) = self.agent_types.get(&format!("{}-unsandboxed", base)) {
+                    cfg.display_name.replace(" (unsandboxed)", "")
+                } else {
+                    base.clone()
+                };
+                (base, display)
+            })
+            .collect()
+    }
+
+    /// Return the available sandbox backends for a base agent on this host.
+    ///
+    /// - When detection has completed: include only backends actually installed.
+    /// - When detection is pending (`detected = None`): fall back to the agent's
+    ///   TOML-pinned `sandbox_backend` only, so the wizard never offers a
+    ///   non-existent backend during the boot race. The wizard refreshes its
+    ///   list when `CMD_DETECT_BACKEND` resolves (see `main.rs` event handler).
+    /// - `None` is included whenever a `<base>-unsandboxed` entry exists,
+    ///   independent of detection state (no host check needed for "no sandbox").
+    pub fn available_backends_for_base(
+        &self,
+        base: &str,
+        detected: Option<&crate::sandbox_backend::DetectedBackends>,
+    ) -> Vec<crate::sandbox_backend::SandboxBackend> {
+        use crate::sandbox_backend::SandboxBackend;
+        let mut out = Vec::with_capacity(3);
+        let has_sandboxed = self.agent_types.get(base).map_or(false, |c| c.sandboxed);
+        let has_unsandboxed = self
+            .agent_types
+            .get(&format!("{}-unsandboxed", base))
+            .map_or(false, |c| !c.sandboxed);
+        if has_sandboxed {
+            match detected {
+                Some(d) => {
+                    if d.has_agent_sandbox {
+                        out.push(SandboxBackend::AgentSandbox);
+                    }
+                    if d.has_nono {
+                        out.push(SandboxBackend::Nono);
+                    }
+                }
+                None => {
+                    if let Some(cfg) = self.agent_types.get(base) {
+                        out.push(cfg.sandbox_backend.clone());
+                    }
+                }
+            }
+        }
+        if has_unsandboxed {
+            out.push(SandboxBackend::None);
+        }
+        out
+    }
+
+    /// Resolve the index of the preferred default backend for a base agent.
+    /// Preference order: TOML-pinned `sandbox_backend` on the canonical entry,
+    /// then first available (which is OS-aware via detection).
+    pub fn default_backend_index_for_base(
+        &self,
+        base: &str,
+        available: &[crate::sandbox_backend::SandboxBackend],
+    ) -> usize {
+        if let Some(cfg) = self.agent_types.get(base) {
+            if let Some(idx) = available.iter().position(|b| b == &cfg.sandbox_backend) {
+                return idx;
+            }
+        }
+        0
     }
 
     /// Look up profile details for a given agent type and profile name.

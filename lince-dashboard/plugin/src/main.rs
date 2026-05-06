@@ -321,9 +321,50 @@ impl ZellijPlugin for State {
                             self.config.agent_types = agent_types;
                         }
                         self.agent_types_loaded = true;
+                        // Pre-warm the custom sandbox-level cache now that we know the
+                        // bases. Discovery is async and idempotent — the wizard re-fires
+                        // it on open as a refresh, but doing it here means the cache is
+                        // usually populated before the user ever presses N.
+                        let bases: Vec<String> = self.config.base_agents()
+                            .into_iter().map(|(b, _)| b).collect();
+                        config::discover_sandbox_levels_async(&bases);
                         // Flush any buffered restore that was waiting for agent types.
                         if let Some(saved_agents) = self.pending_restore.take() {
                             self.restore_agents(saved_agents);
+                        }
+                        true
+                    }
+                    Some(config::CMD_DISCOVER_SANDBOX_LEVELS) => {
+                        if exit_code == Some(0) {
+                            // Replace entire cache: each discovery call covers all
+                            // bases × both backends atomically. A profile removed
+                            // since the last run won't appear in the new map and
+                            // would otherwise stick around as a stale level.
+                            self.config.discovered_sandbox_levels =
+                                config::parse_discovered_sandbox_levels(&stdout);
+                            // Refresh the wizard's level list ONLY if the user hasn't
+                            // moved past SandboxLevel yet — otherwise we'd risk
+                            // clobbering an already-confirmed choice if discovery
+                            // shifted the list (e.g., file removed mid-wizard).
+                            if let Some(ref mut wizard) = self.wizard {
+                                let on_or_before_level = matches!(
+                                    wizard.step,
+                                    WizardStep::AgentType
+                                        | WizardStep::SandboxBackend
+                                        | WizardStep::SandboxLevel
+                                );
+                                if on_or_before_level {
+                                    let base = wizard.selected_base_agent().to_string();
+                                    let backend = wizard.selected_sandbox_backend();
+                                    let preserved = wizard.selected_sandbox_level().map(|s| s.to_string());
+                                    wizard.available_sandbox_levels = self.config
+                                        .supported_sandbox_levels(&base, backend.as_ref());
+                                    wizard.sandbox_level_index = preserved
+                                        .as_deref()
+                                        .and_then(|p| wizard.available_sandbox_levels.iter().position(|l| l == p))
+                                        .unwrap_or(0);
+                                }
+                            }
                         }
                         true
                     }
@@ -331,6 +372,19 @@ impl ZellijPlugin for State {
                         if exit_code == Some(0) {
                             let detected = DetectedBackends::from_stdout(&stdout);
                             self.detected_backends = Some(detected);
+                            // If a wizard is open, its `available_sandbox_backends` was
+                            // computed against `None` detection (TOML-pin fallback) — refresh
+                            // it now that we know what's actually installed. Re-clamp the
+                            // selected index to keep it valid if the list shape changed.
+                            if let Some(ref mut wizard) = self.wizard {
+                                let base = wizard.selected_base_agent().to_string();
+                                wizard.available_sandbox_backends = self.config
+                                    .available_backends_for_base(&base, self.detected_backends.as_ref());
+                                if wizard.sandbox_backend_index >= wizard.available_sandbox_backends.len() {
+                                    wizard.sandbox_backend_index = self.config
+                                        .default_backend_index_for_base(&base, &wizard.available_sandbox_backends);
+                                }
+                            }
                         }
                         true
                     }
@@ -412,6 +466,7 @@ impl ZellijPlugin for State {
             effective_status,
             self.name_prompt.as_ref(),
             &self.config.agent_types,
+            &self.config.sandbox_colors,
         );
     }
 
@@ -501,34 +556,63 @@ impl State {
             BareKey::Char('N') => {
                 let default_dir = self.config.default_project_dir.clone()
                     .unwrap_or_default();
-                // Build sorted list of available agent types from config
-                let mut agent_type_list: Vec<(String, String)> = self.config.agent_types.iter()
-                    .map(|(k, v)| (k.clone(), v.display_name.clone()))
-                    .collect();
-                agent_type_list.sort_by(|a, b| a.0.cmp(&b.0));
+                // Step 1 list: deduplicated base agents (e.g. "claude", not "claude-unsandboxed").
+                let agent_type_list = self.config.base_agents();
                 let default_at_index = agent_type_list.iter()
                     .position(|(k, _)| k == DEFAULT_AGENT_TYPE)
                     .unwrap_or(0);
-                // Resolve profiles for the default agent type
-                let default_at_key = agent_type_list.get(default_at_index)
+                let default_base = agent_type_list.get(default_at_index)
                     .map(|(k, _)| k.as_str())
                     .unwrap_or(DEFAULT_AGENT_TYPE);
-                let available_profiles = self.config.profiles_for_agent_type(default_at_key);
+                // Step 2 list: backends available for the default base on this host.
+                let available_sandbox_backends = self.config.available_backends_for_base(
+                    default_base,
+                    self.detected_backends.as_ref(),
+                );
+                let sandbox_backend_index = self.config
+                    .default_backend_index_for_base(default_base, &available_sandbox_backends);
+                // Resolve initial effective agent_type (depends on backend choice).
+                let effective_type = if available_sandbox_backends
+                    .get(sandbox_backend_index)
+                    .map_or(false, |b| matches!(b, sandbox_backend::SandboxBackend::None))
+                {
+                    format!("{}-unsandboxed", default_base)
+                } else {
+                    default_base.to_string()
+                };
+                let available_profiles = self.config.profiles_for_agent_type(&effective_type);
                 let default_profile_index = self.config.default_profile.as_ref()
                     .and_then(|dp| available_profiles.iter().position(|p| p == dp))
                     .unwrap_or(0);
-                // Skip agent type step if only one type available
-                let first_step = if agent_type_list.len() <= 1 {
-                    WizardStep::Name
-                } else {
-                    WizardStep::AgentType
+                // Sandbox levels follow the canonical sandboxed entry (skipped when backend = None).
+                // Levels are backend-aware: discovered custom levels from
+                // `~/.config/nono/profiles/` and `~/.agent-sandbox/profiles/` are merged with
+                // the standard 3. Discovery is async — the cache may be empty at this point;
+                // CMD_DISCOVER_SANDBOX_LEVELS handler refreshes the wizard when results arrive.
+                let default_backend = available_sandbox_backends.get(sandbox_backend_index);
+                let available_sandbox_levels = self.config.supported_sandbox_levels(default_base, default_backend);
+                let sandbox_level_index = {
+                    let pinned = self.config.agent_types.get(default_base)
+                        .and_then(|c| c.sandbox_level.as_deref());
+                    pinned
+                        .and_then(|p| available_sandbox_levels.iter().position(|l| l == p))
+                        .unwrap_or(0)
                 };
-                let base = agent::agent_type_base_name(default_at_key);
-                let default_name = format!("{}-{}", base, self.next_agent_id + 1);
-                self.wizard = Some(WizardState {
-                    step: first_step,
+                // Kick off async discovery for ALL bases (cache covers any future wizard moves).
+                let discover_bases: Vec<String> = self.config.base_agents()
+                    .into_iter().map(|(b, _)| b).collect();
+                config::discover_sandbox_levels_async(&discover_bases);
+                let default_name = format!("{}-{}", default_base, self.next_agent_id + 1);
+                // Build state, then derive the first step from active_steps() so the
+                // skip rules don't drift between init and key handlers.
+                let mut state = WizardState {
+                    step: WizardStep::AgentType, // placeholder — replaced below
                     available_agent_types: agent_type_list,
                     agent_type_index: default_at_index,
+                    available_sandbox_backends,
+                    sandbox_backend_index,
+                    available_sandbox_levels,
+                    sandbox_level_index,
                     name: String::new(),
                     default_name,
                     available_profiles,
@@ -536,7 +620,9 @@ impl State {
                     project_dir: default_dir,
                     completions: Vec::new(),
                     completion_index: None,
-                });
+                };
+                state.step = state.active_steps().into_iter().next().unwrap_or(WizardStep::Name);
+                self.wizard = Some(state);
                 true
             }
             BareKey::Char('x') => {
@@ -657,14 +743,14 @@ impl State {
                     if let Some(agent) = self.agents.iter_mut().find(|a| a.id == agent_id) {
                         agent.name = name.clone();
                         if let Some(pid) = agent.pane_id {
-                            let title = agent::pane_title(&name, &agent.agent_type, &self.config.agent_types);
+                            let title = agent::pane_title(&name, &agent.agent_type, &self.config.agent_types, agent.sandbox_level.as_deref());
                             rename_pane_with_id(PaneId::Terminal(pid), &title);
                         }
                         self.status_message = Some(format!("Renamed to {}", name));
                     }
                     self.sort_agents_by_dir();
                 } else {
-                    // New agent mode: spawn.
+                    // New agent mode: spawn (no wizard, no sandbox overrides).
                     let effective_type = self.effective_default_agent_type().to_string();
                     match agent::spawn_agent_custom(
                         &self.config,
@@ -678,6 +764,8 @@ impl State {
                             .clone()
                             .unwrap_or_default(),
                         self.launch_dir.as_deref(),
+                        None,
+                        None,
                     ) {
                         Ok(info) => {
                             self.status_message = Some(format!("Spawned {}", info.name));
@@ -735,14 +823,40 @@ impl State {
         match wizard.step {
             WizardStep::AgentType => match bare {
                 BareKey::Enter | BareKey::Tab => {
-                    // Re-resolve profiles for the newly selected agent type
-                    let at_key = wizard.selected_agent_type().to_string();
-                    wizard.available_profiles = self.config.profiles_for_agent_type(&at_key);
-                    wizard.profile_index = 0;
-                    // Update default name to reflect selected agent type
-                    let base = agent::agent_type_base_name(&at_key);
+                    let base = wizard.selected_base_agent().to_string();
+                    // Re-resolve sandbox backends for the selected base BEFORE advancing.
+                    wizard.available_sandbox_backends = self.config
+                        .available_backends_for_base(&base, self.detected_backends.as_ref());
+                    wizard.sandbox_backend_index = self.config
+                        .default_backend_index_for_base(&base, &wizard.available_sandbox_backends);
+                    // Re-resolve sandbox levels (backend-aware: includes custom levels
+                    // discovered for the freshly-resolved backend index).
+                    let backend_for_levels = wizard.available_sandbox_backends
+                        .get(wizard.sandbox_backend_index);
+                    wizard.available_sandbox_levels = self.config
+                        .supported_sandbox_levels(&base, backend_for_levels);
+                    wizard.sandbox_level_index = {
+                        let pinned = self.config.agent_types.get(&base)
+                            .and_then(|c| c.sandbox_level.as_deref());
+                        pinned
+                            .and_then(|p| wizard.available_sandbox_levels.iter().position(|l| l == p))
+                            .unwrap_or(0)
+                    };
+                    // Resolve profiles against the effective agent_type *now* — if the
+                    // SandboxBackend step is skipped (single backend), its resolution
+                    // hook never fires and the wizard would carry the previous agent's
+                    // profile list. The SandboxBackend Enter handler still re-resolves
+                    // when shown, which is fine and cheap.
+                    let effective = wizard.effective_agent_type();
+                    wizard.available_profiles = self.config.profiles_for_agent_type(&effective);
+                    wizard.profile_index = self.config.default_profile.as_ref()
+                        .and_then(|dp| wizard.available_profiles.iter().position(|p| p == dp))
+                        .unwrap_or(0);
+                    // Update default name to reflect the new base.
                     wizard.default_name = format!("{}-{}", base, self.next_agent_id + 1);
-                    wizard.step = WizardStep::Name;
+                    if let Some(next) = wizard.next_step() {
+                        wizard.step = next;
+                    }
                 }
                 BareKey::Up | BareKey::Char('k') => {
                     if wizard.agent_type_index > 0 {
@@ -759,17 +873,98 @@ impl State {
                 }
                 _ => {}
             },
-            WizardStep::Name => match bare {
+            WizardStep::SandboxBackend => match bare {
                 BareKey::Enter | BareKey::Tab => {
-                    if wizard.has_profiles() {
-                        wizard.step = WizardStep::Profile;
-                    } else {
-                        wizard.step = WizardStep::ProjectDir;
+                    // Resolve profiles against the *effective* agent_type now that the
+                    // user has committed to a backend (sandboxed canonical vs unsandboxed).
+                    let effective = wizard.effective_agent_type();
+                    wizard.available_profiles = self.config.profiles_for_agent_type(&effective);
+                    wizard.profile_index = self.config.default_profile.as_ref()
+                        .and_then(|dp| wizard.available_profiles.iter().position(|p| p == dp))
+                        .unwrap_or(0);
+                    // Re-resolve sandbox levels for the just-chosen backend (custom levels
+                    // are backend-specific: nono profile dirs differ from agent-sandbox).
+                    let base = wizard.selected_base_agent().to_string();
+                    let backend_for_levels = wizard.selected_sandbox_backend();
+                    let preserved = wizard.selected_sandbox_level().map(|s| s.to_string());
+                    wizard.available_sandbox_levels = self.config
+                        .supported_sandbox_levels(&base, backend_for_levels.as_ref());
+                    wizard.sandbox_level_index = preserved
+                        .as_deref()
+                        .and_then(|p| wizard.available_sandbox_levels.iter().position(|l| l == p))
+                        .or_else(|| {
+                            let pinned = self.config.agent_types.get(&base)
+                                .and_then(|c| c.sandbox_level.as_deref());
+                            pinned.and_then(|p| wizard.available_sandbox_levels.iter().position(|l| l == p))
+                        })
+                        .unwrap_or(0);
+                    if let Some(next) = wizard.next_step() {
+                        wizard.step = next;
                     }
                 }
                 BareKey::Backspace => {
-                    if wizard.name.is_empty() && wizard.has_agent_types() {
-                        wizard.step = WizardStep::AgentType;
+                    if let Some(prev) = wizard.prev_step() {
+                        wizard.step = prev;
+                    }
+                }
+                BareKey::Up | BareKey::Char('k') => {
+                    let len = wizard.available_sandbox_backends.len();
+                    if len > 0 {
+                        wizard.sandbox_backend_index = if wizard.sandbox_backend_index == 0 {
+                            len - 1
+                        } else {
+                            wizard.sandbox_backend_index - 1
+                        };
+                    }
+                }
+                BareKey::Down | BareKey::Char('j') => {
+                    let len = wizard.available_sandbox_backends.len();
+                    if len > 0 {
+                        wizard.sandbox_backend_index = (wizard.sandbox_backend_index + 1) % len;
+                    }
+                }
+                _ => {}
+            },
+            WizardStep::SandboxLevel => match bare {
+                BareKey::Enter | BareKey::Tab => {
+                    if let Some(next) = wizard.next_step() {
+                        wizard.step = next;
+                    }
+                }
+                BareKey::Backspace => {
+                    if let Some(prev) = wizard.prev_step() {
+                        wizard.step = prev;
+                    }
+                }
+                BareKey::Up | BareKey::Char('k') => {
+                    let len = wizard.available_sandbox_levels.len();
+                    if len > 0 {
+                        wizard.sandbox_level_index = if wizard.sandbox_level_index == 0 {
+                            len - 1
+                        } else {
+                            wizard.sandbox_level_index - 1
+                        };
+                    }
+                }
+                BareKey::Down | BareKey::Char('j') => {
+                    let len = wizard.available_sandbox_levels.len();
+                    if len > 0 {
+                        wizard.sandbox_level_index = (wizard.sandbox_level_index + 1) % len;
+                    }
+                }
+                _ => {}
+            },
+            WizardStep::Name => match bare {
+                BareKey::Enter | BareKey::Tab => {
+                    if let Some(next) = wizard.next_step() {
+                        wizard.step = next;
+                    }
+                }
+                BareKey::Backspace => {
+                    if wizard.name.is_empty() {
+                        if let Some(prev) = wizard.prev_step() {
+                            wizard.step = prev;
+                        }
                     } else {
                         wizard.name.pop();
                     }
@@ -781,10 +976,14 @@ impl State {
             },
             WizardStep::Profile => match bare {
                 BareKey::Enter | BareKey::Tab => {
-                    wizard.step = WizardStep::ProjectDir;
+                    if let Some(next) = wizard.next_step() {
+                        wizard.step = next;
+                    }
                 }
                 BareKey::Backspace => {
-                    wizard.step = WizardStep::Name;
+                    if let Some(prev) = wizard.prev_step() {
+                        wizard.step = prev;
+                    }
                 }
                 BareKey::Up | BareKey::Char('k') => {
                     if wizard.profile_index > 0 {
@@ -809,8 +1008,8 @@ impl State {
                             wizard.project_dir = selected;
                         }
                         wizard.clear_completions();
-                    } else {
-                        wizard.step = WizardStep::Confirm;
+                    } else if let Some(next) = wizard.next_step() {
+                        wizard.step = next;
                     }
                 }
                 BareKey::Tab => {
@@ -828,10 +1027,8 @@ impl State {
                 }
                 BareKey::Backspace => {
                     if wizard.project_dir.is_empty() {
-                        if wizard.has_profiles() {
-                            wizard.step = WizardStep::Profile;
-                        } else {
-                            wizard.step = WizardStep::Name;
+                        if let Some(prev) = wizard.prev_step() {
+                            wizard.step = prev;
                         }
                     } else {
                         wizard.project_dir.pop();
@@ -846,17 +1043,34 @@ impl State {
             },
             WizardStep::Confirm => match bare {
                 BareKey::Enter => {
-                    // Clone values out before dropping the borrow
+                    // Clone values out before dropping the borrow.
                     let name = wizard.name.clone();
-                    let agent_type = wizard.selected_agent_type().to_string();
+                    let agent_type = wizard.effective_agent_type();
                     let profile = wizard.selected_profile().map(|s| s.to_string());
                     let project_dir = wizard.project_dir.clone();
+                    let backend_choice = wizard.selected_sandbox_backend();
+                    // Skip level when the chosen backend is `None` (unsandboxed) — it's a no-op.
+                    let sandbox_level = if matches!(backend_choice, Some(sandbox_backend::SandboxBackend::None)) {
+                        None
+                    } else {
+                        wizard.selected_sandbox_level().map(|s| s.to_string())
+                    };
+                    let sandbox_backend = backend_choice;
                     self.wizard = None;
-                    self.spawn_wizard_agent(name, &agent_type, profile, project_dir);
+                    self.spawn_wizard_agent(
+                        name,
+                        &agent_type,
+                        profile,
+                        project_dir,
+                        sandbox_level,
+                        sandbox_backend,
+                    );
                     return true;
                 }
                 BareKey::Backspace => {
-                    wizard.step = WizardStep::ProjectDir;
+                    if let Some(prev) = wizard.prev_step() {
+                        wizard.step = prev;
+                    }
                 }
                 _ => {}
             },
@@ -871,6 +1085,8 @@ impl State {
         agent_type: &str,
         profile: Option<String>,
         project_dir: String,
+        sandbox_level_override: Option<String>,
+        sandbox_backend_override: Option<sandbox_backend::SandboxBackend>,
     ) {
         match agent::spawn_agent_custom(
             &self.config,
@@ -881,6 +1097,8 @@ impl State {
             profile,
             project_dir,
             self.launch_dir.as_deref(),
+            sandbox_level_override,
+            sandbox_backend_override,
         ) {
             Ok(info) => {
                 self.status_message = Some(format!("Spawned {}", info.name));
@@ -1106,6 +1324,8 @@ impl State {
                 saved.profile,
                 saved.project_dir,
                 self.launch_dir.as_deref(),
+                saved.sandbox_level,
+                saved.sandbox_backend,
             ) {
                 Ok(mut info) => {
                     info.group = saved.group;
