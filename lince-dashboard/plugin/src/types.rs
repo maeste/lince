@@ -109,9 +109,11 @@ pub struct NamePromptState {
 }
 
 /// Which step the wizard is currently on.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WizardStep {
     AgentType,
+    SandboxBackend,
+    SandboxLevel,
     Name,
     Profile,
     ProjectDir,
@@ -122,10 +124,24 @@ pub enum WizardStep {
 #[derive(Debug, Clone)]
 pub struct WizardState {
     pub step: WizardStep,
-    /// Available agent type keys (from config.agent_types).
-    pub available_agent_types: Vec<(String, String)>,  // (key, display_name)
-    /// Currently selected agent type index.
+    /// Available *base* agent names (deduplicated by `agent_type_base_name`),
+    /// e.g. `[("claude", "Claude Code"), ("codex", "OpenAI Codex")]`. Sandbox
+    /// variant suffixes (`-unsandboxed`, `-paranoid`, ...) are folded out — the
+    /// wizard's SandboxBackend / SandboxLevel steps recover that information.
+    pub available_agent_types: Vec<(String, String)>,
+    /// Currently selected base agent index.
     pub agent_type_index: usize,
+    /// Available sandbox backends for the selected agent type. Includes
+    /// `SandboxBackend::None` when an `<base>-unsandboxed` entry exists.
+    pub available_sandbox_backends: Vec<crate::sandbox_backend::SandboxBackend>,
+    /// Currently selected sandbox backend index in `available_sandbox_backends`.
+    pub sandbox_backend_index: usize,
+    /// Available sandbox levels for the selected agent type (e.g. ["paranoid","normal","permissive"]).
+    /// May include custom levels discovered from the filesystem (e.g. "strict").
+    /// Empty for unsandboxed agents or legacy entries with no sandbox_level field.
+    pub available_sandbox_levels: Vec<String>,
+    /// Currently selected sandbox level index in `available_sandbox_levels`.
+    pub sandbox_level_index: usize,
     pub name: String,
     /// Auto-generated default name shown when the user leaves name empty (e.g. "claude-3").
     pub default_name: String,
@@ -141,17 +157,102 @@ pub struct WizardState {
 }
 
 impl WizardState {
-    /// Whether there are multiple agent types to choose from.
+    /// Whether there are multiple base agent types to choose from.
     pub fn has_agent_types(&self) -> bool {
         self.available_agent_types.len() > 1
     }
 
-    /// Return the selected agent type key, or the default as fallback.
-    pub fn selected_agent_type(&self) -> &str {
+    /// Return the selected *base* agent name (e.g. "claude"). Combine with
+    /// `selected_sandbox_backend()` to derive the effective agent_type.
+    pub fn selected_base_agent(&self) -> &str {
         self.available_agent_types
             .get(self.agent_type_index)
             .map(|(key, _)| key.as_str())
             .unwrap_or(crate::config::DEFAULT_AGENT_TYPE)
+    }
+
+    /// Resolve the effective `agent_type` config key for spawn:
+    /// - `<base>-unsandboxed` when backend is `None`
+    /// - `<base>` otherwise (canonical sandboxed entry)
+    pub fn effective_agent_type(&self) -> String {
+        let base = self.selected_base_agent();
+        if matches!(
+            self.selected_sandbox_backend(),
+            Some(crate::sandbox_backend::SandboxBackend::None)
+        ) {
+            format!("{}-unsandboxed", base)
+        } else {
+            base.to_string()
+        }
+    }
+
+    /// Whether there are multiple sandbox backends to choose from.
+    pub fn has_sandbox_backends(&self) -> bool {
+        self.available_sandbox_backends.len() > 1
+    }
+
+    /// Return the currently selected sandbox backend, or None if no backends available.
+    pub fn selected_sandbox_backend(&self) -> Option<crate::sandbox_backend::SandboxBackend> {
+        self.available_sandbox_backends.get(self.sandbox_backend_index).cloned()
+    }
+
+    /// Whether there are sandbox levels to choose from.
+    pub fn has_sandbox_levels(&self) -> bool {
+        !self.available_sandbox_levels.is_empty()
+    }
+
+    /// Return the currently selected sandbox level, or None if no levels available.
+    pub fn selected_sandbox_level(&self) -> Option<&str> {
+        self.available_sandbox_levels.get(self.sandbox_level_index).map(|s| s.as_str())
+    }
+
+    /// Build the ordered list of active wizard steps, applying skip rules.
+    /// Used by the renderer for the step counter and by key handlers for
+    /// computing prev/next steps without nested `if` arithmetic.
+    pub fn active_steps(&self) -> Vec<WizardStep> {
+        let mut steps = Vec::with_capacity(7);
+        if self.has_agent_types() {
+            steps.push(WizardStep::AgentType);
+        }
+        if self.has_sandbox_backends() {
+            steps.push(WizardStep::SandboxBackend);
+        }
+        if self.has_sandbox_levels() && !self.is_unsandboxed_choice() {
+            steps.push(WizardStep::SandboxLevel);
+        }
+        steps.push(WizardStep::Name);
+        if self.has_profiles() {
+            steps.push(WizardStep::Profile);
+        }
+        steps.push(WizardStep::ProjectDir);
+        steps.push(WizardStep::Confirm);
+        steps
+    }
+
+    /// Whether the user has currently selected the "no sandbox" backend.
+    pub fn is_unsandboxed_choice(&self) -> bool {
+        matches!(
+            self.selected_sandbox_backend(),
+            Some(crate::sandbox_backend::SandboxBackend::None)
+        )
+    }
+
+    /// Step that should follow the current one (or `None` if at end).
+    pub fn next_step(&self) -> Option<WizardStep> {
+        let steps = self.active_steps();
+        let idx = steps.iter().position(|s| s == &self.step)?;
+        steps.get(idx + 1).cloned()
+    }
+
+    /// Step that precedes the current one (or `None` if at start).
+    pub fn prev_step(&self) -> Option<WizardStep> {
+        let steps = self.active_steps();
+        let idx = steps.iter().position(|s| s == &self.step)?;
+        if idx == 0 {
+            None
+        } else {
+            steps.get(idx - 1).cloned()
+        }
     }
 
     /// Whether there are selectable profiles.
@@ -191,6 +292,12 @@ pub struct AgentInfo {
     pub model: Option<String>,
     /// Last event string read by poll_status_files(), used for change detection.
     pub last_polled_event: Option<String>,
+    /// Runtime-selected sandbox isolation level (wizard choice or saved state).
+    /// None for unsandboxed agents or legacy agents spawned without the wizard.
+    pub sandbox_level: Option<String>,
+    /// Runtime-selected sandbox backend (wizard choice or saved state).
+    /// None means use the agent type's TOML-pinned `sandbox_backend`.
+    pub sandbox_backend: Option<crate::sandbox_backend::SandboxBackend>,
 }
 
 impl AgentInfo {
@@ -235,6 +342,12 @@ pub struct SavedAgentInfo {
     pub group: Option<String>,
     pub tokens_in: u64,
     pub tokens_out: u64,
+    /// Runtime sandbox level selected at spawn time. None for older state files (backward compat).
+    #[serde(default)]
+    pub sandbox_level: Option<String>,
+    /// Runtime sandbox backend selected at spawn time. None for older state files (backward compat).
+    #[serde(default)]
+    pub sandbox_backend: Option<crate::sandbox_backend::SandboxBackend>,
 }
 
 fn default_agent_type() -> String {
@@ -251,6 +364,8 @@ impl From<&AgentInfo> for SavedAgentInfo {
             group: a.group.clone(),
             tokens_in: a.tokens_in,
             tokens_out: a.tokens_out,
+            sandbox_level: a.sandbox_level.clone(),
+            sandbox_backend: a.sandbox_backend.clone(),
         }
     }
 }

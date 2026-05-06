@@ -195,6 +195,7 @@ pub fn render_dashboard(
     status_message: Option<&str>,
     name_prompt: Option<&NamePromptState>,
     agent_types: &HashMap<String, AgentTypeConfig>,
+    sandbox_colors: &SandboxColors,
 ) {
     if rows == 0 || cols == 0 {
         return;
@@ -225,7 +226,7 @@ pub fn render_dashboard(
     if agents.is_empty() {
         render_empty_state(table_rows, cols);
     } else {
-        render_agent_table(agents, selected, focused, table_rows, cols, agent_types);
+        render_agent_table(agents, selected, focused, table_rows, cols, agent_types, sandbox_colors);
     }
 
     if let Some(detail_id) = detail {
@@ -284,6 +285,7 @@ fn render_agent_table(
     table_rows: usize,
     cols: usize,
     agent_types: &HashMap<String, AgentTypeConfig>,
+    sandbox_colors: &SandboxColors,
 ) {
     let col_idx: usize = 3;
     let col_type: usize = 5;  // 3 chars label + "!" marker + space
@@ -383,25 +385,34 @@ fn render_agent_table(
                     AgentStatus::WaitingForInput | AgentStatus::PermissionRequired
                 );
 
-                // Build type label column — always visible
+                // Build type label column — always visible.
+                // Color comes from the runtime sandbox_level (wizard selection) when set,
+                // mapped through sandbox_colors; falls back to the per-type config color.
                 let type_col = if let Some(cfg) = agent_types.get(&agent.agent_type) {
                     if !cfg.sandboxed {
                         format!(" \x1b[1;31m{}!{}", pad_left(&cfg.short_label, col_type.saturating_sub(2)), RESET)
                     } else {
-                        format!(" {}{} {}", color_name_to_ansi(&cfg.color), pad_left(&cfg.short_label, col_type.saturating_sub(2)), RESET)
+                        let color_name = if let Some(ref level) = agent.sandbox_level {
+                            sandbox_colors.for_level(level)
+                        } else {
+                            &cfg.color
+                        };
+                        format!(" {}{} {}", color_name_to_ansi(color_name), pad_left(&cfg.short_label, col_type.saturating_sub(2)), RESET)
                     }
                 } else {
                     format!(" {}??? {}", RESET, RESET)
                 };
 
-                // Build optional sandbox backend column string
+                // Build optional sandbox backend column string.
+                // Same override-vs-pin pattern as the level color: prefer the runtime
+                // wizard choice on AgentInfo, fall back to the agent type's TOML pin.
                 let sandbox_col = if show_sandbox {
                     if let Some(cfg) = agent_types.get(&agent.agent_type) {
                         if !cfg.sandboxed {
                             format!("\x1b[1;31m{}{} ", pad_left("NOSB", col_sandbox), RESET)
                         } else {
-                            let bname = cfg.sandbox_backend.display_name();
-                            format!("\x1b[2m{}{} ", pad_left(bname, col_sandbox), RESET)
+                            let backend = agent.sandbox_backend.as_ref().unwrap_or(&cfg.sandbox_backend);
+                            format!("\x1b[2m{}{} ", pad_left(backend.display_name(), col_sandbox), RESET)
                         }
                     } else {
                         format!("{} ", pad_left("-", col_sandbox))
@@ -489,8 +500,8 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
                 let sandbox_str = if !cfg.sandboxed {
                     " \x1b[1;31m[UNSANDBOXED]\x1b[0m".to_string()
                 } else {
-                    let backend_name = cfg.sandbox_backend.display_name();
-                    format!(" \x1b[2m[{}]\x1b[0m", backend_name)
+                    let backend = agent.sandbox_backend.as_ref().unwrap_or(&cfg.sandbox_backend);
+                    format!(" \x1b[2m[{}]\x1b[0m", backend.display_name())
                 };
                 (
                     cfg.display_name.as_str(),
@@ -654,7 +665,7 @@ pub fn render_wizard(
     wizard: &WizardState,
     rows: usize,
     cols: usize,
-    agent_types: &HashMap<String, AgentTypeConfig>,
+    _agent_types: &HashMap<String, AgentTypeConfig>,
     sandbox_colors: &SandboxColors,
 ) {
     if rows == 0 || cols == 0 {
@@ -667,20 +678,20 @@ pub fn render_wizard(
     push_title_border(&mut lines, " New Agent Wizard ", box_width);
     push_box_line(&mut lines, "", box_width);
 
-    let has_profiles = wizard.has_profiles();
-    let has_agent_types = wizard.has_agent_types();
-    let base: usize = 1;
-    let at_step = if has_agent_types { base } else { 0 };
-    let name_step = at_step + 1;
-    let profile_step = if has_profiles { name_step + 1 } else { 0 };
-    let dir_step = if has_profiles { profile_step + 1 } else { name_step + 1 };
-    let total_steps = dir_step + 1;
-    let (step_num, step_label) = match wizard.step {
-        WizardStep::AgentType => (at_step, "Agent Type"),
-        WizardStep::Name => (name_step, "Agent Name"),
-        WizardStep::Profile => (profile_step, "Profile"),
-        WizardStep::ProjectDir => (dir_step, "Project Directory"),
-        WizardStep::Confirm => (total_steps, "Confirm"),
+    // Compute step number / total from the active-steps list so the counter
+    // honors all skip rules (single agent type, unsandboxed, no profiles, ...)
+    // without nested conditionals.
+    let active = wizard.active_steps();
+    let total_steps = active.len();
+    let step_num = active.iter().position(|s| s == &wizard.step).map(|i| i + 1).unwrap_or(0);
+    let step_label = match wizard.step {
+        WizardStep::AgentType => "Agent Type",
+        WizardStep::SandboxBackend => "Sandbox Backend",
+        WizardStep::SandboxLevel => "Sandbox Level",
+        WizardStep::Name => "Agent Name",
+        WizardStep::Profile => "Profile",
+        WizardStep::ProjectDir => "Project Directory",
+        WizardStep::Confirm => "Confirm",
     };
 
     let header = format!("  Step {}/{}: {}", step_num, total_steps, step_label);
@@ -688,44 +699,82 @@ pub fn render_wizard(
 
     match wizard.step {
         WizardStep::AgentType => {
-            for (i, (key, display_name)) in wizard.available_agent_types.iter().enumerate() {
+            // Step 1 lists deduplicated *base* agents (e.g., "Claude Code"). All rows
+            // share the "normal" sandbox-level color so the wizard's palette stays
+            // consistent with the runtime indicator and the table coloring (gh#63):
+            // backend and level are picked in steps 2 and 3, where the palette reveals
+            // its meaning. Avoids per-agent colors flickering between this step and
+            // the table when an agent's `cfg.color` differs from the level palette.
+            let normal_color = sandbox_colors.for_level("normal");
+            for (i, (_key, display_name)) in wizard.available_agent_types.iter().enumerate() {
                 let is_selected = i == wizard.agent_type_index;
-                let cfg = agent_types.get(key.as_str());
-                let sandboxed = cfg.map_or(true, |c| c.sandboxed);
-                let backend_suffix = if let Some(c) = cfg {
-                    if c.sandboxed {
-                        format!(" [{}]", c.sandbox_backend.display_name())
-                    } else {
-                        " (non-sandboxed)".to_string()
-                    }
-                } else {
-                    String::new()
-                };
-                let label = format!("{}{}", display_name, backend_suffix);
                 if is_selected {
-                    // Selection background follows the sandbox-level palette:
-                    // paranoid/normal/permissive/custom each get their configured
-                    // color. Non-sandboxed stays red. Sandboxed entries with no
-                    // sandbox_level (legacy templates) fall back to the default.
-                    let bg = if !sandboxed {
+                    let bg = selection_bg_for_color(normal_color);
+                    push_box_line(&mut lines, &format!("  {}> {}{}", bg, display_name, RESET), box_width);
+                } else {
+                    let color = color_name_to_ansi(normal_color);
+                    push_box_line(&mut lines, &format!("    {}{}{}", color, display_name, RESET), box_width);
+                }
+            }
+            push_box_line(&mut lines, "", box_width);
+            push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);
+        }
+        WizardStep::SandboxBackend => {
+            for (i, backend) in wizard.available_sandbox_backends.iter().enumerate() {
+                let is_selected = i == wizard.sandbox_backend_index;
+                // Use red as a visual cue for the unsandboxed (None) choice; sandboxed
+                // backends use neutral default styling — the color reveal comes in step 3.
+                let label = backend.display_name();
+                if is_selected {
+                    let bg = if matches!(backend, crate::sandbox_backend::SandboxBackend::None) {
                         "\x1b[41m"
                     } else {
-                        let level = cfg.and_then(|c| c.sandbox_level.as_deref()).unwrap_or("");
-                        selection_bg_for_color(sandbox_colors.for_level(level))
+                        REVERSE
                     };
                     push_box_line(&mut lines, &format!("  {}> {}{}", bg, label, RESET), box_width);
                 } else {
-                    push_box_line(&mut lines, &format!("    {}", label), box_width);
+                    let prefix = if matches!(backend, crate::sandbox_backend::SandboxBackend::None) {
+                        "\x1b[31m"
+                    } else {
+                        ""
+                    };
+                    push_box_line(&mut lines, &format!("    {}{}{}", prefix, label, RESET), box_width);
+                }
+            }
+            push_box_line(&mut lines, "", box_width);
+            push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Bksp] Back  [Esc] Cancel", box_width);
+        }
+        WizardStep::SandboxLevel => {
+            for (i, level) in wizard.available_sandbox_levels.iter().enumerate() {
+                let is_selected = i == wizard.sandbox_level_index;
+                let color_name = sandbox_colors.for_level(level);
+                if is_selected {
+                    let bg = selection_bg_for_color(color_name);
+                    push_box_line(&mut lines, &format!("  {}> {}{}", bg, level, RESET), box_width);
+                } else {
+                    let color = color_name_to_ansi(color_name);
+                    push_box_line(&mut lines, &format!("    {}{}{}", color, level, RESET), box_width);
                 }
             }
             push_box_line(&mut lines, "", box_width);
             push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);
         }
         WizardStep::Confirm => {
-            let at_display = wizard.selected_agent_type();
+            let base_display = wizard.selected_base_agent();
             let profile_display = wizard.selected_profile().unwrap_or("(none)");
             let dir_display = if wizard.project_dir.is_empty() { "(current dir)" } else { &wizard.project_dir };
-            push_box_line(&mut lines, &format!("  Type:    {}", at_display), box_width);
+            // Show base agent + backend separately rather than the resolved
+            // `<base>-unsandboxed` key — matches the user's mental model.
+            push_box_line(&mut lines, &format!("  Type:    {}", base_display), box_width);
+            if let Some(backend) = wizard.selected_sandbox_backend() {
+                push_box_line(&mut lines, &format!("  Backend: {}", backend.display_name()), box_width);
+            }
+            // Level is meaningful only when a sandboxed backend is selected.
+            if !wizard.is_unsandboxed_choice() {
+                if let Some(level) = wizard.selected_sandbox_level() {
+                    push_box_line(&mut lines, &format!("  Level:   {}", level), box_width);
+                }
+            }
             let effective_name = if wizard.name.is_empty() { &wizard.default_name } else { &wizard.name };
             push_box_line(&mut lines, &format!("  Name:    {}", effective_name), box_width);
             push_box_line(&mut lines, &format!("  Profile: {}", profile_display), box_width);

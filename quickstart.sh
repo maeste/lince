@@ -503,6 +503,18 @@ confirm_installation() {
 }
 
 # ── Generate filtered agents-defaults.toml ───────────────────────────
+#
+# Schema note: since the SandboxBackend wizard step shipped, agents-defaults.toml
+# has ONE canonical sandboxed entry per agent (e.g. `[agents.claude]`) plus an
+# optional `[agents.<agent>-unsandboxed]` sibling. The runtime backend (bwrap vs
+# nono) is picked by the user at spawn time in the N wizard, so install-time no
+# longer needs separate `<agent>-bwrap` / `<agent>-nono` entries — they don't
+# exist in the source file.
+#
+# The user's backend selection in quickstart therefore boils down to:
+#   - any sandboxed backend (bwrap or nono) → emit the canonical `[agents.<x>]`
+#   - "unsandboxed" → emit the `[agents.<x>-unsandboxed]` sibling
+# Picking both bwrap AND nono produces a single canonical entry (no dupe).
 generate_agent_defaults() {
     local src="$SCRIPT_DIR/lince-dashboard/agents-defaults.toml"
     local dst="$1"
@@ -516,32 +528,25 @@ generate_agent_defaults() {
     # Start with header
     head -13 "$src" > "$dst"
 
-    for agent in "${SELECTED_AGENTS[@]}"; do
-        for backend in "${SELECTED_BACKENDS[@]}"; do
-            echo "" >> "$dst"
+    # Decide once which entry types we need from the user's backend selection.
+    local need_sandboxed=false
+    local need_unsandboxed=false
+    for backend in "${SELECTED_BACKENDS[@]}"; do
+        case "$backend" in
+            bwrap|nono) need_sandboxed=true ;;
+            unsandboxed) need_unsandboxed=true ;;
+        esac
+    done
 
-            case "$backend" in
-                bwrap)
-                    # Claude uses base "claude" (already bwrap), others use "<agent>-bwrap"
-                    if [ "$agent" = "claude" ]; then
-                        extract_agent_block "$src" "agents.claude" >> "$dst"
-                    else
-                        extract_agent_block "$src" "agents.${agent}-bwrap" >> "$dst"
-                    fi
-                    ;;
-                nono)
-                    extract_agent_block "$src" "agents.${agent}-nono" >> "$dst"
-                    ;;
-                unsandboxed)
-                    # Claude has an explicit unsandboxed variant; others use the base name
-                    if [ "$agent" = "claude" ]; then
-                        extract_agent_block "$src" "agents.claude-unsandboxed" >> "$dst"
-                    else
-                        extract_agent_block "$src" "agents.${agent}" >> "$dst"
-                    fi
-                    ;;
-            esac
-        done
+    for agent in "${SELECTED_AGENTS[@]}"; do
+        if [ "$need_sandboxed" = true ]; then
+            echo "" >> "$dst"
+            extract_agent_block "$src" "agents.${agent}" >> "$dst"
+        fi
+        if [ "$need_unsandboxed" = true ]; then
+            echo "" >> "$dst"
+            extract_agent_block "$src" "agents.${agent}-unsandboxed" >> "$dst"
+        fi
     done
 }
 

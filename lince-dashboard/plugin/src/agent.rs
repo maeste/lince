@@ -49,17 +49,24 @@ pub fn sandbox_level_glyph(level: &str) -> &'static str {
 /// Build pane title with a sandbox-level indicator.
 ///
 /// - Non-sandboxed agent types: `[NON-SANDBOXED] <name>` (unchanged).
-/// - Sandboxed with a known `sandbox_level`: `<glyph> [<level>] <name>`,
-///   e.g. `🟢 [paranoid] agent-1`.
-/// - Sandboxed with `sandbox_level = None` (legacy static command path):
-///   `<name>` (unchanged).
-pub fn pane_title(name: &str, agent_type: &str, agent_types: &HashMap<String, AgentTypeConfig>) -> String {
+/// - Sandboxed with a known level: `<glyph> [<level>] <name>`, e.g. `🟢 [paranoid] agent-1`.
+///   The level is taken from `sandbox_level_override` (runtime wizard selection) first,
+///   then falls back to the TOML-pinned `sandbox_level` for the agent type.
+/// - Sandboxed with no level anywhere (legacy static command): `<name>` (unchanged).
+pub fn pane_title(
+    name: &str,
+    agent_type: &str,
+    agent_types: &HashMap<String, AgentTypeConfig>,
+    sandbox_level_override: Option<&str>,
+) -> String {
     let cfg = agent_types.get(agent_type);
     let sandboxed = cfg.map_or(true, |c| c.sandboxed);
     if !sandboxed {
         return format!("[NON-SANDBOXED] {}", name);
     }
-    match cfg.and_then(|c| c.sandbox_level.as_deref()) {
+    let level = sandbox_level_override
+        .or_else(|| cfg.and_then(|c| c.sandbox_level.as_deref()));
+    match level {
         Some(level) => format!("{} [{}] {}", sandbox_level_glyph(level), level, name),
         None => name.to_string(),
     }
@@ -262,6 +269,8 @@ fn spawn_inner(
     profile: Option<String>,
     project_dir: String,
     group: Option<String>,
+    sandbox_level_override: Option<String>,
+    sandbox_backend_override: Option<SandboxBackend>,
 ) -> Result<AgentInfo, String> {
     if agents.len() >= config.max_agents {
         return Err(format!(
@@ -325,10 +334,17 @@ fn spawn_inner(
         // final and skips expand_command_template. The legacy/static path
         // (no sandbox_level set, or agent type not yet covered) goes
         // through the placeholder-substitution helper as before.
-        let synthesized = type_config.sandbox_level.as_deref().and_then(|level| {
+        // Runtime override takes precedence over the TOML-pinned sandbox_level.
+        let effective_level = sandbox_level_override.as_deref()
+            .or_else(|| type_config.sandbox_level.as_deref());
+        // Same precedence rule for sandbox_backend.
+        let effective_backend = sandbox_backend_override
+            .as_ref()
+            .unwrap_or(&type_config.sandbox_backend);
+        let synthesized = effective_level.and_then(|level| {
             synthesize_sandboxed_command(
                 agent_type,
-                &type_config.sandbox_backend,
+                effective_backend,
                 level,
                 &id,
                 &project_dir,
@@ -354,7 +370,7 @@ fn spawn_inner(
         // For agent-sandbox (bwrap) agents, pass the profile via -P flag so
         // agent-sandbox can resolve the profile's env vars internally.
         // Nono agents already have --profile baked into their command template.
-        if type_config.sandboxed && type_config.sandbox_backend == SandboxBackend::AgentSandbox {
+        if type_config.sandboxed && *effective_backend == SandboxBackend::AgentSandbox {
             if let Some(ref p) = profile {
                 if !p.is_empty() {
                     expanded.push("-P".to_string());
@@ -398,6 +414,13 @@ fn spawn_inner(
 
     let started_at = now_secs();
 
+    // Resolve the effective sandbox level to store on AgentInfo for color-coding and save/restore.
+    let resolved_sandbox_level = sandbox_level_override
+        .or_else(|| config.agent_types.get(agent_type).and_then(|c| c.sandbox_level.clone()));
+    // Resolved backend for save/restore + dashboard table label override.
+    let resolved_sandbox_backend = sandbox_backend_override
+        .or_else(|| config.agent_types.get(agent_type).map(|c| c.sandbox_backend.clone()));
+
     Ok(AgentInfo {
         id,
         name,
@@ -416,10 +439,16 @@ fn spawn_inner(
         running_subagents: 0,
         model: None,
         last_polled_event: None,
+        sandbox_level: resolved_sandbox_level,
+        sandbox_backend: resolved_sandbox_backend,
     })
 }
 
-/// Spawn a new agent with custom name, profile, and project directory.
+/// Spawn a new agent with custom name, profile, project directory, and optional sandbox overrides.
+///
+/// `sandbox_level_override` / `sandbox_backend_override` are the runtime values selected in the
+/// wizard (or restored from saved state). When `None`, `spawn_inner` falls back to the
+/// TOML-pinned values for the agent type.
 pub fn spawn_agent_custom(
     config: &DashboardConfig,
     next_id: &mut u32,
@@ -429,6 +458,8 @@ pub fn spawn_agent_custom(
     custom_profile: Option<String>,
     custom_project_dir: String,
     launch_dir: Option<&str>,
+    sandbox_level_override: Option<String>,
+    sandbox_backend_override: Option<SandboxBackend>,
 ) -> Result<AgentInfo, String> {
     let profile = match custom_profile {
         Some(ref p) if p.is_empty() => None,
@@ -441,7 +472,18 @@ pub fn spawn_agent_custom(
         crate::config::expand_tilde(&custom_project_dir)
     };
 
-    spawn_inner(config, next_id, agents, custom_name, agent_type, profile, project_dir, None)
+    spawn_inner(
+        config,
+        next_id,
+        agents,
+        custom_name,
+        agent_type,
+        profile,
+        project_dir,
+        None,
+        sandbox_level_override,
+        sandbox_backend_override,
+    )
 }
 
 /// Stop an agent by closing its pane.
@@ -493,23 +535,34 @@ pub fn reconcile_panes(
                 }
             }
         } else if agent.status == AgentStatus::Starting {
-            // Resolve the pane title pattern for this agent's type.
-            // Falls back to "agent-sandbox" if the agent type is not in config.
-            let pattern = agent_types
-                .get(&agent.agent_type)
+            // Resolve pane title patterns for this agent's type. For sandboxed
+            // agents the actual title varies by backend (agent-sandbox / nono /
+            // bash wrapper), so we accept any of: the TOML-configured pattern,
+            // "nono" (for nono backend), and the agent's base name (e.g. "claude"
+            // — the inner command Zellij ends up showing for some launchers).
+            // Unsandboxed agents only match the TOML pattern (usually the binary name).
+            let cfg = agent_types.get(&agent.agent_type);
+            let primary_pattern = cfg
                 .map(|c| c.pane_title_pattern.as_str())
                 .unwrap_or(DEFAULT_SANDBOX_COMMAND);
+            let base = agent_type_base_name(&agent.agent_type);
+            let sandboxed = cfg.map_or(true, |c| c.sandboxed);
+            let patterns: Vec<&str> = if sandboxed {
+                vec![primary_pattern, "nono", base]
+            } else {
+                vec![primary_pattern]
+            };
             for pane in &all_panes {
                 if pane.is_floating == expect_floating
                     && !pane.is_suppressed
                     && !pane.exited
                     && !assigned_ids.contains(&pane.id)
-                    && pane.title.contains(pattern)
+                    && patterns.iter().any(|p| pane.title.contains(p))
                 {
                     agent.pane_id = Some(pane.id);
                     assigned_ids.insert(pane.id);
                     agent.status = AgentStatus::WaitingForInput;
-                    let title = pane_title(&agent.name, &agent.agent_type, agent_types);
+                    let title = pane_title(&agent.name, &agent.agent_type, agent_types, agent.sandbox_level.as_deref());
                     rename_pane_with_id(PaneId::Terminal(pane.id), &title);
                     if expect_floating {
                         hide_pane_with_id(PaneId::Terminal(pane.id));

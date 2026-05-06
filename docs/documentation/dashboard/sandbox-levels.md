@@ -317,8 +317,16 @@ The plugin synthesizes the launch command from `(agent_type, sandbox_backend, sa
 
 File-naming convention:
 
-- **nono**: `~/.config/nono/profiles/lince-<agent>-<level>.json`
-- **agent-sandbox**: `~/.agent-sandbox/profiles/<level>.toml` (or in-repo `sandbox/profiles/<level>.toml` for built-ins)
+- **nono**: `~/.config/nono/profiles/lince-<agent>-<level>.json` (always agent-specific)
+- **agent-sandbox**: either form is supported, agent-sandbox tries them in this order:
+  - `~/.agent-sandbox/profiles/<agent>-<level>.toml` (agent-specific override)
+  - `~/.agent-sandbox/profiles/<level>.toml` (agent-agnostic — applies to every agent)
+
+> **Wizard auto-discovery.** The `N` wizard's *Sandbox Level* step scans both
+> directories above and lists every level it finds, in addition to the shipped
+> `paranoid` / `normal` / `permissive` defaults. Drop a profile file in either
+> path and re-open the wizard — your custom level shows up. Removing a file
+> removes the level on the next wizard open. No config edit needed.
 
 ### Worked example: a custom level for AWS Bedrock
 
