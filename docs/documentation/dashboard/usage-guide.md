@@ -239,6 +239,23 @@ passthrough = ["ZELLIJ", "ZELLIJ_SESSION_NAME", "LINCE_AGENT_ID"]
 
 Agent-specific environment variables (e.g. `OPENAI_API_KEY` for Codex) are set via the `env_vars` field in the agent type configuration and passed through automatically.
 
+## Troubleshooting
+
+### Ctrl+Shift+C kills agent (Terminator + Zellij)
+
+When running agents inside the dashboard on **Terminator**, pressing **Ctrl+Shift+C** to copy also delivers a SIGINT to the agent in the focused pane, interrupting it. The same key combo behaves correctly in Terminator without Zellij — the conflict only appears in the Terminator + Zellij combination.
+
+**Fix**: remap Terminator's copy shortcut to a key that doesn't include Ctrl+C.
+
+Option 1 — Edit `~/.config/terminator/config`:
+```ini
+[keybindings]
+copy = <Primary>Insert
+```
+Restart Terminator. `Ctrl+Insert` will copy without sending SIGINT.
+
+Option 2 — Via GUI: **Terminator → Preferences → Keybindings → copy_clipboard**, bind it to `Ctrl+Insert` or another shortcut that doesn't include Ctrl+C.
+
 ## See Also
 
 - [Configuration Reference](dashboard/config-reference.md) -- all config keys and their defaults
