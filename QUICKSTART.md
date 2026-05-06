@@ -146,6 +146,21 @@ export PATH="$HOME/.local/bin:$PATH"
    alias zd
    ```
 
+### Ctrl+Shift+C kills agent (Terminator users)
+
+Terminator intercepts **Ctrl+Shift+C** for copy but also emits a bare **Ctrl+C** (SIGINT) to the running process, which interrupts the agent.
+
+**Fix**: remap Terminator's copy shortcut to one that doesn't include Ctrl+C.
+
+Option 1 — Edit `~/.config/terminator/config`:
+```ini
+[keybindings]
+copy = <Primary>Insert
+```
+Then restart Terminator. Ctrl+Insert now copies without sending SIGINT.
+
+Option 2 — Via GUI: open **Terminator → Preferences → Keybindings**, find **copy_clipboard**, and bind it to `Ctrl+Insert` or another key that doesn't include Ctrl+C.
+
 ---
 
 ## Requirements Summary
