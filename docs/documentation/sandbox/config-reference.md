@@ -2,12 +2,34 @@
 
 ## Overview
 
-The sandbox is configured through a single TOML file. It is searched in order:
+The sandbox is configured through TOML files loaded in a cascade:
 
-1. `./.agent-sandbox/config.toml` -- project-local override (takes priority)
-2. `~/.agent-sandbox/config.toml` -- global fallback
+1. `~/.agent-sandbox/config.toml` — **global config** (base layer)
+2. `./.agent-sandbox/config.toml` — **project-local config** (deep-merged on top, optional)
 
-Create the file with `agent-sandbox init`. No inline defaults exist; the sandbox refuses to start without a real config file. Project-local configs let you set different profiles, extra writable directories, or security settings per repository.
+When both files exist, agent-sandbox deep-merges the project-local file on top of the global one:
+
+- **Scalars** from the local file replace the global value.
+- **Lists** are appended and deduplicated (global entries first, local entries added at the end).
+- **Tables** (TOML sections) are merged recursively.
+
+A startup line is printed to stderr when the merge is active:
+```
+config: merged ~/.agent-sandbox/config.toml + .agent-sandbox/config.toml
+```
+
+When only one file exists, it is loaded as-is (no merge). `agent-sandbox init` creates the global config. No inline defaults exist; the sandbox refuses to start without at least one config file.
+
+**Project-local config example** — only the fields that differ from the global need to be specified:
+
+```toml
+# .agent-sandbox/config.toml
+[security]
+block_git_push = false   # allow git push in this project only
+
+[sandbox]
+extra_rw = ["/tmp/my-project-cache"]  # appended to global extra_rw
+```
 
 ---
 
@@ -228,13 +250,25 @@ Three named levels package the security keys above into ready-made policies, sel
 - `normal` — the default. Network is open, credential proxy is opt-in.
 - `permissive` — adds extra read-only host paths on top of `normal`.
 
-Levels are loaded from policy fragments in `sandbox/profiles/<level>.toml` (built-in) or `~/.agent-sandbox/profiles/<level>.toml` (user-supplied) and deep-merged on top of the resolved config. List keys (`home_ro_dirs`, `allow_domains`) are append-merged, so extending a level doesn't require forking the file:
+Levels are loaded from policy fragments in `sandbox/profiles/<level>.toml` (built-in) or `~/.agent-sandbox/profiles/<level>.toml` (user-supplied) and deep-merged on top of the resolved config. List keys (`home_ro_dirs`, `allow_domains`) are append-merged, so extending a level doesn't require forking the file.
+
+**Option A — one-off override in `~/.agent-sandbox/config.toml`:**
 
 ```toml
-# ~/.agent-sandbox/config.toml
 [security]
 allow_domains = ["pypi.org", "files.pythonhosted.org"]
 ```
+
+**Option B — named reusable level with `extends` (create `~/.agent-sandbox/profiles/paranoid-with-ssh.toml`):**
+
+```toml
+extends = "paranoid"
+
+[sandbox]
+home_ro_dirs = [".ssh"]   # read-only access to SSH keys, appended to parent's list
+```
+
+The optional top-level `extends = "<name>"` field causes the named parent fragment to be resolved and loaded first (same 3-dir, agent-prefix search), then the child is merged on top. Chains of any depth are supported; cycles and missing parents are hard errors. The `extends` key does not appear in the final merged config.
 
 For the full level matrix, per-backend behavior, and custom-level recipes, see [Sandbox Levels](dashboard/sandbox-levels.md).
 

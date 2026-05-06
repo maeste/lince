@@ -93,6 +93,18 @@ agent-sandbox run
 
 That's it. Claude starts with `--dangerously-skip-permissions` by default (configurable) and has full autonomy within your project directory, but cannot escape.
 
+## Project-local config overrides
+
+Place a `.agent-sandbox/config.toml` file in any project directory to override specific settings without duplicating the entire global config. agent-sandbox deep-merges the project-local file on top of `~/.agent-sandbox/config.toml` at startup.
+
+```toml
+# .agent-sandbox/config.toml — minimal project-local override
+[security]
+block_git_push = false   # allow git push in this project only
+```
+
+Lists (e.g. `extra_rw`, `allow_domains`) are **appended**, not replaced, so project-specific paths or domains accumulate on top of the global ones. See [Project-local config overrides](https://lince.sh/documentation/#/sandbox/sandbox-levels#project-local-config-overrides) in the sandbox-levels docs for more examples.
+
 ## Documentation
 
 | Document | Description |
