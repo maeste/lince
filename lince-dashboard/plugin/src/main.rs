@@ -383,7 +383,13 @@ impl ZellijPlugin for State {
 
         // If wizard is active, render the wizard overlay instead of the dashboard
         if let Some(ref wizard) = self.wizard {
-            dashboard::render_wizard(wizard, rows, cols, &self.config.agent_types);
+            dashboard::render_wizard(
+                wizard,
+                rows,
+                cols,
+                &self.config.agent_types,
+                &self.config.sandbox_colors,
+            );
             return;
         }
 

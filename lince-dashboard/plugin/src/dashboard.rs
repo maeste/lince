@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::config::AgentTypeConfig;
+use crate::config::{AgentTypeConfig, SandboxColors};
 use crate::types::{
     AgentInfo, AgentStatus, NamePromptState, WizardState, WizardStep,
 };
@@ -632,7 +632,13 @@ fn render_status_bar(
 
 // ── Overlay: Wizard (LINCE-47) ─────────────────────────────────────
 
-pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize, agent_types: &HashMap<String, AgentTypeConfig>) {
+pub fn render_wizard(
+    wizard: &WizardState,
+    rows: usize,
+    cols: usize,
+    agent_types: &HashMap<String, AgentTypeConfig>,
+    sandbox_colors: &SandboxColors,
+) {
     if rows == 0 || cols == 0 {
         return;
     }
@@ -702,10 +708,18 @@ pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize, agent_types
             push_box_line(&mut lines, "  [Enter] Create  [Bksp] Back  [Esc] Cancel", box_width);
         }
         WizardStep::Profile => {
-            // Render profile list with selection marker
+            // Render profile list with selection marker.
+            // Profiles named after sandbox levels (paranoid/normal/permissive)
+            // pick up the configured palette; custom profile names get the
+            // default color. Matches the per-pane title indicator (gh#63).
             for (i, name) in wizard.available_profiles.iter().enumerate() {
                 let marker = if i == wizard.profile_index { ">" } else { " " };
-                push_box_line(&mut lines, &format!("  {} {}", marker, name), box_width);
+                let color = color_name_to_ansi(sandbox_colors.for_level(name));
+                push_box_line(
+                    &mut lines,
+                    &format!("  {} {}{}{}", marker, color, name, RESET),
+                    box_width,
+                );
             }
             push_box_line(&mut lines, "", box_width);
             push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);

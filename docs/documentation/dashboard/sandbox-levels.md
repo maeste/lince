@@ -8,6 +8,37 @@ Sandboxing isolates an AI coding agent from the rest of your machine: the agent 
 
 Until recently each combination of "agent type + isolation tightness" required its own entry in `agents-defaults.toml`. The three shipped levels collapse that: every agent type can be launched at any of the three levels through a single `sandbox_level` knob. `paranoid` keeps the agent on a strict diet (one API endpoint, scratch config), `normal` is the default daily-work setting, and `permissive` opens up GitHub and the `gh` CLI for users who need to push branches and open PRs from inside the sandbox.
 
+### 1.1 Visual indicators
+
+The dashboard tags each agent pane and the wizard's profile-selection step with a per-level color cue, so the level you're running at is visible at a glance.
+
+**Pane title.** Sandboxed agent panes carry a fixed glyph + bracketed level name in their pane title:
+
+| Level        | Pane title prefix     |
+|--------------|-----------------------|
+| `paranoid`   | 🟢 `[paranoid] <name>` |
+| `normal`     | 🔵 `[normal] <name>`   |
+| `permissive` | 🟡 `[permissive] <name>` |
+| custom       | ⚪ `[<level>] <name>`  |
+
+Non-sandboxed agents keep their existing `[NON-SANDBOXED] <name>` prefix. Agents on the legacy command-template path (no `sandbox_level` set) are not tagged.
+
+**Wizard.** The "N" wizard's *Profile* step colors each profile name using the same palette: `paranoid=green`, `normal=blue`, `permissive=yellow`, anything else falls back to the configurable default.
+
+**Customising the colors.** The palette is configurable in `~/.config/lince-dashboard/config.toml`:
+
+```toml
+[dashboard.sandbox_colors]
+paranoid   = "green"     # ANSI color name
+normal     = "blue"
+permissive = "yellow"
+default    = "white"     # used for any custom sandbox_level
+```
+
+Valid color names are the standard ANSI palette: `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`. The pane-title glyph mapping (🟢🔵🟡⚪) is fixed by design — the color knob only affects the wizard so the title stays consistent across users with different palettes.
+
+If you disable Zellij pane frames, the title indicator is hidden — agents continue to run normally and the dashboard table and wizard still convey the level.
+
 ## 2. The three shipped levels
 
 The table below summarises the differences. Sections after it give the concrete config snippets and behavior for each level.
