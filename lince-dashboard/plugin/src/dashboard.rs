@@ -19,6 +19,24 @@ fn color_name_to_ansi(name: &str) -> &'static str {
     }
 }
 
+/// ANSI background sequence for the wizard's selection block.
+///
+/// Forces a black foreground for light backgrounds (yellow/cyan/white) so
+/// the highlighted text stays readable. Dark backgrounds keep the default
+/// foreground.
+fn selection_bg_for_color(name: &str) -> &'static str {
+    match name {
+        "red" => "\x1b[41m",
+        "green" => "\x1b[42m",
+        "yellow" => "\x1b[30;43m",
+        "blue" => "\x1b[44m",
+        "magenta" => "\x1b[45m",
+        "cyan" => "\x1b[30;46m",
+        "white" => "\x1b[30;47m",
+        _ => "\x1b[30;47m",
+    }
+}
+
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const REVERSE: &str = "\x1b[7m";
@@ -685,8 +703,16 @@ pub fn render_wizard(
                 };
                 let label = format!("{}{}", display_name, backend_suffix);
                 if is_selected {
-                    // Green background for sandboxed, red for non-sandboxed
-                    let bg = if sandboxed { "\x1b[42m" } else { "\x1b[41m" }; // bg green / bg red
+                    // Selection background follows the sandbox-level palette:
+                    // paranoid/normal/permissive/custom each get their configured
+                    // color. Non-sandboxed stays red. Sandboxed entries with no
+                    // sandbox_level (legacy templates) fall back to the default.
+                    let bg = if !sandboxed {
+                        "\x1b[41m"
+                    } else {
+                        let level = cfg.and_then(|c| c.sandbox_level.as_deref()).unwrap_or("");
+                        selection_bg_for_color(sandbox_colors.for_level(level))
+                    };
                     push_box_line(&mut lines, &format!("  {}> {}{}", bg, label, RESET), box_width);
                 } else {
                     push_box_line(&mut lines, &format!("    {}", label), box_width);
