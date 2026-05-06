@@ -3300,7 +3300,10 @@ def create_snapshot(
     rsync_cmd.append(str(dest) + "/")
 
     result = subprocess.run(rsync_cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    # rsync exit 23 = partial transfer (some files/attrs not transferred).
+    # This commonly happens with --link-dest when symlinks in node_modules
+    # cannot be hard-linked.  The snapshot is still usable — treat as warning.
+    if result.returncode not in (0, 23):
         print(
             f"Error: rsync failed (exit {result.returncode}): "
             f"{result.stderr.strip()}",
@@ -3309,6 +3312,12 @@ def create_snapshot(
         if dest.exists():
             shutil.rmtree(dest)
         sys.exit(1)
+    if result.returncode == 23 and result.stderr.strip():
+        print(
+            f"  rsync: minor copy issues (non-fatal): "
+            f"{result.stderr.strip()[:200]}",
+            file=sys.stderr,
+        )
 
     return dest
 
