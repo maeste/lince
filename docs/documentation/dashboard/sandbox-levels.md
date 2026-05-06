@@ -17,7 +17,7 @@ The table below summarises the differences. Sections after it give the concrete 
 | Network (allowed destinations)          | Anthropic API only            | Anthropic API only     | inherited base     | + GitHub + gh CLI domains                               |
 | Network isolation enforcement           | kernel (netns) + proxy allowlist | kernel (Landlock + nono policy) | inherited       | proxy allowlist                                         |
 | Agent opens raw socket to exfiltrate    | blocked (no route in netns) ✓ | blocked (kernel policy) ✓ | depends on base | blocked for non-allowlisted hosts (proxy)               |
-| Filesystem                              | $WORKDIR + scratch ~/.claude  | $WORKDIR + scratch ~/.claude | as today      | + ~/.config/gh, ~/.cache, ~/.ssh/known_hosts            |
+| Filesystem                              | $WORKDIR + scratch ~/.claude + scratch ~/.claude.json | $WORKDIR + scratch ~/.claude | as today      | + ~/.config/gh, ~/.cache, ~/.ssh/known_hosts            |
 | `gh` CLI                                | no                            | no                     | no                 | yes                                                     |
 | `docker` / `podman`                     | no                            | no                     | no                 | **no** (out of scope)                                   |
 | direct `git push`                       | no                            | no                     | no                 | **no** (use `gh` instead)                               |
@@ -53,14 +53,20 @@ nono profile (`~/.config/nono/profiles/lince-claude-paranoid.json`):
 agent-sandbox (bwrap) fragment, loaded as `sandbox/profiles/claude-paranoid.toml`:
 
 ```toml
-[claude]
-use_real_config = false
+[agents.claude]
+# Per-run ephemeral copy of ~/.claude (rsync-seeded, bind-mounted,
+# removed on exit). Same mechanism codex paranoid uses.
+scratch_home_dirs = [".claude"]
+# ~/.claude.json is a sibling file, not a directory — handled by the
+# companion scratch_home_files mechanism.
+scratch_home_files = [".claude.json"]
 
 [security]
 credential_proxy = true
+unshare_net = true
 ```
 
-**Filesystem.** The agent gets read/write on `$WORKDIR` (the project directory). `~/.claude` is **not** mounted from your real home — instead `use_real_config = false` (bwrap) and `allow: ["$HOME"]` over a per-agent home (nono) cause the agent to start with a fresh, scratch `~/.claude` that gets `rsync`-seeded from your real config at spawn and discarded when the agent stops. Anything the agent writes to its config dir stays inside that scratch copy.
+**Filesystem.** The agent gets read/write on `$WORKDIR` (the project directory). `~/.claude` and `~/.claude.json` are **not** mounted from your real home — instead the `scratch_home_dirs` / `scratch_home_files` mechanism (bwrap) and `allow: ["$HOME"]` over a per-agent home (nono) cause the agent to start with a fresh, scratch `~/.claude` and `~/.claude.json` that get `rsync`-seeded from your real config at spawn and discarded when the agent stops. Anything the agent writes to its config dir or `~/.claude.json` stays inside the scratch copy and is gone on exit. Claude paranoid and codex paranoid share one code path here; the legacy `[claude] use_real_config` knob is bypassed in paranoid (see §8.0 below for its scope).
 
 **Tools.** The agent has its own binary, `git` for local commits, and the standard core utilities. No `gh`, no `curl` to arbitrary hosts, no `docker`, no `podman`.
 
@@ -486,7 +492,18 @@ The same mechanism applies to OpenAI Codex, with the keystore account name `open
 
 The shipped levels apply across all sandboxed agents, but each agent has quirks worth calling out. The general mechanics are documented above; this section is for the per-agent deltas.
 
-### 7.1 Codex (OpenAI)
+### 8.0 Claude — scope of `[claude] use_real_config`
+
+`[claude] use_real_config` is a **claude-only** knob and is honored **only at the `normal` and `permissive` sandbox levels**. It controls how the *persistent* claude config dir is sourced for those two levels:
+
+- `use_real_config = true` — bind-mount real `~/.claude` and `~/.claude.json` directly into the sandbox (writable). Useful when you want the agent's tool-permission learning, MCP project state, and recent-project list to persist on your host across runs.
+- `use_real_config = false` *(default)* — use the persistent isolated copy at `~/.agent-sandbox/claude-config/` (and the sibling `~/.agent-sandbox/claude.json`). `agent-sandbox init` populates it from real `~/.claude`; `agent-sandbox merge` / `snapshot-diff` sync it back.
+
+**Paranoid bypasses this knob entirely.** Claude paranoid uses the generic `scratch_home_dirs` / `scratch_home_files` mechanism (per-run ephemeral, rsync-seeded, discarded on exit) — same path codex paranoid uses. Setting `use_real_config = true` in your user config has **no effect** under paranoid; the scratch path always wins. This is intentional: paranoid's contract is "no cross-run filesystem state", and that includes claude config.
+
+No other agent has a `use_real_config` knob, and there are no plans to add one. Codex, gemini, opencode, and pi all rely on `scratch_home_dirs` for paranoid and on direct `home_rw_dirs` mounts (or no mount) for normal/permissive.
+
+### 8.1 Codex (OpenAI)
 
 Codex's level mappings follow the same shape as Claude's, with a few codex-specific knobs.
 
@@ -508,14 +525,14 @@ Both paths must keep `--sandbox danger-full-access` on the codex argv across all
 
 **`OPENAI_API_KEY` handling per level.** Normal and permissive pass `OPENAI_API_KEY` through to the codex process unchanged. Paranoid strips it from the sandbox environment entirely and lets the host-side credential proxy inject the `Authorization: Bearer <key>` header on outbound HTTPS — same model as Claude's `ANTHROPIC_API_KEY` in paranoid. The shipped `sandbox/profiles/codex-paranoid.toml` auto-maps `OPENAI_API_KEY = "$OPENAI_API_KEY"` in `[env.extra]` so the proxy has something to inject without requiring a manual entry in the user's config; if the host env var is unset the rule is silently dropped (same as Claude).
 
-**Scratch ~/.codex (both backends).** Unlike Claude — whose `[claude] use_real_config = false` mechanism redirects writes to a *persistent* `~/.agent-sandbox/claude-config/` shared across runs — codex paranoid uses a *per-run ephemeral* scratch:
+**Scratch ~/.codex (both backends).** Codex paranoid uses a *per-run ephemeral* scratch — same mechanism claude paranoid now uses (see §8.0; `[claude] use_real_config` is a normal/permissive concern, bypassed by paranoid):
 
 - **bwrap paranoid**: `sandbox/profiles/codex-paranoid.toml` ships `[agents.codex] scratch_home_dirs = [".codex"]`. `agent-sandbox` (run-side, before launching bwrap) creates a temp dir under `$XDG_RUNTIME_DIR`, rsyncs `~/.codex/` into it, bind-mounts the scratch on top of `~/.codex` inside the sandbox, and `rm -rf`s the scratch in the run's `finally` block. Real `~/.codex` is never bound RW into the sandbox.
 - **nono paranoid**: the `lince-dashboard` plugin synthesizes a per-agent bash wrapper that rsyncs `~/.codex` into a scratch `HOME` under `$XDG_RUNTIME_DIR` and discards it on exit — same outcome, different code path.
 
-The result is identical to the user: the agent sees its own auth/state at startup, can write to its config dir freely during the run, and those writes are gone when the run ends. No cross-run state leakage; no risk of a paranoid run mutating your real codex config. The mechanism is generic — `scratch_home_dirs` is read from the resolved `agent_cfg`, so any other agent (or any other home subdir) can opt in via a fragment without touching `agent-sandbox` itself.
+The result is identical to the user: the agent sees its own auth/state at startup, can write to its config dir freely during the run, and those writes are gone when the run ends. No cross-run state leakage; no risk of a paranoid run mutating your real codex config. The mechanism is generic — `scratch_home_dirs` and the companion `scratch_home_files` (for sibling files like `~/.claude.json`) are read from the resolved `agent_cfg`, so any other agent (or any other home subdir / sibling file) can opt in via a fragment without touching `agent-sandbox` itself.
 
-`rsync` is required on the host for `scratch_home_dirs` to function; `agent-sandbox` errors out at startup with a clear message if it's missing.
+`rsync` is required on the host for `scratch_home_dirs` / `scratch_home_files` to function; `agent-sandbox` errors out at startup with a clear message if it's missing.
 
 **Common custom levels for codex.** The same `sandbox_level` knob accepts arbitrary suffixes — drop a profile at `~/.config/nono/profiles/lince-codex-<name>.json` (or a TOML fragment under `~/.agent-sandbox/profiles/`) and reference it via `sandbox_level = "<name>"`. Two common patterns:
 
@@ -524,7 +541,7 @@ The result is identical to the user: the agent sees its own auth/state at startu
 
 For the master mechanics (file-naming convention, append-merge semantics, choosing a backend), see §4 and §6 above — those rules apply unchanged to codex.
 
-### 7.2 Gemini (Google)
+### 8.2 Gemini (Google)
 
 Gemini's level mappings follow the same shape as Claude's, with one important caveat around authentication.
 

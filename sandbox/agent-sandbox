@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from difflib import unified_diff
 import http.client
@@ -214,12 +215,14 @@ HARDCODED_CLAUDE_DEFAULTS: dict = {
     "bwrap_conflict": False,
     "disable_inner_sandbox_args": [],
     "scratch_home_dirs": [],
+    "scratch_home_files": [],
 }
 
 # Keys that every agent config must have (used for validation/defaults).
 AGENT_CONFIG_KEYS: tuple[str, ...] = (
     "command", "default_args", "env", "home_ro_dirs", "home_rw_dirs",
     "bwrap_conflict", "disable_inner_sandbox_args", "scratch_home_dirs",
+    "scratch_home_files",
 )
 
 # nono built-in profile names — agents that have a matching nono profile
@@ -313,24 +316,52 @@ _PROXY_SKIP_HEADERS = frozenset({
 # ---------------------------------------------------------------------------
 
 class _UpstreamPool:
-    """Simple HTTPS connection pool keyed by (host, port).
+    """Checkout/checkin HTTPS connection pool keyed by (host, port).
 
     Reuses persistent connections (HTTP keep-alive) so multiple API
-    requests share the same TLS session.  This avoids per-request TLS
-    handshakes that trigger aggressive rate limiting on some providers.
+    requests share the same TLS session — avoids per-request handshakes
+    that trip aggressive rate limiting on some providers.
+
+    Thread-safety: ``http.client.HTTPSConnection`` is not thread-safe.
+    The credential proxy uses ``ThreadingTCPServer`` so concurrent
+    requests run in different threads; an earlier version of this pool
+    handed the same conn out to multiple threads simultaneously, which
+    races on the underlying socket and corrupts response framing
+    (premature EOFs, garbled bodies, retry loops). The fix: each thread
+    *checks out* a conn for the duration of its request+stream and
+    returns it on completion. Concurrent threads get distinct conns
+    (idle pool first, fresh otherwise). Callers must use the
+    ``request()`` context manager so the conn is released when streaming
+    finishes — see ``_handle_forward`` and ``_forward_passthrough``.
     """
 
     def __init__(self):
-        self._conns: dict[tuple[str, int], http.client.HTTPSConnection] = {}
+        self._idle: dict[
+            tuple[str, int], list[http.client.HTTPSConnection]
+        ] = {}
         self._lock = threading.Lock()
 
+    def _checkout(self, host: str, port: int) -> http.client.HTTPSConnection:
+        with self._lock:
+            conns = self._idle.get((host, port))
+            if conns:
+                return conns.pop()
+        return http.client.HTTPSConnection(host, port)
+
+    def _checkin(
+        self, host: str, port: int, conn: http.client.HTTPSConnection
+    ) -> None:
+        with self._lock:
+            self._idle.setdefault((host, port), []).append(conn)
+
+    @contextmanager
     def request(
         self,
         url: str,
         method: str,
         body: bytes | None,
         headers: dict[str, str],
-    ) -> http.client.HTTPResponse:
+    ):
         parsed = urlparse(url)
         host = parsed.hostname or ""
         port = parsed.port or 443
@@ -338,23 +369,37 @@ class _UpstreamPool:
         if parsed.query:
             path = f"{path}?{parsed.query}"
 
-        key = (host, port)
-        with self._lock:
-            conn = self._conns.get(key)
-            if conn is None:
-                conn = http.client.HTTPSConnection(host, port)
-                self._conns[key] = conn
-
+        conn = self._checkout(host, port)
+        reusable = False
         try:
-            conn.request(method, path, body=body, headers=headers)
-            return conn.getresponse()
-        except (http.client.HTTPException, OSError):
-            # Stale connection — reconnect once.
-            conn = http.client.HTTPSConnection(host, port)
-            with self._lock:
-                self._conns[key] = conn
-            conn.request(method, path, body=body, headers=headers)
-            return conn.getresponse()
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+            except (http.client.HTTPException, OSError):
+                # Idle conn went stale (server closed it). Replace once.
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                conn = http.client.HTTPSConnection(host, port)
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+
+            yield resp
+
+            # Reached only if the caller drained the response without
+            # raising. ``resp.will_close`` reflects the upstream's
+            # framing (Connection: close, no Content-Length on HTTP/1.0,
+            # etc.) — only return to pool if the conn is genuinely idle.
+            reusable = not resp.will_close
+        finally:
+            if reusable:
+                self._checkin(host, port, conn)
+            else:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
 
 
 # Module-level singleton so all handler instances share connections.
@@ -595,27 +640,30 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
         try:
             # Use the connection pool for keep-alive (avoids per-request
             # TLS handshakes that trigger rate limiting on some providers).
-            resp = _upstream_pool.request(
+            # The context manager owns the upstream conn for the entire
+            # streaming window — see _UpstreamPool docstring.
+            with _upstream_pool.request(
                 upstream_url, method, body, fwd_headers,
-            )
-            self.send_response(resp.status)
-            for hdr, val in resp.getheaders():
-                if hdr.lower() not in _PROXY_SKIP_HEADERS:
-                    self.send_header(hdr, val)
-            # We strip Content-Length and Transfer-Encoding above; signal
-            # end-of-response via connection close so the client reads
-            # until EOF without depending on either framing.
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.flush()
-            # Stream response: use small reads and flush after each
-            # write so SSE events reach the client immediately.
-            while True:
-                chunk = resp.read(4096)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+            ) as resp:
+                self.send_response(resp.status)
+                for hdr, val in resp.getheaders():
+                    if hdr.lower() not in _PROXY_SKIP_HEADERS:
+                        self.send_header(hdr, val)
+                # We strip Content-Length and Transfer-Encoding above;
+                # signal end-of-response via connection close so the
+                # client reads until EOF without depending on either
+                # framing.
+                self.send_header("Connection", "close")
+                self.end_headers()
                 self.wfile.flush()
+                # Stream response: use small reads and flush after each
+                # write so SSE events reach the client immediately.
+                while True:
+                    chunk = resp.read(4096)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
         except http.client.HTTPException as exc:
             _proxy_logger.warning(
                 "Upstream error %s %s: %s", method, upstream_url, exc
@@ -678,20 +726,22 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
         _proxy_logger.info("PASS %s %s", method, upstream_url)
 
         try:
-            resp = _upstream_pool.request(upstream_url, method, body, fwd_headers)
-            self.send_response(resp.status)
-            for hdr, val in resp.getheaders():
-                if hdr.lower() not in _PROXY_SKIP_HEADERS:
-                    self.send_header(hdr, val)
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.flush()
-            while True:
-                chunk = resp.read(4096)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+            with _upstream_pool.request(
+                upstream_url, method, body, fwd_headers,
+            ) as resp:
+                self.send_response(resp.status)
+                for hdr, val in resp.getheaders():
+                    if hdr.lower() not in _PROXY_SKIP_HEADERS:
+                        self.send_header(hdr, val)
+                self.send_header("Connection", "close")
+                self.end_headers()
                 self.wfile.flush()
+                while True:
+                    chunk = resp.read(4096)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
         except http.client.HTTPException as exc:
             _proxy_logger.warning("Pass-through error %s %s: %s", method, upstream_url, exc)
             self._safe_send_error(502, f"Pass-through error: {exc}")
@@ -1181,6 +1231,8 @@ def resolve_agent_config(config: dict, agent_name: str) -> dict:
         "disable_inner_sandbox_args": [],
         # Subdirs bound to per-run ephemeral scratch dirs (see cmd_run §5c).
         "scratch_home_dirs": [],
+        # Sibling files bound to per-run ephemeral scratch files (same plumbing).
+        "scratch_home_files": [],
     }
 
     # --- Layer 1: shipped defaults from agents-defaults.toml -----------------
@@ -1822,23 +1874,38 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     cmd += ["--bind", project, project]
 
     # --- 7. Claude config (read-write) ----------------------------------------
+    # If `.claude` or `.claude.json` are scratched (paranoid via
+    # scratch_home_dirs / scratch_home_files), skip these binds — the
+    # ephemeral scratch mount in §5c already covers them and we must not
+    # let a later --bind override the scratch.
+    claude_dir_target = f"{home}/.claude"
+    claude_json_target = f"{home}/.claude.json"
+    claude_dir_scratched = claude_dir_target in scratched_targets
+    claude_json_scratched = claude_json_target in scratched_targets
     if claude_conf.get("use_real_config", False):
-        # Mount real ~/.claude and ~/.claude.json directly (writable)
-        real_claude = str(Path.home() / ".claude")
-        if os.path.isdir(real_claude):
-            cmd += ["--bind", real_claude, f"{home}/.claude"]
-        real_json = Path.home() / ".claude.json"
-        if real_json.exists():
-            cmd += ["--bind", str(real_json), f"{home}/.claude.json"]
+        # Mount real ~/.claude and ~/.claude.json directly (writable).
+        # Note: use_real_config is a claude-only knob and is honored only
+        # for normal/permissive sandbox levels. Paranoid bypasses this
+        # branch via scratch_home_dirs / scratch_home_files (see §5c).
+        if not claude_dir_scratched:
+            real_claude = str(Path.home() / ".claude")
+            if os.path.isdir(real_claude):
+                cmd += ["--bind", real_claude, claude_dir_target]
+        if not claude_json_scratched:
+            real_json = Path.home() / ".claude.json"
+            if real_json.exists():
+                cmd += ["--bind", str(real_json), claude_json_target]
     else:
         # Mount from sandbox copy
-        cc_dir = str(expand(claude_conf.get("config_dir",
-                                            "~/.agent-sandbox/claude-config")))
-        cmd += ["--bind", cc_dir, f"{home}/.claude"]
+        if not claude_dir_scratched:
+            cc_dir = str(expand(claude_conf.get("config_dir",
+                                                "~/.agent-sandbox/claude-config")))
+            cmd += ["--bind", cc_dir, claude_dir_target]
         # Claude runtime state file (~/.claude.json)
-        claude_json = SANDBOX_DIR / "claude.json"
-        if claude_json.exists():
-            cmd += ["--bind", str(claude_json), f"{home}/.claude.json"]
+        if not claude_json_scratched:
+            claude_json = SANDBOX_DIR / "claude.json"
+            if claude_json.exists():
+                cmd += ["--bind", str(claude_json), claude_json_target]
 
     # --- 8. Sanitised gitconfig (read-only) ----------------------------------
     gc = SANDBOX_DIR / "gitconfig"
@@ -2320,15 +2387,20 @@ def cmd_run(args, agent_extra: list[str]) -> None:
 
     # --- agent-sandbox (bwrap) backend path --------------------------------
 
-    # --- Ephemeral scratch home dirs (per-run snapshot) -------------------
+    # --- Ephemeral scratch home dirs/files (per-run snapshot) -------------
     scratch_binds: list[tuple[str, str]] = []
+    # Temp dirs to rmtree on exit. For scratch_home_dirs the temp dir is
+    # itself the bind source; for scratch_home_files the bind source is a
+    # file inside the temp dir, so rmtree on the dir cleans the file too.
+    scratch_cleanup_dirs: list[str] = []
     scratch_subdirs = agent_cfg.get("scratch_home_dirs", [])
-    if scratch_subdirs:
+    scratch_files = agent_cfg.get("scratch_home_files", [])
+    if scratch_subdirs or scratch_files:
         if not shutil.which("rsync"):
             print(
-                "Error: scratch_home_dirs requires 'rsync' on the host. "
-                "Install via your package manager (e.g. `dnf install rsync` "
-                "or `apt install rsync`).",
+                "Error: scratch_home_dirs / scratch_home_files require "
+                "'rsync' on the host. Install via your package manager "
+                "(e.g. `dnf install rsync` or `apt install rsync`).",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -2342,6 +2414,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                 prefix=f"agent-sandbox-{agent_name}-{os.getpid()}-",
                 dir=scratch_root,
             )
+            scratch_cleanup_dirs.append(scratch_path)
             real = home_p / sub_clean
             if real.is_dir():
                 rsync = subprocess.run(
@@ -2356,6 +2429,34 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                         file=sys.stderr,
                     )
             scratch_binds.append((scratch_path, str(home_p / sub_clean)))
+        for fname in scratch_files:
+            f_clean = fname.lstrip("/").rstrip("/")
+            if not f_clean:
+                continue
+            scratch_dir = tempfile.mkdtemp(
+                prefix=f"agent-sandbox-{agent_name}-{os.getpid()}-",
+                dir=scratch_root,
+            )
+            scratch_cleanup_dirs.append(scratch_dir)
+            scratch_file = os.path.join(scratch_dir, os.path.basename(f_clean))
+            real = home_p / f_clean
+            if real.is_file():
+                rsync = subprocess.run(
+                    ["rsync", "-a", "--", str(real), scratch_file],
+                    check=False,
+                )
+                if rsync.returncode != 0:
+                    print(
+                        f"Warning: rsync of ~/{f_clean} to scratch "
+                        f"returned {rsync.returncode}; agent will see "
+                        f"an empty scratch file.",
+                        file=sys.stderr,
+                    )
+                    Path(scratch_file).touch()
+            else:
+                # bwrap --bind needs an existing source path.
+                Path(scratch_file).touch()
+            scratch_binds.append((scratch_file, str(home_p / f_clean)))
 
     # --- Credential proxy setup -------------------------------------------
     proxy_enabled = sec.get("credential_proxy", False)
@@ -2614,6 +2715,9 @@ def cmd_run(args, agent_extra: list[str]) -> None:
 
     # Print banner
     use_real = config.get("claude", {}).get("use_real_config", False)
+    claude_scratched = any(
+        target == str(Path.home() / ".claude") for _, target in scratch_binds
+    )
     print("agent-sandbox")
     print(f"  config      {config_path}")
     print(f"  backend     agent-sandbox (bubblewrap)")
@@ -2621,12 +2725,15 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     if profile:
         desc = f" ({prof_desc})" if prof_desc else ""
         print(f"  profile     {profile}{desc}")
-    if use_real:
-        print(f"  agent-cfg   real ~/.claude (use_real_config)")
-    else:
-        cc_dir = expand(config.get("claude", {}).get("config_dir",
-                        "~/.agent-sandbox/claude-config"))
-        print(f"  agent-cfg   {cc_dir} (isolated copy)")
+    if agent_name == "claude":
+        if claude_scratched:
+            print(f"  agent-cfg   ephemeral scratch (per-run, discarded on exit)")
+        elif use_real:
+            print(f"  agent-cfg   real ~/.claude (use_real_config)")
+        else:
+            cc_dir = expand(config.get("claude", {}).get("config_dir",
+                            "~/.agent-sandbox/claude-config"))
+            print(f"  agent-cfg   {cc_dir} (isolated copy)")
     print(f"  project     {project_dir}")
     print(f"  filesystem  read-only root, writable project dir")
     print(f"  network     enabled")
@@ -2682,7 +2789,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     finally:
         if proxy:
             proxy.stop()
-        for scratch_path, _ in scratch_binds:
+        for scratch_path in scratch_cleanup_dirs:
             shutil.rmtree(scratch_path, ignore_errors=True)
 
 

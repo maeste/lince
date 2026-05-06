@@ -4,9 +4,13 @@
 # top of the user's resolved config. Lists like home_ro_dirs and
 # allow_domains are appended (not replaced).
 #
-# Paranoid means kernel-enforced isolation:
-#   - use_real_config = false: agent writes to ~/.agent-sandbox/claude-config/,
-#     real ~/.claude is untouched.
+# Paranoid means kernel-enforced isolation + ephemeral filesystem:
+#   - scratch_home_dirs / scratch_home_files: per-run ephemeral copies of
+#     ~/.claude and ~/.claude.json (rsync-seeded, bind-mounted, removed
+#     on exit). Real ~/.claude is never touched. This is the same
+#     mechanism codex paranoid uses; both agents now share one code path.
+#     Note: paranoid bypasses the [claude] use_real_config knob entirely
+#     — that knob remains a normal/permissive concern for claude only.
 #   - credential_proxy = true: API keys live on the host keystore/env, never
 #     in the sandbox; the proxy injects them at request time.
 #   - unshare_net = true: the agent runs in a fresh network namespace
@@ -28,8 +32,13 @@
 # The lists are append-merged, so the final allowlist is the base
 # (api.anthropic.com) plus your extras.
 
-[claude]
-use_real_config = false
+[agents.claude]
+# Per-run ephemeral copy of ~/.claude (rsync-seeded, bind-mounted,
+# removed on exit). Mirrors codex paranoid.
+scratch_home_dirs = [".claude"]
+# ~/.claude.json is a sibling file, not a directory — it gets the same
+# ephemeral treatment via the companion scratch_home_files mechanism.
+scratch_home_files = [".claude.json"]
 
 [env.extra]
 # Auto-pick the user's host Anthropic credential so the credential proxy
