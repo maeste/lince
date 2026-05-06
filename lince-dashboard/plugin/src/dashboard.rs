@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::config::AgentTypeConfig;
+use crate::config::{AgentTypeConfig, SandboxColors};
 use crate::types::{
     AgentInfo, AgentStatus, NamePromptState, WizardState, WizardStep,
 };
@@ -16,6 +16,24 @@ fn color_name_to_ansi(name: &str) -> &'static str {
         "cyan" => "\x1b[36m",
         "white" => "\x1b[37m",
         _ => "\x1b[37m",  // default to white
+    }
+}
+
+/// ANSI background sequence for the wizard's selection block.
+///
+/// Forces a black foreground for light backgrounds (yellow/cyan/white) so
+/// the highlighted text stays readable. Dark backgrounds keep the default
+/// foreground.
+fn selection_bg_for_color(name: &str) -> &'static str {
+    match name {
+        "red" => "\x1b[41m",
+        "green" => "\x1b[42m",
+        "yellow" => "\x1b[30;43m",
+        "blue" => "\x1b[44m",
+        "magenta" => "\x1b[45m",
+        "cyan" => "\x1b[30;46m",
+        "white" => "\x1b[30;47m",
+        _ => "\x1b[30;47m",
     }
 }
 
@@ -632,7 +650,13 @@ fn render_status_bar(
 
 // ── Overlay: Wizard (LINCE-47) ─────────────────────────────────────
 
-pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize, agent_types: &HashMap<String, AgentTypeConfig>) {
+pub fn render_wizard(
+    wizard: &WizardState,
+    rows: usize,
+    cols: usize,
+    agent_types: &HashMap<String, AgentTypeConfig>,
+    sandbox_colors: &SandboxColors,
+) {
     if rows == 0 || cols == 0 {
         return;
     }
@@ -679,8 +703,16 @@ pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize, agent_types
                 };
                 let label = format!("{}{}", display_name, backend_suffix);
                 if is_selected {
-                    // Green background for sandboxed, red for non-sandboxed
-                    let bg = if sandboxed { "\x1b[42m" } else { "\x1b[41m" }; // bg green / bg red
+                    // Selection background follows the sandbox-level palette:
+                    // paranoid/normal/permissive/custom each get their configured
+                    // color. Non-sandboxed stays red. Sandboxed entries with no
+                    // sandbox_level (legacy templates) fall back to the default.
+                    let bg = if !sandboxed {
+                        "\x1b[41m"
+                    } else {
+                        let level = cfg.and_then(|c| c.sandbox_level.as_deref()).unwrap_or("");
+                        selection_bg_for_color(sandbox_colors.for_level(level))
+                    };
                     push_box_line(&mut lines, &format!("  {}> {}{}", bg, label, RESET), box_width);
                 } else {
                     push_box_line(&mut lines, &format!("    {}", label), box_width);
@@ -702,10 +734,18 @@ pub fn render_wizard(wizard: &WizardState, rows: usize, cols: usize, agent_types
             push_box_line(&mut lines, "  [Enter] Create  [Bksp] Back  [Esc] Cancel", box_width);
         }
         WizardStep::Profile => {
-            // Render profile list with selection marker
+            // Render profile list with selection marker.
+            // Profiles named after sandbox levels (paranoid/normal/permissive)
+            // pick up the configured palette; custom profile names get the
+            // default color. Matches the per-pane title indicator (gh#63).
             for (i, name) in wizard.available_profiles.iter().enumerate() {
                 let marker = if i == wizard.profile_index { ">" } else { " " };
-                push_box_line(&mut lines, &format!("  {} {}", marker, name), box_width);
+                let color = color_name_to_ansi(sandbox_colors.for_level(name));
+                push_box_line(
+                    &mut lines,
+                    &format!("  {} {}{}{}", marker, color, name, RESET),
+                    box_width,
+                );
             }
             push_box_line(&mut lines, "", box_width);
             push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);

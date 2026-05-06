@@ -33,13 +33,35 @@ pub fn agent_type_base_name(agent_type: &str) -> &str {
     agent_type
 }
 
-/// Build pane title, prefixing with `[UNSANDBOXED]` for non-sandboxed agent types.
+/// Glyph for a sandbox isolation level. Fixed mapping (not user-overridable),
+/// kept stable so the visual cue on a pane title stays consistent even when
+/// the wizard's color palette is customized. Unknown levels get a neutral
+/// square so custom levels don't break the layout.
+pub fn sandbox_level_glyph(level: &str) -> &'static str {
+    match level {
+        "paranoid" => "\u{1F7E2}",   // 🟢
+        "normal" => "\u{1F535}",     // 🔵
+        "permissive" => "\u{1F7E1}", // 🟡
+        _ => "\u{26AA}",             // ⚪
+    }
+}
+
+/// Build pane title with a sandbox-level indicator.
+///
+/// - Non-sandboxed agent types: `[NON-SANDBOXED] <name>` (unchanged).
+/// - Sandboxed with a known `sandbox_level`: `<glyph> [<level>] <name>`,
+///   e.g. `🟢 [paranoid] agent-1`.
+/// - Sandboxed with `sandbox_level = None` (legacy static command path):
+///   `<name>` (unchanged).
 pub fn pane_title(name: &str, agent_type: &str, agent_types: &HashMap<String, AgentTypeConfig>) -> String {
-    let sandboxed = agent_types.get(agent_type).map_or(true, |c| c.sandboxed);
-    if sandboxed {
-        name.to_string()
-    } else {
-        format!("[NON-SANDBOXED] {}", name)
+    let cfg = agent_types.get(agent_type);
+    let sandboxed = cfg.map_or(true, |c| c.sandboxed);
+    if !sandboxed {
+        return format!("[NON-SANDBOXED] {}", name);
+    }
+    match cfg.and_then(|c| c.sandbox_level.as_deref()) {
+        Some(level) => format!("{} [{}] {}", sandbox_level_glyph(level), level, name),
+        None => name.to_string(),
     }
 }
 

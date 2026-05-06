@@ -139,6 +139,59 @@ fn default_sandbox_command() -> String {
     DEFAULT_SANDBOX_COMMAND.to_string()
 }
 
+fn default_paranoid_color() -> String {
+    "green".to_string()
+}
+fn default_normal_color() -> String {
+    "blue".to_string()
+}
+fn default_permissive_color() -> String {
+    "yellow".to_string()
+}
+fn default_sandbox_default_color() -> String {
+    "white".to_string()
+}
+
+/// Color mapping for sandbox isolation levels.
+///
+/// Drives both the per-pane title indicator and the wizard's profile-selection
+/// step. ANSI color names (e.g. `"green"`, `"blue"`, `"magenta"`). Sandbox
+/// levels other than the three built-ins fall back to `default`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SandboxColors {
+    #[serde(default = "default_paranoid_color")]
+    pub paranoid: String,
+    #[serde(default = "default_normal_color")]
+    pub normal: String,
+    #[serde(default = "default_permissive_color")]
+    pub permissive: String,
+    #[serde(default = "default_sandbox_default_color")]
+    pub default: String,
+}
+
+impl Default for SandboxColors {
+    fn default() -> Self {
+        Self {
+            paranoid: default_paranoid_color(),
+            normal: default_normal_color(),
+            permissive: default_permissive_color(),
+            default: default_sandbox_default_color(),
+        }
+    }
+}
+
+impl SandboxColors {
+    /// Resolve the color name for a sandbox level. Custom levels return `default`.
+    pub fn for_level(&self, level: &str) -> &str {
+        match level {
+            "paranoid" => &self.paranoid,
+            "normal" => &self.normal,
+            "permissive" => &self.permissive,
+            _ => &self.default,
+        }
+    }
+}
+
 fn default_status_file_dir() -> String {
     "/tmp/lince-dashboard".to_string()
 }
@@ -196,6 +249,11 @@ pub struct DashboardConfig {
     #[allow(dead_code)]
     #[serde(default)]
     pub sandbox_backend: BackendConfig,
+    /// Color mapping for sandbox isolation levels (`paranoid` / `normal` /
+    /// `permissive` / fallback). Configurable via `[dashboard.sandbox_colors]`
+    /// in `~/.config/lince-dashboard/config.toml`.
+    #[serde(default)]
+    pub sandbox_colors: SandboxColors,
 }
 
 impl Default for DashboardConfig {
@@ -214,6 +272,7 @@ impl Default for DashboardConfig {
             max_agents: default_max_agents(),
             agent_types: HashMap::new(),
             sandbox_backend: BackendConfig::default(),
+            sandbox_colors: SandboxColors::default(),
         }
     }
 }
