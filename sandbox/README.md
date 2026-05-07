@@ -93,6 +93,41 @@ agent-sandbox run
 
 That's it. Claude starts with `--dangerously-skip-permissions` by default (configurable) and has full autonomy within your project directory, but cannot escape.
 
+## Using profiles
+
+Profiles allow you to switch between different API providers (Anthropic, Vertex AI, custom endpoints) without modifying your config. First, define profiles in `~/.agent-sandbox/config.toml`:
+
+```toml
+[claude.profiles.vertex]
+description = "Vertex AI"
+[claude.profiles.vertex.env]
+CLAUDE_CODE_USE_VERTEX = "1"
+ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
+ANTHROPIC_VERTEX_REGION = "us-east5"
+
+[claude.profiles.anthropic]
+description = "Direct Anthropic API"
+[claude.profiles.anthropic.env]
+ANTHROPIC_API_KEY = "sk-ant-..."
+```
+
+Then use the `-P` / `--profile` flag to select one at runtime:
+
+```bash
+# Use the default profile (or none if not configured)
+agent-sandbox run
+
+# Use a specific profile
+agent-sandbox run --profile vertex
+agent-sandbox run -P anthropic
+
+# Set a default profile in config.toml to avoid specifying it each time
+[sandbox]
+default_profile = "vertex"
+```
+
+You can also set `default_profile` in your `config.toml` to avoid specifying `-P` every time (see `config.toml.example` for the full syntax).
+
 ## Project-local config overrides
 
 Place a `.agent-sandbox/config.toml` file in any project directory to override specific settings without duplicating the entire global config. agent-sandbox deep-merges the project-local file on top of `~/.agent-sandbox/config.toml` at startup.
@@ -180,18 +215,11 @@ cat /etc/resolv.conf
 
 ### Using Claude with Vertex AI (Google Cloud)
 
-If you use Claude via Vertex AI, create a profile with the Vertex env vars:
+If you use Claude via Vertex AI, create a profile with the Vertex env vars (see [Using profiles](#using-profiles) above). Also add the Google Cloud ADC credentials directory:
+
 ```toml
 [sandbox]
 home_ro_dirs = [".config/gcloud"]  # Google Cloud ADC credentials
-default_profile = "vertex"
-
-[profiles.vertex]
-description = "Vertex AI"
-[profiles.vertex.env]
-CLAUDE_CODE_USE_VERTEX = "1"
-ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
-ANTHROPIC_VERTEX_REGION = "us-east5"
 ```
 
 Do NOT add `CLAUDECODE` or `CLAUDE_CODE_ENTRYPOINT` to env passthrough or profiles: these are session markers that would trigger "nested session" detection and prevent Claude from starting.
