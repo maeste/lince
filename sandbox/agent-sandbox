@@ -1963,6 +1963,13 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     cmd += ["--setenv", "UV_CACHE_DIR", f"{home}/.uv-cache"]
     cmd += ["--setenv", "UV_TOOL_DIR", f"{home}/.uv-tools"]
 
+    # bwrap's user namespace remaps root UID → 65534 (nobody), so SSH's
+    # safe.c rejects system config files owned by "nobody".  Instruct git
+    # to skip all SSH config files so connections work out of the box.
+    # Users can override via [env.extra] GIT_SSH_COMMAND = "..." if needed.
+    if "GIT_SSH_COMMAND" not in env_conf.get("extra", {}):
+        cmd += ["--setenv", "GIT_SSH_COMMAND", "ssh -F /dev/null"]
+
     # --- Wayland env vars (clipboard access for wl-paste) --------------------
     for wl_var in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"):
         val = os.environ.get(wl_var)
