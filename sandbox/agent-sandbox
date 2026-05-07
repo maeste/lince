@@ -927,6 +927,17 @@ class CredentialProxy:
             except OSError:
                 client.close()
                 return
+            # `create_connection` keeps the connect timeout pinned on the
+            # returned socket, so every subsequent recv() inherits a 5s
+            # read deadline. Slow-first-byte providers (e.g. Z.ai
+            # routinely > 10s ttfb on long streaming responses) trip it,
+            # the U2C thread raises TimeoutError, the bridge half-closes
+            # the client socket mid-request, and the agent's HTTP SDK
+            # retries — the paranoid-mode "Retrying in Xs" loop. Restore
+            # blocking-without-timeout semantics for the bridge's
+            # lifetime; the connect itself was already gated above.
+            upstream.settimeout(None)
+            client.settimeout(None)
 
             def _forward(src: socket.socket, dst: socket.socket) -> None:
                 try:
