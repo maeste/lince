@@ -27,7 +27,7 @@ Created by `install.sh`. Holds dashboard-wide settings and optional agent type o
 | `sandbox_config_path` | string | `"~/.agent-sandbox/config.toml"` | Path to sandbox config for provider auto-discovery. |
 | `default_project_dir` | string | `""` | Default working directory for new agents. Empty means the current directory. |
 | `sandbox_command` | string | `"agent-sandbox"` | Path or name of the `agent-sandbox` binary. |
-| `agent_layout` | string | `"floating"` | How agent panes are created. `"floating"` for overlay panes, `"tiled"` for fixed layout grid. |
+| `agent_layout` | string | `"floating"` | How agent panes are created. `"floating"` for overlay panes, `"tiled"` for a fixed 3-pane layout with agent viewport. Use `lince-tiled` (or `lince-tiled-vox`) to launch the tiled layout. |
 | `focus_mode` | string | `"floating"` | How focusing an agent works. `"floating"` shows an overlay, `"replace"` switches tabs. |
 | `status_method` | string | `"pipe"` | Status detection method. `"pipe"` for Zellij pipe (recommended), `"file"` for `/tmp` polling. |
 | `status_file_dir` | string | `"/tmp/lince-dashboard"` | Directory for status files when using file mode. |

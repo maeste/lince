@@ -8,7 +8,7 @@ The Claude prototype is the only agent type wired to `sandbox_level` in this ite
 
 ## 1. Prerequisites
 
-- LINCE installed: `zd` alias works, dashboard launches via `zellij --layout dashboard`.
+- LINCE installed: `lince` alias works, dashboard launches via `zellij --layout dashboard`.
 - agent-sandbox (`bwrap` backend) installed and on `$PATH`. Verify:
   ```bash
   agent-sandbox --version

@@ -874,7 +874,7 @@ print_summary() {
     echo -e "  ${BOLD}Get started:${NC}"
     echo ""
     echo -e "    ${CYAN}source ~/.bashrc${NC}"
-    echo -e "    ${CYAN}zd${NC}"
+    echo -e "    ${CYAN}lince${NC}"
     echo ""
     echo -e "  ${DIM}Press 'n' in the dashboard to spawn an agent.${NC}"
     echo -e "  ${DIM}Press '?' for the full keybindings help.${NC}"

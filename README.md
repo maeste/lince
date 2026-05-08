@@ -72,17 +72,17 @@ cd lince-dashboard
 ./install.sh
 ```
 
-The installer builds the WASM plugin, copies it to `~/.config/zellij/plugins/`, installs Zellij layouts, sets up Claude Code status hooks, and creates the `zd` shell alias. After sourcing your shell config:
+The installer builds the WASM plugin, copies it to `~/.config/zellij/plugins/`, installs Zellij layouts, sets up Claude Code status hooks, and creates the `lince` shell alias. After sourcing your shell config:
 
 ```bash
 source ~/.bashrc
-zd    # launch the dashboard
+lince    # launch the dashboard
 ```
 
 ### Step 3: Launch
 
 ```bash
-zd
+lince
 ```
 
 Press `n` to spawn an agent (quick), or `N` for the full wizard (name, sandbox profile, project directory). Press `?` for the full keybindings overlay.

@@ -81,26 +81,28 @@ pub fn default_agent_pane_coords() -> FloatingPaneCoordinates {
         .with_height_percent(85)
 }
 
-/// Floating pane coordinates for the tiled layout's viewport area (B).
+/// Floating pane coordinates for the tiled layout's viewport area (C).
 ///
-/// The tiled layout divides the screen into 4 quadrants:
+/// The tiled layout has three fixed panes:
 /// ```text
 /// ┌──────────────┬─────────────────────┐
-/// │  A 40%×70%   │  B 60%×70% (viewport)│
-/// ├──────────────┼─────────────────────┤
-/// │  C 40%×30%   │  D 60%×30%          │
+/// │  A 40%×70%   │  B 60%×100%          │
+/// │  (dashboard) │  (VoxCode / shell)    │
+/// ├──────────────┤                      │
+/// │  C 40%×30%   │                      │
+/// │  (viewport)  │                      │
 /// └──────────────┴─────────────────────┘
 /// ```
 ///
-/// Accounting for the tab-bar (top, ~1 row) and status-bar (bottom, ~2 rows)
-/// which together consume roughly 5% of vertical space, B starts at about y=5%
-/// and spans 60% width × 65% height.
+/// C is the bottom-left quadrant. Accounting for the tab-bar (top, ~2%) and
+/// status-bar (bottom, ~4%), the viewport starts at roughly y=72% and spans
+/// 40% width × 24% height.
 pub fn tiled_viewport_coords() -> FloatingPaneCoordinates {
     FloatingPaneCoordinates::default()
-        .with_x_percent(40)
-        .with_y_percent(5)
-        .with_width_percent(60)
-        .with_height_percent(65)
+        .with_x_percent(0)
+        .with_y_percent(72)
+        .with_width_percent(40)
+        .with_height_percent(24)
 }
 
 use crate::config::now_secs;
@@ -437,7 +439,7 @@ fn spawn_inner(
         }
         AgentLayout::Tiled => {
             // Tiled layout: agents are still floating panes, but hidden at spawn.
-            // When focused, they overlay the viewport pane (B) in the 4-quadrant layout.
+            // When focused, they overlay the viewport pane (C) in the 3-pane layout.
             open_command_pane_floating(command, Some(tiled_viewport_coords()), BTreeMap::new());
         }
     }

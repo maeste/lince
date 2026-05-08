@@ -192,22 +192,27 @@ else
 fi
 echo ""
 
-# ── Shell alias ────────────────────────────────────────────────────────
+# ── Shell aliases ────────────────────────────────────────────────
 ALIAS_REMOVED=false
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc" ] && grep -q 'alias zd=' "$rc" 2>/dev/null; then
-        echo -e "${YELLOW}Found 'zd' alias in $(basename $rc)${NC}"
-        if confirm "  Remove alias?"; then
-            # Remove the alias line and its comment
-            sed -i '/# LINCE Dashboard alias/d' "$rc"
+    if [ -f "$rc" ] && grep -q '# LINCE aliases' "$rc" 2>/dev/null; then
+        echo -e "${YELLOW}Found LINCE aliases in $(basename $rc)${NC}"
+        if confirm "  Remove all LINCE aliases?"; then
+            # Remove the LINCE aliases block (comment + all alias lines)
+            sed -i '/# LINCE aliases/d' "$rc"
+            sed -i '/alias lince=/d' "$rc"
+            sed -i '/alias lince-tiled=/d' "$rc"
+            sed -i '/alias lince-tiled-vox=/d' "$rc"
             sed -i '/alias zd=/d' "$rc"
+            sed -i '/alias z="zellij"/d' "$rc"
+            sed -i '/alias zn=/d' "$rc"
             ALIAS_REMOVED=true
             echo -e "${GREEN}  ✓ Removed from $(basename $rc)${NC}"
         fi
     fi
 done
 if [ "$ALIAS_REMOVED" = false ]; then
-    echo "  No 'zd' alias found — skipping"
+    echo "  No LINCE aliases found — skipping"
 fi
 echo ""
 

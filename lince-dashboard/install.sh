@@ -403,7 +403,10 @@ echo ""
 # ── Step 13: Shell aliases ────────────────────────────────────────────
 echo -e "${GREEN}[13/14] Setting up shell aliases...${NC}"
 
-ALIAS_LINES='alias zd="zellij --layout dashboard"
+ALIAS_LINES='alias lince="zellij --layout dashboard"
+alias lince-tiled="zellij --layout dashboard-tiled"
+alias lince-tiled-vox="zellij --layout dashboard-tiled-vox"
+alias zd="zellij --layout dashboard"
 alias z="zellij"
 alias zn="zellij attach -c"'
 ALIAS_COMMENT="# LINCE aliases"
@@ -416,7 +419,7 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
             echo "" >> "$rc"
             echo "$ALIAS_COMMENT" >> "$rc"
             echo "$ALIAS_LINES" >> "$rc"
-            echo -e "${GREEN}  ✓ Added aliases (zd, z, zn) to $(basename $rc)${NC}"
+            echo -e "${GREEN}  ✓ Added aliases (lince, lince-tiled, zd, z, zn) to $(basename $rc)${NC}"
         fi
     fi
 done
@@ -431,6 +434,11 @@ if command -v voxcode >/dev/null 2>&1; then
     if [ -f "$LAYOUT_DIR/dashboard-vox.kdl" ]; then
         cp "$LAYOUT_DIR/dashboard-vox.kdl" "$LAYOUT_DIR/dashboard.kdl"
         echo -e "${GREEN}  ✓ Dashboard layout updated with VoxCode pane${NC}"
+    fi
+    # Also update tiled layout to VoxCode variant
+    if [ -f "$LAYOUT_DIR/dashboard-tiled-vox.kdl" ]; then
+        cp "$LAYOUT_DIR/dashboard-tiled-vox.kdl" "$LAYOUT_DIR/dashboard-tiled.kdl"
+        echo -e "${GREEN}  ✓ Tiled layout updated with VoxCode pane${NC}"
     fi
 else
     echo -e "${YELLOW}  VoxCode not found — using standard dashboard layout${NC}"
@@ -520,7 +528,10 @@ if [ "$HAS_NONO" = true ]; then
 fi
 echo -e "${GREEN}Usage:${NC}"
 echo "  source ~/.bashrc   # reload aliases"
-echo "  zd                 # launch dashboard layout"
+echo "  lince              # launch dashboard (floating layout)"
+echo "  lince-tiled        # launch tiled (3-pane) layout"
+echo "  lince-tiled-vox    # launch tiled layout with VoxCode"
+echo "  zd                 # legacy alias for lince"
 echo ""
 echo -e "${GREEN}Keybindings:${NC}"
 echo "  n       Spawn new agent"
