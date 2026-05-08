@@ -5,6 +5,7 @@ __pycache__/
 uv.lock
 .claude/
 .agent-sandbox/
+.pi/
 .serena
 
 # Rust build artifacts
