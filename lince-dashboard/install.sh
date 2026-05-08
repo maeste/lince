@@ -414,13 +414,20 @@ ALIAS_COMMENT="# LINCE aliases"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     if [ -f "$rc" ]; then
         if grep -q "# LINCE aliases" "$rc" 2>/dev/null; then
-            echo -e "${YELLOW}  LINCE aliases already in $(basename $rc)${NC}"
-        else
-            echo "" >> "$rc"
-            echo "$ALIAS_COMMENT" >> "$rc"
-            echo "$ALIAS_LINES" >> "$rc"
-            echo -e "${GREEN}  ✓ Added aliases (lince, lince-tiled, zd, z, zn) to $(basename $rc)${NC}"
+            echo -e "${YELLOW}  Updating LINCE aliases in $(basename $rc)${NC}"
+            # Remove old LINCE alias block and re-add
+            sed -i '/# LINCE aliases/d' "$rc"
+            sed -i '/alias lince=/d' "$rc"
+            sed -i '/alias lince-tiled=/d' "$rc"
+            sed -i '/alias lince-tiled-vox=/d' "$rc"
+            sed -i '/alias zd=/d' "$rc"
+            sed -i '/alias z="zellij"/d' "$rc"
+            sed -i '/alias zn=/d' "$rc"
         fi
+        echo "" >> "$rc"
+        echo "$ALIAS_COMMENT" >> "$rc"
+        echo "$ALIAS_LINES" >> "$rc"
+        echo -e "${GREEN}  ✓ Updated aliases (lince, lince-tiled, zd, z, zn) in $(basename $rc)${NC}"
     fi
 done
 echo ""
