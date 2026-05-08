@@ -1,13 +1,11 @@
-// Four-quadrant tiled layout for lince-dashboard.
+// Four-quadrant tiled layout with VoxCode pane.
 //
-// Agents are spawned as floating overlays that cover the viewport pane (B)
-// when focused. The underlying placeholder shows ASCII art when no agent
-// is focused.
+// Same as dashboard-tiled.kdl but pane C runs VoxCode instead of a plain shell.
 //
 // Requires `agent_layout = "tiled"` in config.toml.
 //
 // Usage:
-//   zellij --layout dashboard-tiled
+//   zellij --layout dashboard-tiled-vox
 //
 // Structure:
 //   ┌──────────────┬─────────────────────┐
@@ -21,7 +19,7 @@
 //   │              │     60%×70%         │
 //   ├──────────────┼─────────────────────┤
 //   │   C          │        D            │  ~30%
-//   │  Shell       │      Shell          │
+//   │  VoxCode     │      Shell          │
 //   │   40%×30%    │     60%×30%         │
 //   ├──────────────┴─────────────────────┤
 //   │ status-bar (borderless, size=2)    │
@@ -48,14 +46,15 @@ layout {
                         config_path "~/.config/lince-dashboard/config.toml"
                     }
                 }
-                // C — Shell (30% of left column)
+                // C — VoxCode (30% of left column)
                 pane size="30%" {
+                    command "voxcode"
+                    args "--use-pipe"
                 }
             }
             // Right column — 60%
             pane size="60%" split_direction="horizontal" {
                 // B — Agent viewport (70% of right column)
-                // Shows ASCII art placeholder; agent floating overlay covers this on focus.
                 pane size="70%" {
                     command "lince-viewport-placeholder"
                 }

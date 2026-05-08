@@ -218,7 +218,7 @@ echo -e "${GREEN}[5/14] Installing layouts...${NC}"
 LAYOUT_DIR="$HOME/.config/zellij/layouts"
 mkdir -p "$LAYOUT_DIR"
 
-for layout in dashboard.kdl dashboard-vox.kdl agent-single.kdl agent-multi.kdl; do
+for layout in dashboard.kdl dashboard-vox.kdl dashboard-tiled.kdl dashboard-tiled-vox.kdl agent-single.kdl agent-multi.kdl; do
     SRC="$SCRIPT_DIR/layouts/$layout"
     DST="$LAYOUT_DIR/$layout"
     if [ -f "$SRC" ]; then
@@ -291,6 +291,13 @@ echo -e "${GREEN}[8/14] Installing agent platform hooks...${NC}"
 
 if [ -f "$SCRIPT_DIR/hooks/install-hooks.sh" ]; then
     bash "$SCRIPT_DIR/hooks/install-hooks.sh"
+    # Install viewport placeholder for the tiled layout
+    PLACEHOLDER_SRC="$SCRIPT_DIR/hooks/lince-viewport-placeholder"
+    if [ -f "$PLACEHOLDER_SRC" ]; then
+        cp "$PLACEHOLDER_SRC" "$HOME/.local/bin/lince-viewport-placeholder"
+        chmod +x "$HOME/.local/bin/lince-viewport-placeholder"
+        echo -e "${GREEN}  ✓ lince-viewport-placeholder${NC}"
+    fi
 else
     echo -e "${YELLOW}  ⚠ hooks/install-hooks.sh not found — skipping${NC}"
 fi
@@ -478,6 +485,7 @@ echo "  Config:   $CONFIG_DST"
 echo "  Hooks:    ~/.local/bin/claude-status-hook.sh"
 echo "            ~/.local/bin/codex-status-hook.sh"
 echo "  Wrapper:  ~/.local/bin/lince-agent-wrapper"
+echo "  Viewport: ~/.local/bin/lince-viewport-placeholder  (tiled layout)"
 echo "  Defaults: ~/.config/lince-dashboard/agents-defaults.toml"
 echo "  Template: ~/.config/lince-dashboard/agents-template.toml"
 if [ -n "$SELECTED_LEVELS" ]; then

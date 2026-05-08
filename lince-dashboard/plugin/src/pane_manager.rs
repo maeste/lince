@@ -4,11 +4,7 @@ use crate::config::{AgentLayout, FocusMode};
 use crate::types::AgentInfo;
 
 /// Hide agent floating panes. If `except` is provided, skip that agent.
-/// No-op when `agent_layout` is `Tiled` (tiled panes should stay visible).
-pub fn hide_agent_panes(agents: &[AgentInfo], except: Option<&str>, agent_layout: &AgentLayout) {
-    if agent_layout.is_tiled() {
-        return;
-    }
+pub fn hide_agent_panes(agents: &[AgentInfo], except: Option<&str>, _agent_layout: &AgentLayout) {
     for agent in agents {
         if except.map_or(false, |id| agent.id == id) {
             continue;
@@ -31,12 +27,17 @@ pub fn focus_agent(
         None => return false,
     };
 
-    if agent_layout.is_tiled() {
-        // Tiled panes are always visible — just switch terminal focus.
-        focus_terminal_pane(pid, false, true);
-    } else {
-        hide_agent_panes(all_agents, Some(&agent.id), agent_layout);
+    // Hide all other agent panes first.
+    hide_agent_panes(all_agents, Some(&agent.id), agent_layout);
 
+    if agent_layout.is_tiled() {
+        // Tiled layout: overlay the agent's floating pane on the viewport area (B).
+        show_pane_with_id(PaneId::Terminal(pid), true, true);
+        focus_terminal_pane(pid, true, true);
+        change_floating_panes_coordinates(vec![
+            (PaneId::Terminal(pid), crate::agent::tiled_viewport_coords()),
+        ]);
+    } else {
         match focus_mode {
             FocusMode::Floating => {
                 show_pane_with_id(PaneId::Terminal(pid), true, true);
@@ -55,19 +56,19 @@ pub fn focus_agent(
 
 /// Hide the given agent's pane and return focus to the dashboard.
 pub fn unfocus_agent(agent: &AgentInfo, focus_mode: &FocusMode, agent_layout: &AgentLayout) {
-    if agent_layout.is_tiled() {
-        // Tiled panes stay visible; the dashboard plugin pane regains focus
-        // when the user navigates back (e.g. via Zellij keybinding).
-        return;
-    }
     if let Some(pid) = agent.pane_id {
-        match focus_mode {
-            FocusMode::Floating => {
-                hide_pane_with_id(PaneId::Terminal(pid));
-            }
-            FocusMode::Replace => {
-                // In replace mode, hiding isn't needed — the dashboard tab
-                // regains focus automatically when the plugin re-renders.
+        if agent_layout.is_tiled() {
+            // Hide the floating overlay → underlying viewport pane (B) reappears.
+            hide_pane_with_id(PaneId::Terminal(pid));
+        } else {
+            match focus_mode {
+                FocusMode::Floating => {
+                    hide_pane_with_id(PaneId::Terminal(pid));
+                }
+                FocusMode::Replace => {
+                    // In replace mode, hiding isn't needed — the dashboard tab
+                    // regains focus automatically when the plugin re-renders.
+                }
             }
         }
     }

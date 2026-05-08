@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# lince-viewport-placeholder
+#
+# Shown in the agent viewport pane (B) of the tiled layout when no agent
+# is focused.  Displays "LINCE" in ASCII art and drops into an interactive
+# shell so the pane is usable if the user tabs into it directly.
+set -e
+
+clear
+
+# Dark gray ANSI colour (dim, visible on dark backgrounds)
+DIM='\033[2;37m'
+BOLD='\033[1;37m'
+NC='\033[0m'
+
+# Try figlet first, fall back to a hand-crafted banner.
+if command -v figlet >/dev/null 2>&1; then
+    echo -e "${DIM}$(figlet -c -f standard 'LINCE' 2>/dev/null || echo '  LINCE')${NC}"
+else
+    cat <<'BANNER'
+    ╦ ╦┌─┐┌┐ ╔╦╗┬┬  ┌─┐
+    ║║║├┤ ├┴┐ ║ ││  ├┤
+    ╚╩╝└─┘└─┘ ╩ ┴┴─┘└─┘
+BANNER
+fi
+
+echo ""
+echo -e "${DIM}  Press ${BOLD}f${DIM} on the dashboard to focus an agent.${NC}"
+echo ""
+
+# Hand off to an interactive shell so the pane is useful if the user
+# navigates to it directly (e.g. via Zellij pane movement keys).
+exec "${SHELL:-/bin/bash}"
