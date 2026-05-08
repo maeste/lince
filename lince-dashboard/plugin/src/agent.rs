@@ -96,13 +96,13 @@ pub fn default_agent_pane_coords() -> FloatingPaneCoordinates {
 ///
 /// B is the right column — full height, 60% width. Accounting for the
 /// tab-bar (~2%) and status-bar (~4%), the overlay starts at y=2% and
-/// spans roughly 94% height.
+/// spans roughly 99% height.
 pub fn tiled_viewport_coords() -> FloatingPaneCoordinates {
     FloatingPaneCoordinates::default()
         .with_x_percent(40)
         .with_y_percent(2)
         .with_width_percent(60)
-        .with_height_percent(94)
+        .with_height_percent(99)
 }
 
 use crate::config::now_secs;
