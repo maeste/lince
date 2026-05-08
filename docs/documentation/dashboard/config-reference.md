@@ -23,8 +23,8 @@ Created by `install.sh`. Holds dashboard-wide settings and optional agent type o
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `default_profile` | string | `""` | Default sandbox profile for new agents. Empty means no `-P` flag is passed. |
-| `sandbox_config_path` | string | `"~/.agent-sandbox/config.toml"` | Path to sandbox config for profile auto-discovery. |
+| `default_provider` | string | `""` | Default provider (env-var bundle) for new agents. Empty means no `-P` flag is passed. The legacy spelling `default_profile` is still accepted (gh#81). |
+| `sandbox_config_path` | string | `"~/.agent-sandbox/config.toml"` | Path to sandbox config for provider auto-discovery. |
 | `default_project_dir` | string | `""` | Default working directory for new agents. Empty means the current directory. |
 | `sandbox_command` | string | `"agent-sandbox"` | Path or name of the `agent-sandbox` binary. |
 | `agent_layout` | string | `"floating"` | How agent panes are created. `"floating"` for overlay panes, `"tiled"` for fixed layout grid. |
@@ -42,7 +42,7 @@ The plugin checks `config.toml` for changes every 5 seconds and applies them wit
 **Hot-reloadable** (applied immediately):
 
 - `focus_mode`, `status_method`, `max_agents`, `status_file_dir`
-- `agent_layout`, `default_profile`, `default_project_dir`
+- `agent_layout`, `default_provider`, `default_project_dir`
 
 **Not hot-reloadable** (requires restart, only affects new agents):
 
@@ -100,7 +100,7 @@ Each agent type is defined as a `[agents.<name>]` TOML table.
 
 | Key | Type | Required | Default | Description |
 |-----|------|----------|---------|-------------|
-| `command` | array of strings | Yes | -- | Command template. Supports `{agent_id}`, `{project_dir}`, `{profile}` placeholders. |
+| `command` | array of strings | Yes | -- | Command template. Supports `{agent_id}`, `{project_dir}`, `{provider}` (and `{profile}` as a legacy alias for `{provider}`) placeholders. |
 | `pane_title_pattern` | string | Yes | -- | Pattern to match Zellij pane titles for reconciliation. |
 | `status_pipe_name` | string | Yes | -- | Zellij pipe name for receiving status messages from this agent type. |
 | `display_name` | string | Yes | -- | Full name shown in the UI and wizard. |
@@ -111,7 +111,7 @@ Each agent type is defined as a `[agents.<name>]` TOML table.
 | `bwrap_conflict` | boolean | No | `false` | Set `true` when the agent uses bwrap internally. Triggers injection of `disable_inner_sandbox_args`. |
 | `disable_inner_sandbox_args` | array of strings | No | `[]` | Arguments appended to the agent command to disable its internal sandbox when `bwrap_conflict` is `true`. |
 | `ignore_wrapper_start` | boolean | No | `false` | If `true`, ignores the wrapper's initial `start` event. Useful for agents that launch into an interactive prompt. |
-| `profiles` | array of strings | No | `[]` | Sandbox profiles for this agent type. `["__discover__"]` means auto-discover from sandbox config. `[]` skips the profile wizard step. An explicit list restricts choices to those names. |
+| `providers` | array of strings | No | `[]` | Providers (env-var bundles) for this agent type. `["__discover__"]` means auto-discover from the sandbox config. `[]` skips the wizard's Provider step. An explicit list restricts choices to those names. The legacy key name `profiles` is still accepted (gh#81). |
 | `home_ro_dirs` | array of strings | No | `[]` | Home subdirectories to bind read-only in the sandbox (e.g. `["~/.claude/"]`). |
 | `home_rw_dirs` | array of strings | No | `[]` | Home subdirectories to bind read-write in the sandbox. |
 | `env_vars` | table | No | `{}` | Environment variables to set for the agent. Applied for both sandboxed and non-sandboxed agents. See [Environment Variable Resolution](#environment-variable-resolution). |
@@ -135,13 +135,14 @@ For **non-sandboxed** agents, `env_vars` are set via `env VAR=val ...` on the co
 
 ### Command Template Placeholders
 
-Command arrays support three placeholders that are resolved at spawn time:
+Command arrays support these placeholders, resolved at spawn time:
 
 | Placeholder | Resolved To | Example |
 |-------------|-------------|---------|
 | `{agent_id}` | Unique agent identifier | `agent-1`, `agent-2` |
 | `{project_dir}` | Project directory path | `/home/user/project/backend` |
-| `{profile}` | Selected sandbox profile name | `vertex`, `anthropic` |
+| `{provider}` | Selected provider name (env-var bundle) | `vertex`, `anthropic`, `zai` |
+| `{profile}` | Legacy alias for `{provider}` (gh#81) — same value | `vertex`, `anthropic` |
 
 Example command template:
 
@@ -155,32 +156,37 @@ Resolves to:
 agent-sandbox run -p /home/user/project/backend --id agent-1
 ```
 
-### Profile Discovery
+### Provider Discovery
 
-The `profiles` field controls how profiles are presented in the wizard:
+The `providers` field (legacy `profiles`) controls how providers are presented in the wizard's Provider step:
 
 | Value | Behavior |
 |-------|----------|
-| `["__discover__"]` | Auto-discover profiles from `[profiles.*]` sections in the sandbox config file (`sandbox_config_path`). |
-| `[]` (empty) | Skip the profile step in the wizard entirely. |
-| `["vertex", "anthropic"]` | Show only the listed profiles in the wizard, regardless of what exists in sandbox config. |
+| `["__discover__"]` | Auto-discover providers from `[providers.*]` / `[<agent>.providers.*]` sections in the sandbox config file (`sandbox_config_path`). Legacy `[profiles.*]` is also read. |
+| `[]` (empty) | Skip the Provider step in the wizard entirely. |
+| `["vertex", "anthropic"]` | Show only the listed providers in the wizard, regardless of what exists in sandbox config. |
 
-Auto-discovered profiles are loaded asynchronously at startup via `run_command()` (not direct filesystem access, due to WASI sandbox limitations).
+Auto-discovered providers are loaded asynchronously at startup via `run_command()` (not direct filesystem access, due to WASI sandbox limitations).
 
-Profiles may also declare an `env_unset` list in the sandbox config to remove conflicting environment variables before setting the profile's own vars:
+Providers may also declare an `env_unset` list in the sandbox config to remove conflicting environment variables before setting the provider's own vars:
 
 ```toml
 # In ~/.agent-sandbox/config.toml
-[profiles.vertex]
+[claude.providers.vertex]
 description = "Vertex AI"
 env_unset = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]
 
-[profiles.vertex.env]
+[claude.providers.vertex.env]
 CLAUDE_CODE_USE_VERTEX = "1"
 CLOUD_ML_REGION = "us-east5"
 ```
 
-For sandboxed agents, `env_unset` is a no-op (the sandbox already starts with a blank environment). For non-sandboxed agents, it ensures the host's existing variables do not conflict with the profile's intended provider configuration.
+For sandboxed agents, `env_unset` is a no-op (the sandbox already starts with a blank environment). For non-sandboxed agents, it ensures the host's existing variables do not conflict with the provider's intended configuration.
+
+> **Two orthogonal axes** (gh#81): a *provider* (above) is an env-var bundle.
+> A *sandbox profile* (a.k.a. sandbox level — paranoid / normal / permissive)
+> is the isolation posture, set via `sandbox_level` and the wizard's separate
+> "Sandbox Level" step. They are independent — every combination is valid.
 
 ## Config Merge Order
 

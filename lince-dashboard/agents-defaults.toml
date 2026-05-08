@@ -10,7 +10,16 @@
 # Command templates support placeholders:
 #   {agent_id}    - unique agent identifier (e.g. "agent-1")
 #   {project_dir} - project directory path
-#   {profile}     - sandbox profile name
+#   {provider}    - provider name (env-var bundle: anthropic / vertex / zai / ...)
+#   {profile}     - legacy alias for {provider}, kept for back-compat (gh#81)
+#
+# Note: there are TWO orthogonal axes that historically shared the word
+# "profile":
+#   * sandbox profile = isolation level (paranoid / normal / permissive),
+#     selected via the `sandbox_level` field below.
+#   * provider = env-var bundle (Anthropic vs Vertex vs Z.ai vs ...),
+#     selected via the `providers` field below and the wizard's "Provider" step.
+# These are independent — you can run e.g. `paranoid + zai`. See gh#81.
 #
 # Sandbox model (claude, codex, gemini, opencode, pi):
 #   - sandbox_backend = "bwrap" | "nono"  (default per OS)
@@ -52,14 +61,15 @@ short_label = "CLA"
 # Color follows the sandbox-level gradient (basic ANSI palette):
 #   paranoid=green, normal=blue, permissive=yellow, unsandboxed=red
 # The same palette drives the per-pane title indicator and the "N" wizard's
-# profile-selection step (gh#63). Override via [dashboard.sandbox_colors] in
+# Provider step when the provider name happens to match a level keyword
+# (gh#63). Override via [dashboard.sandbox_colors] in
 # ~/.config/lince-dashboard/config.toml — see docs/documentation/dashboard/
 # sandbox-levels.md §1.1.
 color = "blue"
 sandboxed = true
 has_native_hooks = true
 home_ro_dirs = ["~/.claude/"]
-profiles = ["__discover__"]
+providers = ["__discover__"]
 sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
 # sandbox_backend defaults to "agent-sandbox" (bwrap) on Linux, "nono" on macOS.
 # Uncomment to force a specific backend (overrides the OS default):
@@ -74,7 +84,7 @@ short_label = "CLU"
 color = "red"
 sandboxed = false
 has_native_hooks = true
-profiles = ["__discover__"]
+providers = ["__discover__"]
 
 [agents.codex]
 # Legacy fallback command — ignored when sandbox_level is set.
@@ -91,7 +101,7 @@ ignore_wrapper_start = true
 bwrap_conflict = true
 disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
 home_ro_dirs = ["~/.codex/"]
-profiles = ["__discover__"]
+providers = ["__discover__"]
 sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
 # sandbox_backend defaults to bwrap on Linux, nono on macOS. Uncomment to override:
 # sandbox_backend = "nono"
@@ -110,7 +120,7 @@ sandboxed = false
 has_native_hooks = false
 ignore_wrapper_start = true
 bwrap_conflict = false
-profiles = ["__discover__"]
+providers = ["__discover__"]
 
 [agents.codex-unsandboxed.env_vars]
 OPENAI_API_KEY = "$OPENAI_API_KEY"
@@ -128,7 +138,7 @@ has_native_hooks = false
 bwrap_conflict = false
 disable_inner_sandbox_args = []
 home_ro_dirs = ["~/.gemini/"]
-profiles = ["__discover__"]
+providers = ["__discover__"]
 sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
 # sandbox_backend defaults to bwrap on Linux, nono on macOS. Uncomment to override:
 # sandbox_backend = "nono"
@@ -146,7 +156,7 @@ color = "red"
 sandboxed = false
 has_native_hooks = false
 disable_inner_sandbox_args = []
-profiles = ["__discover__"]
+providers = ["__discover__"]
 
 [agents.gemini-unsandboxed.env_vars]
 GEMINI_API_KEY = "$GEMINI_API_KEY"
@@ -164,7 +174,7 @@ has_native_hooks = false
 bwrap_conflict = false
 disable_inner_sandbox_args = []
 home_ro_dirs = ["~/.config/opencode/"]
-profiles = ["__discover__"]
+providers = ["__discover__"]
 sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
 # sandbox_backend defaults to bwrap on Linux, nono on macOS. Uncomment to override:
 # sandbox_backend = "nono"
@@ -179,7 +189,7 @@ color = "red"
 sandboxed = false
 has_native_hooks = false
 home_ro_dirs = ["~/.config/opencode/"]
-profiles = ["__discover__"]
+providers = ["__discover__"]
 
 [agents.pi]
 # Legacy fallback command — ignored when sandbox_level is set.
@@ -194,7 +204,7 @@ has_native_hooks = true
 bwrap_conflict = false
 disable_inner_sandbox_args = []
 home_ro_dirs = ["~/.pi/"]
-profiles = ["__discover__"]
+providers = ["__discover__"]
 sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
 # sandbox_backend defaults to bwrap on Linux, nono on macOS. Uncomment to override:
 # sandbox_backend = "nono"
@@ -248,7 +258,7 @@ short_label = "PIU"
 color = "red"
 sandboxed = false
 has_native_hooks = true
-profiles = ["__discover__"]
+providers = ["__discover__"]
 
 [agents.pi-unsandboxed.env_vars]
 ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"

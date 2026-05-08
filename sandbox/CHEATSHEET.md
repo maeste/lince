@@ -66,7 +66,7 @@ Quick reference for what the sandbox blocks and what it lets through.
 |----------|--------|-------|
 | `TERM`, `LANG`, `EDITOR` | **Passed through** | Basic shell env |
 | `PATH` | **Set by sandbox** | Includes sandbox bin, system, detected home tools, and deep subdirectories explicitly in host PATH |
-| `ANTHROPIC_API_KEY` | **From profile only** | Not inherited from shell |
+| `ANTHROPIC_API_KEY` | **From provider only** | Not inherited from shell — set in `[<agent>.providers.<name>.env]` |
 | `AWS_SECRET_ACCESS_KEY` | **Blocked** | Never passed |
 | `GITHUB_TOKEN`, `GH_TOKEN` | **Blocked** | Never passed |
 | Other secrets | **Blocked** | `--clearenv` strips everything not whitelisted |

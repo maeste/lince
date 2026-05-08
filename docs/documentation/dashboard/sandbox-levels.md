@@ -10,7 +10,7 @@ Until recently each combination of "agent type + isolation tightness" required i
 
 ### 1.1 Visual indicators
 
-The dashboard tags each agent pane and the wizard's profile-selection step with a per-level color cue, so the level you're running at is visible at a glance.
+The dashboard tags each agent pane and the wizard's *Sandbox Level (Profile)* step with a per-level color cue, so the level you're running at is visible at a glance.
 
 **Pane title.** Sandboxed agent panes carry a fixed glyph + bracketed level name in their pane title:
 
@@ -23,7 +23,7 @@ The dashboard tags each agent pane and the wizard's profile-selection step with 
 
 Non-sandboxed agents keep their existing `[NON-SANDBOXED] <name>` prefix. Agents on the legacy command-template path (no `sandbox_level` set) are not tagged.
 
-**Wizard.** The "N" wizard's *Profile* step colors each profile name using the same palette: `paranoid=green`, `normal=blue`, `permissive=yellow`, anything else falls back to the configurable default.
+**Wizard.** The "N" wizard's *Sandbox Level (Profile)* step colors each level name using the same palette: `paranoid=green`, `normal=blue`, `permissive=yellow`, anything else falls back to the configurable default. (Note: this is the **sandbox profile** axis — the *Provider* step that comes later picks the env-var bundle and is unrelated. See gh#81 for the disambiguation.)
 
 **Customising the colors.** The palette is configurable in `~/.config/lince-dashboard/config.toml`:
 
@@ -153,7 +153,7 @@ $ gh auth status                    # gh not present
 
 ### 2.3 Permissive
 
-**Network.** Anthropic API plus an explicit GitHub allowlist: `api.github.com`, `github.com`, `objects.githubusercontent.com`. Enough for `gh auth status`, `gh pr create`, `gh issue list`, and `git fetch`/`git clone` over HTTPS against those hosts.
+**Network.** Open. The credential proxy is **off** by default at this level so the agent reads API keys directly from the env and reaches the network without proxy interception. The `allow_domains` list (`api.github.com`, `github.com`, `objects.githubusercontent.com`) is preserved for documentation and only takes effect if the user explicitly turns the proxy back on (`[security] credential_proxy = true` in their config). Threat model: trusted agent that needs broad access — not adversarial.
 
 nono profile (`~/.config/nono/profiles/lince-claude-permissive.json`):
 
@@ -192,13 +192,13 @@ agent-sandbox (bwrap) fragment, `sandbox/profiles/claude-permissive.toml`:
 home_ro_dirs = [".config/gh", ".cache", ".ssh/known_hosts"]
 
 [security]
-credential_proxy = true
-block_git_push = true
+credential_proxy = false   # off by default at permissive
+block_git_push = true       # stays on — push via `gh` instead
 ```
 
 **Filesystem.** Read/write on `$WORKDIR`. Read-only on `~/.config/gh` (so `gh` finds its token), `~/.cache` (general tool cache reuse), and `~/.ssh/known_hosts` (so SSH-style git remotes don't trip on host-key prompts — the private SSH keys themselves are still hidden).
 
-**Tools.** Adds the `gh` CLI. Direct `git push` is still blocked; the intended push path is `gh pr create` / `gh repo sync`. Docker and Podman are not in scope and are not made reachable — that is a much wider trust boundary and is tracked separately.
+**Tools.** Adds the `gh` CLI. Direct `git push` is still blocked; the intended push path is `gh pr create` / `gh repo sync` using a scoped fine-grained PAT (see below) so a leaked/coerced token can't do destructive things. Docker and Podman are not in scope and are not made reachable — that is a much wider trust boundary and is tracked separately.
 
 **Recommended `gh` token: fine-grained PAT, scoped, non-destructive.** A prompt-injected agent at permissive level can read your `gh` token and act as you on GitHub. The default `gh auth login` token from a CLI device flow inherits broad `repo` scope and can do anything you can do — including delete branches, force-push, change repo settings, and read your other repos. Reduce the blast radius by giving the sandbox its own *fine-grained personal access token*, scoped to only the repository (or repositories) the agent is meant to work on, with permissions chosen so a leaked or coerced token cannot do destructive things.
 
@@ -374,7 +374,7 @@ For agent-sandbox (bwrap) users, the equivalent is a TOML fragment at `~/.agent-
 `allow_domains` is the user-visible knob that controls which hosts the credential proxy lets through. It appears in the shipped fragments and can be extended by the user without writing a custom level.
 
 - **In paranoid (`unshare_net = true`)**: `allow_domains` is the **strict allowlist**. Any HTTPS CONNECT or HTTP request to a host not in the union of `credential_rules.domains` and `allow_domains` is rejected. The shipped paranoid fragment sets `allow_domains = ["api.anthropic.com"]`.
-- **In permissive (`unshare_net = false`)**: `allow_domains` lists the extra hosts the proxy passes through without credential injection. The shipped permissive fragment sets `allow_domains = ["api.github.com", "github.com", "objects.githubusercontent.com"]`.
+- **In permissive (`unshare_net = false`, proxy off by default)**: `allow_domains` is documentation-only by default — the proxy isn't running, so nothing is enforced. The shipped permissive fragment lists `["api.github.com", "github.com", "objects.githubusercontent.com"]` so that if a user opts into `[security] credential_proxy = true` on top of permissive, the gh CLI's typical hosts pass through without credential injection without any further config.
 - **Append-merged, not replaced**: when the user adds `[security] allow_domains = [...]` in `~/.agent-sandbox/config.toml`, the entries are concatenated onto whatever the active fragment ships. Switching from paranoid to permissive (or vice versa) does not silently drop the user's additions, but it does change which fragment's defaults they extend.
 
 ### Worked example: paranoid + pypi.org

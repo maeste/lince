@@ -73,7 +73,7 @@ For the full level matrix, per-backend behavior, and how to ship a custom level,
 |------------|-----|-----|
 | Read/write project directory | Agent needs to edit your code | `--bind $PWD $PWD` (writable) |
 | Read other projects | Agent may reference sibling repos | `--ro-bind ~/project ~/project` (configurable) |
-| Network access | Open in `normal` and `permissive` for API calls, pip, npm, git clone. In `paranoid` only the credential proxy is reachable | No `--unshare-net` in `normal`/`permissive`; `bwrap --unshare-net` set in `paranoid` |
+| Network access | Open in `normal` and `permissive` for API calls, pip, npm, git clone — credential proxy is **off** by default at both, the agent reaches APIs directly. In `paranoid` only the credential proxy is reachable. | No `--unshare-net` in `normal`/`permissive`; `bwrap --unshare-net` set in `paranoid` |
 | Build tools | python, node, cargo, make, gcc, etc. | System dirs read-only + `$HOME` PATH dirs auto-detected (including deep subdirectories) |
 | Agent config | Settings, MCP servers, skills | Isolated copy in `~/.agent-sandbox/claude-config` |
 | Package caches | cargo, npm, go can download dependencies | Persistent writable dirs for registry/cache subdirectories |
@@ -124,7 +124,7 @@ The `push.default` git option is forced to `nothing`, so even a bare `git push` 
 
 The credential proxy keeps API keys outside the sandbox entirely. Instead of passing `ANTHROPIC_API_KEY` into the sandbox environment, a proxy runs on the host, intercepts API calls, and injects the correct authentication header. A prompt-injected agent cannot exfiltrate the key because it never exists in the sandbox's memory.
 
-In `normal` and `permissive` levels the proxy is reached via TCP loopback (`http://localhost:PORT`) and the agent's `*_BASE_URL` is rewritten to point at it. In `paranoid` the proxy is reached via a unix socket bind-mounted into the sandbox; an in-sandbox `socat` bridge presents that socket as plain TCP localhost so any SDK that uses `*_BASE_URL` works unchanged.
+By default the proxy is **off** at `normal` and `permissive` and only kicks in when the user opts into `[security] credential_proxy = true` in their config. When opted in (or at `paranoid`, where it's mandatory), the agent's `*_BASE_URL` is rewritten to point at the proxy. At `normal`/`permissive` the proxy is reached via TCP loopback (`http://localhost:PORT`); at `paranoid` it's reached via a unix socket bind-mounted into the sandbox, with an in-sandbox `socat` bridge presenting the socket as plain TCP localhost so any SDK that uses `*_BASE_URL` works unchanged.
 
 Enable it in `config.toml`:
 
@@ -170,9 +170,9 @@ Additional hosts can be blocked via `[credential_proxy].blocked_hosts`.
 All host environment variables are stripped with `--clearenv`. Only two sources of variables enter the sandbox:
 
 1. **`[env].passthrough`** -- an explicit whitelist of host vars (terminal settings, locale). API keys should never be listed here.
-2. **Profile `env` sections** -- provider credentials and settings injected via `--setenv`. These do not need to exist in the host shell.
+2. **Provider `env` sections** -- credentials and settings injected via `--setenv` from `[<agent>.providers.<name>.env]` (legacy `[<agent>.profiles.<name>.env]` still works — see gh#81). These do not need to exist in the host shell.
 
-Static variables can also be set via `[env.extra]` for every run regardless of profile.
+Static variables can also be set via `[env.extra]` for every run regardless of provider.
 
 ---
 
@@ -184,7 +184,7 @@ Static variables can also be set via `[env.extra]` for every run regardless of p
 | **Git push bypass** | The agent could call `/usr/bin/git push` directly, bypassing the wrapper. However, without SSH keys or credential helpers, authentication fails. The wrapper is defense-in-depth |
 | **Not a VM** | bubblewrap uses Linux namespaces, a kernel feature. A kernel vulnerability in namespace handling could theoretically allow escape. For higher assurance, run the sandbox inside a VM |
 | **Linux only** | agent-sandbox requires bubblewrap, which depends on Linux kernel namespaces. macOS users can use the [nono](https://github.com/always-further/nono) backend (Landlock/Seatbelt) |
-| **MCP server secrets** | If `~/.claude/settings.json` contains API keys in MCP server env vars, those are copied to the sandbox. Review `~/.agent-sandbox/claude-config/settings.json` after init. With `credential_proxy = true`, profile API keys stay outside the sandbox |
+| **MCP server secrets** | If `~/.claude/settings.json` contains API keys in MCP server env vars, those are copied to the sandbox. Review `~/.agent-sandbox/claude-config/settings.json` after init. With `credential_proxy = true`, API keys configured in providers stay outside the sandbox |
 | **Tmpfs home is writable** | The `$HOME` tmpfs overlay is writable (that is how tmpfs works). The agent can create temporary files like `~/temp.txt`, but they are ephemeral and vanish when the sandbox exits. They never touch your real home directory |
 | **Credential proxy and HTTPS** | The proxy rewrites `*_BASE_URL` to `http://localhost:PORT`. All major AI SDKs support base URL overrides, so this is transparent. Custom HTTP clients that ignore `*_BASE_URL` env vars will not benefit from the proxy |
 | **Learn mode accuracy** | `strace` captures actual I/O but may miss paths checked with `access()` or `stat()` without opening. The learn sandbox is permissive, so the agent may access paths blocked in the real sandbox. Use the report as guidance, not as an exhaustive spec |

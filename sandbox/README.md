@@ -93,40 +93,62 @@ agent-sandbox run
 
 That's it. Claude starts with `--dangerously-skip-permissions` by default (configurable) and has full autonomy within your project directory, but cannot escape.
 
-## Using profiles
+## Using providers
 
-Profiles allow you to switch between different API providers (Anthropic, Vertex AI, custom endpoints) without modifying your config. First, define profiles in `~/.agent-sandbox/config.toml`:
+A **provider** is a named env-var bundle that lets you switch between API
+providers (Anthropic direct, Vertex AI, Z.AI, custom endpoints …) without
+editing the rest of your config. Define one or more in
+`~/.agent-sandbox/config.toml`:
 
 ```toml
-[claude.profiles.vertex]
+[claude.providers.vertex]
 description = "Vertex AI"
-[claude.profiles.vertex.env]
+[claude.providers.vertex.env]
 CLAUDE_CODE_USE_VERTEX = "1"
 ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
 ANTHROPIC_VERTEX_REGION = "us-east5"
 
-[claude.profiles.anthropic]
+[claude.providers.anthropic]
 description = "Direct Anthropic API"
-[claude.profiles.anthropic.env]
+[claude.providers.anthropic.env]
 ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
-Then use the `-P` / `--profile` flag to select one at runtime:
+Then use `-P` / `--provider` (legacy spelling `--profile` still works) to
+pick one at runtime:
 
 ```bash
-# Use the default profile (or none if not configured)
+# Use the default provider (or none, if not configured)
 agent-sandbox run
 
-# Use a specific profile
-agent-sandbox run --profile vertex
+# Use a specific provider
+agent-sandbox run --provider vertex
 agent-sandbox run -P anthropic
 
-# Set a default profile in config.toml to avoid specifying it each time
+# Set a default in [sandbox] to avoid specifying it each time
 [sandbox]
-default_profile = "vertex"
+default_provider = "vertex"
 ```
 
-You can also set `default_profile` in your `config.toml` to avoid specifying `-P` every time (see `config.toml.example` for the full syntax).
+> **Naming note (gh#81):** what used to be called `[profiles.*]` /
+> `default_profile` is now `[providers.*]` / `default_provider`. The legacy
+> spelling is still accepted (the sandbox prints a one-shot stderr
+> deprecation note when only the legacy form is present); run
+> `agent-sandbox migrate-providers` to rewrite your config in place. See
+> `config.toml.example` for the full syntax.
+
+## Two orthogonal axes: sandbox profile vs provider
+
+agent-sandbox has two configuration knobs that historically shared the word
+"profile" (gh#81). They are independent and can be combined freely:
+
+| Axis | What it controls | Where it lives | How to select |
+|------|------------------|----------------|---------------|
+| **Sandbox profile** (a.k.a. sandbox level) | Isolation posture: file/network policy, credential proxy, namespace flags | TOML fragments under `sandbox/profiles/<agent>-<level>.toml` (`paranoid` / `normal` / `permissive` ship by default) | `--sandbox-level <name>` |
+| **Provider** | Env-var bundle that switches the model provider/account (Anthropic vs Vertex vs Z.ai vs Minimax …) | `[providers.<name>]` / `[<agent>.providers.<name>]` in `~/.agent-sandbox/config.toml` | `-P <name>` / `--provider <name>`, or `[sandbox].default_provider` |
+
+So `agent-sandbox run --sandbox-level paranoid -P zai` picks the paranoid
+isolation level *and* the Z.AI env-var bundle — the two don't interact.
 
 ## Project-local config overrides
 
@@ -163,7 +185,7 @@ Lists (e.g. `extra_rw`, `allow_domains`) are **appended**, not replaced, so proj
 
 5. **Read-only build tools**: Tools installed under `$HOME` (like `~/.cargo/bin/cargo`) are available read-only. `cargo install new-tool` inside the sandbox will fail. Use system package managers to install new tools, or add specific writable directories via `extra_rw` in config.
 
-6. **MCP server secrets**: If your `~/.claude/settings.json` contains API keys in MCP server environment variables, those are copied to the sandbox. Review `~/.agent-sandbox/claude-config/settings.json` after init and remove any credentials you don't want exposed. With `credential_proxy = true`, API keys configured in profiles are kept outside the sandbox.
+6. **MCP server secrets**: If your `~/.claude/settings.json` contains API keys in MCP server environment variables, those are copied to the sandbox. Review `~/.agent-sandbox/claude-config/settings.json` after init and remove any credentials you don't want exposed. With `credential_proxy = true`, API keys configured in providers (`[<agent>.providers.<name>.env]`) are kept outside the sandbox.
 
 7. **Tmpfs home is writable**: The `$HOME` tmpfs overlay is writable (that's how tmpfs works). Claude can create files like `~/temp.txt`, but they are ephemeral and vanish when the sandbox exits. They never touch your real home directory.
 
@@ -215,14 +237,18 @@ cat /etc/resolv.conf
 
 ### Using Claude with Vertex AI (Google Cloud)
 
-If you use Claude via Vertex AI, create a profile with the Vertex env vars (see [Using profiles](#using-profiles) above). Also add the Google Cloud ADC credentials directory:
+If you use Claude via Vertex AI, define a `vertex` provider with the Vertex
+env vars (see [Using providers](#using-providers) above for the full
+example). Also expose the Google Cloud ADC credentials directory:
 
 ```toml
 [sandbox]
 home_ro_dirs = [".config/gcloud"]  # Google Cloud ADC credentials
 ```
 
-Do NOT add `CLAUDECODE` or `CLAUDE_CODE_ENTRYPOINT` to env passthrough or profiles: these are session markers that would trigger "nested session" detection and prevent Claude from starting.
+Do NOT add `CLAUDECODE` or `CLAUDE_CODE_ENTRYPOINT` to env passthrough or
+provider env tables: these are session markers that would trigger "nested
+session" detection and prevent Claude from starting.
 
 ### Claude says "permission denied" writing to a file
 

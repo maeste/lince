@@ -44,7 +44,7 @@ General sandbox behavior and filesystem exposure.
 | `persist_toolchains` | bool | `true` | Persist build-tool caches (cargo registry, npm cache, go modules) between sessions |
 | `auto_expose_path` | bool | `true` | Auto-detect `$PATH` entries under `$HOME` and expose them read-only. Top-level dirs are mounted, and deeper subdirectories explicitly in the host PATH are also added to the sandbox PATH (e.g. `~/Applications/apache-maven-3.9.14/bin`) |
 | `home_ro_dirs` | list of strings | `[".config/gcloud"]` | Additional home subdirectories to expose read-only (relative to `$HOME`). Note: this only mounts the filesystem — it does not add entries to PATH. Add the tool's `bin` directory to your host shell PATH for automatic sandbox PATH inclusion |
-| `default_profile` | string | `""` | Default provider profile when `-P` is not specified. Set to a profile name defined in `[*.profiles.*]`. Leave empty to run without a profile |
+| `default_provider` | string | `""` | Default provider (env-var bundle) when `-P` / `--provider` is not specified. Set to a provider name defined in `[providers.*]` / `[<agent>.providers.*]`. Leave empty to run without a provider. The legacy spelling `default_profile` is still accepted (gh#81). |
 | `backend` | string | `"auto"` | Sandbox backend: `"agent-sandbox"` (bubblewrap), `"nono"` (Landlock/Seatbelt), or `"auto"` (prefers agent-sandbox on Linux, nono on macOS) |
 
 ```toml
@@ -54,7 +54,7 @@ ro_dirs = ["~/project"]
 persist_toolchains = true
 auto_expose_path = true
 home_ro_dirs = [".config/gcloud"]
-default_profile = "zai"
+default_provider = "zai"
 backend = "auto"
 ```
 
@@ -138,11 +138,11 @@ Environment variable isolation. All host env vars are cleared; only those listed
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `passthrough` | list of strings | `["TERM", "COLORTERM", "TERM_PROGRAM", "LANG", "LC_ALL", "EDITOR", "VISUAL", "ZELLIJ", "ZELLIJ_SESSION_NAME", "LINCE_AGENT_ID"]` | Host environment variables passed into the sandbox. API keys should go in profiles, not here |
+| `passthrough` | list of strings | `["TERM", "COLORTERM", "TERM_PROGRAM", "LANG", "LC_ALL", "EDITOR", "VISUAL", "ZELLIJ", "ZELLIJ_SESSION_NAME", "LINCE_AGENT_ID"]` | Host environment variables passed into the sandbox. API keys should go in providers (`[<agent>.providers.<name>.env]`), not here |
 
 ### [env.extra]
 
-Static environment variables set inside every sandbox run, regardless of profile.
+Static environment variables set inside every sandbox run, regardless of provider.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -274,48 +274,67 @@ For the full level matrix, per-backend behavior, and custom-level recipes, see [
 
 ---
 
-## Profiles
+## Providers
 
-Profiles store provider credentials and agent-specific overrides so API keys live in the TOML file instead of your shell environment. Two naming formats are supported:
+A *provider* is a named env-var bundle that switches the model
+provider/account (Anthropic vs Vertex vs Z.ai vs Minimax …). API keys live
+in the TOML file instead of your shell environment.
+
+> **Naming note (gh#81):** what was called "profile" pre-#81 is now
+> "provider". The legacy `[profiles.*]` / `[<agent>.profiles.*]` spelling is
+> still accepted (with a one-shot deprecation note on stderr); run
+> `agent-sandbox migrate-providers` to rewrite the file in place. The word
+> "profile" now refers exclusively to the **sandbox isolation level**
+> (paranoid / normal / permissive — see [Sandbox Levels](#sandbox-levels)
+> above), which is a separate axis you can combine freely with any provider.
+
+Two naming formats are accepted (both for canonical and legacy):
 
 **Namespaced (recommended)**:
 ```toml
-[claude.profiles.vertex]
+[claude.providers.vertex]
 description = "Vertex AI"
-[claude.profiles.vertex.env]
+[claude.providers.vertex.env]
 CLAUDE_CODE_USE_VERTEX = "1"
 ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
 ANTHROPIC_VERTEX_REGION = "us-east5"
 
-[codex.profiles.default]
+[codex.providers.default]
 description = "Default OpenAI key"
-[codex.profiles.default.env]
+[codex.providers.default.env]
 OPENAI_API_KEY = "sk-..."
 ```
 
-**Legacy (still works, mapped to `claude`)**:
+**Top-level (mapped to `claude`)**:
 ```toml
-[profiles.vertex]
+[providers.vertex]
 description = "Vertex AI"
-[profiles.vertex.env]
+[providers.vertex.env]
 CLAUDE_CODE_USE_VERTEX = "1"
 ```
 
-### Profile keys
+**Legacy (still works)**: replace `providers` with `profiles` in any of the
+above. `agent-sandbox migrate-providers` rewrites it for you.
+
+### Provider keys
 
 | Key | Type | Description |
 |-----|------|-------------|
 | `description` | string | Human-readable label (shown in the run banner) |
 | `env` | table | Environment variables injected via `--setenv` |
 | `env_unset` | list of strings | Environment variables to explicitly unset inside the sandbox |
-| `default_args` | list of strings | Override the agent's `default_args` when this profile is active |
+| `default_args` | list of strings | Override the agent's `default_args` when this provider is active |
 
-### Interaction with the -P flag
+### Interaction with the -P / --provider flag
 
-- `default_profile` in `[sandbox]` sets the profile used when `-P` is omitted.
-- `-P <name>` overrides the default for that invocation.
-- Profile env vars are injected via bwrap `--setenv` and do not need to exist in the host shell.
-- If a profile defines `default_args`, those replace the base agent `default_args`.
+- `default_provider` in `[sandbox]` sets the provider used when `-P` /
+  `--provider` is omitted (legacy `default_profile` still accepted).
+- `-P <name>` (= `--provider <name>` = `--profile <name>`) overrides for
+  that invocation.
+- Provider env vars are injected via bwrap `--setenv` and do not need to
+  exist in the host shell.
+- If a provider defines `default_args`, those replace the base agent
+  `default_args`.
 
 ### Security note
 

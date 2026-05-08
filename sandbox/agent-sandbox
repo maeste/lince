@@ -1298,26 +1298,102 @@ def find_agents_defaults() -> dict[str, dict]:
     return _agents_defaults_cache
 
 
-def resolve_profiles(config: dict, agent_name: str = "claude") -> dict:
-    """Resolve profiles for a given agent, merging legacy and namespaced formats.
+_legacy_profiles_warned = False
 
-    Merge order (later wins):
+
+def _warn_legacy_profiles_once() -> None:
+    """Print a one-shot stderr deprecation note about [profiles.*] keys.
+
+    The codebase used to overload "profile" for two unrelated concepts:
+    the env-var bundle (now "provider") and the sandbox isolation level
+    (still "profile" — see sandbox/profiles/<agent>-<level>.toml). The
+    canonical key in config.toml is ``[providers.*]`` / ``[<agent>.providers.*]``;
+    legacy ``[profiles.*]`` is still read for back-compat. This warning fires
+    once per process, only when no canonical [providers.*] table is present.
+    """
+    global _legacy_profiles_warned
+    if _legacy_profiles_warned:
+        return
+    _legacy_profiles_warned = True
+    print(
+        "agent-sandbox: note: [profiles.*] / [<agent>.profiles.*] is the legacy "
+        "spelling — the canonical key is now [providers.*] / [<agent>.providers.*]. "
+        "Run 'agent-sandbox migrate-providers' to rewrite your config.toml in place.",
+        file=sys.stderr,
+    )
+
+
+def resolve_providers(config: dict, agent_name: str = "claude") -> dict:
+    """Resolve provider env-var bundles for a given agent.
+
+    A *provider* is an env-var bundle that switches model provider/account
+    (Anthropic vs Vertex vs Z.ai vs Minimax, etc.). Selected at runtime via
+    ``-P / --provider`` or via ``[sandbox].default_provider``. This is a
+    different axis from the *sandbox profile* (paranoid/normal/permissive)
+    fragments under ``sandbox/profiles/`` — see ``load_sandbox_level_fragment``.
+
+    Merge order (later wins, i.e. canonical overrides legacy):
       1. Legacy ``[profiles.*]`` — only included when agent_name is "claude"
-      2. Namespaced ``[<agent_name>.profiles.*]``
+      2. Legacy namespaced ``[<agent_name>.profiles.*]``
+      3. Canonical ``[providers.*]`` — only included when agent_name is "claude"
+      4. Canonical namespaced ``[<agent_name>.providers.*]``
 
-    Returns a flat dict of profile_name → profile_config.
+    A one-shot deprecation warning fires when only the legacy form is present
+    (no ``[providers.*]`` key anywhere in the file).
+
+    Returns a flat dict of name → config.
     """
     merged: dict = {}
-    # Legacy [profiles.*] → attributed to "claude"
+    saw_legacy = False
+    saw_canonical = False
+
+    # 1. Legacy top-level [profiles.*] (only attributed to claude).
     if agent_name == "claude":
-        merged.update(config.get("profiles", {}))
-    # Namespaced [<agent>.profiles.*]
+        legacy_top = config.get("profiles")
+        if isinstance(legacy_top, dict) and legacy_top:
+            saw_legacy = True
+            merged.update(legacy_top)
+    # 2. Legacy namespaced [<agent>.profiles.*].
     agent_section = config.get(agent_name, {})
     if isinstance(agent_section, dict):
-        namespaced = agent_section.get("profiles", {})
-        if isinstance(namespaced, dict):
-            merged.update(namespaced)
+        legacy_ns = agent_section.get("profiles")
+        if isinstance(legacy_ns, dict) and legacy_ns:
+            saw_legacy = True
+            merged.update(legacy_ns)
+    # 3. Canonical top-level [providers.*] (only attributed to claude).
+    if agent_name == "claude":
+        canonical_top = config.get("providers")
+        if isinstance(canonical_top, dict) and canonical_top:
+            saw_canonical = True
+            merged.update(canonical_top)
+    # 4. Canonical namespaced [<agent>.providers.*].
+    if isinstance(agent_section, dict):
+        canonical_ns = agent_section.get("providers")
+        if isinstance(canonical_ns, dict) and canonical_ns:
+            saw_canonical = True
+            merged.update(canonical_ns)
+
+    if saw_legacy and not saw_canonical:
+        _warn_legacy_profiles_once()
     return merged
+
+
+# Back-compat alias: old name kept so external scripts/imports keep working.
+# Internal callers use ``resolve_providers``.
+resolve_profiles = resolve_providers
+
+
+def resolve_default_provider(config: dict) -> str | None:
+    """Return the default provider name from [sandbox], honoring legacy alias.
+
+    Prefers ``default_provider`` (canonical); falls back to ``default_profile``
+    (legacy). Returns None when neither is set or the value is empty.
+    """
+    sandbox = config.get("sandbox", {}) or {}
+    val = sandbox.get("default_provider")
+    if val is None or val == "":
+        val = sandbox.get("default_profile")
+    return val if val else None
 
 
 def resolve_agent_config(config: dict, agent_name: str) -> dict:
@@ -1610,10 +1686,11 @@ def generate_nono_profile(
     for var, val in env_conf.get("extra", {}).items():
         all_env[var] = _expand_env_value(val)
 
-    # Profile env (if a profile is selected)
+    # Provider env (if a provider is selected). Parameter is still spelled
+    # ``profile_name`` for back-compat with the public function signature.
     if profile_name:
-        profiles = resolve_profiles(config, agent_name)
-        prof_data = profiles.get(profile_name, {})
+        providers = resolve_providers(config, agent_name)
+        prof_data = providers.get(profile_name, {})
         if isinstance(prof_data, dict):
             for var, val in prof_data.get("env", {}).items():
                 all_env[var] = _expand_env_value(val)
@@ -1691,17 +1768,20 @@ def cmd_nono_sync(args) -> None:
     else:
         print(f"  output: {NONO_PROFILE_DIR}/\n")
 
-    # Resolve the profile name if any
-    profile_name = getattr(args, "profile", None)
-    if profile_name is None:
-        profile_name = config.get("sandbox", {}).get("default_profile", "") or None
+    # Resolve the provider name (env-var bundle) if any. ``args.provider`` is
+    # the canonical destination shared with --profile / -P; ``provider_name``
+    # is the parameter we pass to generate_nono_profile (still spelled
+    # ``profile_name`` in that signature for back-compat).
+    provider_name = getattr(args, "provider", None)
+    if provider_name is None:
+        provider_name = resolve_default_provider(config)
 
     all_warnings: list[str] = []
 
     for agent_name in agent_names:
         agent_cfg = resolve_agent_config(config, agent_name)
         profile, warnings = generate_nono_profile(
-            agent_name, agent_cfg, config, profile_name=profile_name,
+            agent_name, agent_cfg, config, profile_name=provider_name,
         )
         all_warnings.extend(warnings)
 
@@ -1729,6 +1809,83 @@ def cmd_nono_sync(args) -> None:
     if not dry_run:
         print(f"\nDone. {len(agent_names)} profile(s) written to {NONO_PROFILE_DIR}/")
         print("Run agents with nono:  nono run --profile lince-<agent> -- <command>")
+
+
+def _migrate_providers_text(text: str) -> tuple[str, int]:
+    """Translate legacy [profiles.*] / default_profile keys to canonical names.
+
+    Returns (new_text, num_substitutions). Operates on raw config text so user
+    comments and formatting are preserved — a TOML round-trip would strip them.
+
+    Substitutions, all anchored at start-of-line:
+      - ``[<agent>.profiles.<rest>]`` → ``[<agent>.providers.<rest>]``
+      - ``[profiles.<rest>]``         → ``[providers.<rest>]``
+      - ``default_profile = ...``     → ``default_provider = ...``
+
+    Order matters: the namespaced pattern is tried first so it doesn't get
+    swallowed by the bare ``[profiles.*]`` rule.
+    """
+    new = text
+    total = 0
+    new, n1 = re.subn(
+        r"^(\s*)\[(\w+)\.profiles\.(.+?)\]\s*$",
+        r"\1[\2.providers.\3]",
+        new,
+        flags=re.MULTILINE,
+    )
+    total += n1
+    new, n2 = re.subn(
+        r"^(\s*)\[profiles\.(.+?)\]\s*$",
+        r"\1[providers.\2]",
+        new,
+        flags=re.MULTILINE,
+    )
+    total += n2
+    new, n3 = re.subn(
+        r"^(\s*)default_profile(\s*=)",
+        r"\1default_provider\2",
+        new,
+        flags=re.MULTILINE,
+    )
+    total += n3
+    return new, total
+
+
+def cmd_migrate_providers(args) -> None:
+    """Rewrite the user's config.toml in place: [profiles.*] → [providers.*].
+
+    Resolves the active config via the same lookup as ``load_config()`` (project
+    override wins over user config). Writes a ``.bak`` backup next to the
+    original file. With ``--dry-run`` prints a unified diff and does not
+    write. Idempotent — running twice is a no-op.
+    """
+    cfg_path = find_config()
+    text = cfg_path.read_text()
+    new_text, n = _migrate_providers_text(text)
+    if n == 0 or text == new_text:
+        print(f"{cfg_path}: already uses [providers.*] — nothing to migrate.")
+        return
+
+    if getattr(args, "dry_run", False):
+        import difflib
+        diff = difflib.unified_diff(
+            text.splitlines(keepends=True),
+            new_text.splitlines(keepends=True),
+            fromfile=str(cfg_path),
+            tofile=f"{cfg_path} (migrated)",
+        )
+        sys.stdout.writelines(diff)
+        print(
+            f"\n# {n} substitution(s) would be made. "
+            f"Re-run without --dry-run to apply.",
+            file=sys.stderr,
+        )
+        return
+
+    bak = cfg_path.with_name(cfg_path.name + ".bak")
+    bak.write_text(text)
+    cfg_path.write_text(new_text)
+    print(f"Migrated {cfg_path} ({n} substitutions). Backup: {bak}")
 
 
 def human_size(n: int) -> str:
@@ -1896,16 +2053,17 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
     sec = config.get("security", {})
     agent_cfg = agent_config or resolve_agent_config(config, agent_name)
 
-    # Resolve profile
+    # Resolve provider env-var bundle (CLI param is still called ``profile``
+    # for back-compat with the shared bwrap builder signature).
     prof: dict = {}
     if profile:
-        profiles = resolve_profiles(config, agent_name)
-        if profile not in profiles:
-            avail = ", ".join(sorted(profiles)) if profiles else "(none defined)"
-            print(f"Error: unknown profile '{profile}'.", file=sys.stderr)
-            print(f"Available profiles: {avail}", file=sys.stderr)
+        providers = resolve_providers(config, agent_name)
+        if profile not in providers:
+            avail = ", ".join(sorted(providers)) if providers else "(none defined)"
+            print(f"Error: unknown provider '{profile}'.", file=sys.stderr)
+            print(f"Available providers: {avail}", file=sys.stderr)
             sys.exit(1)
-        prof = profiles[profile]
+        prof = providers[profile]
 
     cmd: list[str] = ["bwrap"]
 
@@ -2376,7 +2534,7 @@ def cmd_init(args) -> None:
         config_created = True
 
     if config_created:
-        print(f"\nEdit {SANDBOX_DIR / 'config.toml'} to configure profiles and API keys.\n")
+        print(f"\nEdit {SANDBOX_DIR / 'config.toml'} to configure providers and API keys.\n")
 
     print("Run Claude in sandbox:\n  agent-sandbox run\n")
 
@@ -2430,26 +2588,31 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         log_file = log_dir / f"{ts}_{project_dir.name}.log"
 
-    # Resolve profile: explicit -P flag > default_profile from config
-    profile = args.profile
+    # Resolve provider: explicit -P / --provider flag > default_provider from config.
+    # ``args.provider`` is the canonical destination; ``-P`` and ``--profile`` are
+    # legacy spellings that share the same dest (see argparse setup in main()).
+    provider = getattr(args, "provider", None)
     from_default = False
-    if profile is None:
-        profile = config.get("sandbox", {}).get("default_profile", "") or None
+    if provider is None:
+        provider = resolve_default_provider(config)
         from_default = True
     prof_desc = None
-    if profile:
-        profiles = resolve_profiles(config, agent_name)
-        if profile not in profiles:
+    if provider:
+        providers = resolve_providers(config, agent_name)
+        if provider not in providers:
             if from_default:
-                # default_profile doesn't exist for this agent type — silently skip
-                profile = None
+                # default_provider doesn't exist for this agent type — silently skip
+                provider = None
             else:
-                # Explicit -P flag: hard error
-                avail = ", ".join(sorted(profiles)) if profiles else "(none defined)"
-                print(f"Error: unknown profile '{profile}'.", file=sys.stderr)
-                print(f"Available profiles: {avail}", file=sys.stderr)
+                # Explicit -P / --provider flag: hard error
+                avail = ", ".join(sorted(providers)) if providers else "(none defined)"
+                print(f"Error: unknown provider '{provider}'.", file=sys.stderr)
+                print(f"Available providers: {avail}", file=sys.stderr)
                 sys.exit(1)
-        prof_desc = profiles[profile].get("description", "")
+        prof_desc = providers[provider].get("description", "")
+    # Local alias — older code paths below (and the bwrap builder API) still
+    # pass the value as ``profile``.
+    profile = provider
 
     sec = config.get("security", {})
 
@@ -2477,9 +2640,9 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             print("# nono command that would be executed:\n")
             print(f"# config: {config_path}")
             print(f"# agent: {agent_name} ({agent_cfg['command']})")
-            print(f"# profile: lince-{agent_name}")
-            if profile:
-                print(f"# provider: {profile}")
+            print(f"# nono profile: lince-{agent_name}")
+            if provider:
+                print(f"# provider: {provider}")
             _pretty_print_cmd(cmd)
             return
 
@@ -2489,9 +2652,9 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         print(f"  backend     nono ({shutil.which('nono')})")
         print(f"  agent       {agent_name} ({agent_cfg['command']})")
         print(f"  nono prof   lince-{agent_name}")
-        if profile:
+        if provider:
             desc = f" ({prof_desc})" if prof_desc else ""
-            print(f"  profile     {profile}{desc}")
+            print(f"  provider    {provider}{desc}")
         print(f"  project     {project_dir}")
         print(f"  isolation   Landlock LSM / Seatbelt")
         print(f"  network     enabled")
@@ -2598,8 +2761,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         for var, val in env_conf.get("extra", {}).items():
             collected_env[var] = _expand_env_value(val)
         if profile:
-            all_profiles = resolve_profiles(config, agent_name)
-            prof_data = all_profiles.get(profile, {})
+            all_providers = resolve_providers(config, agent_name)
+            prof_data = all_providers.get(profile, {})
             for var, val in prof_data.get("env", {}).items():
                 collected_env[var] = _expand_env_value(val)
         for var, val in agent_cfg.get("env", {}).items():
@@ -2693,12 +2856,12 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                 print(
                     "Error: [security] unshare_net = true requires at "
                     f"least one credential rule (e.g. {keys_for_msg} in "
-                    "[env.extra] or in the active provider profile), "
-                    "otherwise the proxy doesn't start and the sandbox "
+                    "[env.extra] or in the active provider's [providers.<name>.env] "
+                    "block), otherwise the proxy doesn't start and the sandbox "
                     "has no path to any LLM API.\n"
                     f"{quick}\n"
                     f"You can also add a key to [env.extra] in "
-                    f"{config_path} or pick a profile with `-P`."
+                    f"{config_path} or pick a provider with `-P` / `--provider`."
                     f"{oauth_note}",
                     file=sys.stderr,
                 )
@@ -2832,7 +2995,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         print(f"# config: {config_path}")
         print(f"# agent: {agent_name} ({agent_cfg['command']})")
         if profile:
-            print(f"# profile: {profile}")
+            print(f"# provider: {profile}")
         if proxy:
             print(f"# credential proxy: 127.0.0.1:{proxy.get_port()}")
         _pretty_print_cmd(cmd)
@@ -2851,7 +3014,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     print(f"  agent       {agent_name} ({agent_cfg['command']})")
     if profile:
         desc = f" ({prof_desc})" if prof_desc else ""
-        print(f"  profile     {profile}{desc}")
+        print(f"  provider    {profile}{desc}")
     if agent_name == "claude":
         if claude_scratched:
             print(f"  agent-cfg   ephemeral scratch (per-run, discarded on exit)")
@@ -3076,30 +3239,34 @@ def cmd_status(args) -> None:
     extra = f" (+{deep_count} deep)" if deep_count > 0 else ""
     print(f"  home PATH dirs  {len(home_dirs)} detected{extra}")
 
-    # Profiles — collect from all agent types (legacy + namespaced)
-    default_prof = config_data.get("sandbox", {}).get("default_profile", "") or None
-    # Discover which agent names have namespaced profiles
-    agent_names_with_profiles: set[str] = set()
+    # Providers (env-var bundles) — collect from all agent types, scanning
+    # both canonical [providers.*] / [<agent>.providers.*] and legacy
+    # [profiles.*] / [<agent>.profiles.*].
+    default_prov = resolve_default_provider(config_data)
+    agent_names_with_providers: set[str] = set()
     for key, val in config_data.items():
-        if key == "profiles":
-            agent_names_with_profiles.add("claude")  # legacy → claude
-        elif isinstance(val, dict) and isinstance(val.get("profiles"), dict):
-            agent_names_with_profiles.add(key)
-    if not agent_names_with_profiles:
-        agent_names_with_profiles.add("claude")
-    for aname in sorted(agent_names_with_profiles):
-        profiles = resolve_profiles(config_data, aname)
-        if profiles:
+        if key in ("profiles", "providers"):
+            agent_names_with_providers.add("claude")  # top-level → claude
+        elif isinstance(val, dict) and (
+            isinstance(val.get("providers"), dict)
+            or isinstance(val.get("profiles"), dict)
+        ):
+            agent_names_with_providers.add(key)
+    if not agent_names_with_providers:
+        agent_names_with_providers.add("claude")
+    for aname in sorted(agent_names_with_providers):
+        providers = resolve_providers(config_data, aname)
+        if providers:
             parts = []
-            for name, pconf in sorted(profiles.items()):
+            for name, pconf in sorted(providers.items()):
                 desc = pconf.get("description", "") if isinstance(pconf, dict) else ""
-                marker = " *" if name == default_prof else ""
+                marker = " *" if name == default_prov else ""
                 label = f"{name}{marker} ({desc})" if desc else f"{name}{marker}"
                 parts.append(label)
-            prefix = f"  profiles [{aname}]"
+            prefix = f"  providers [{aname}]"
             print(f"{prefix:<22}{', '.join(parts)}")
-    if default_prof:
-        print(f"  default profile {default_prof}")
+    if default_prov:
+        print(f"  default provider {default_prov}")
 
     # Config diff summary (only meaningful in isolated-copy mode)
     if not use_real:
@@ -4679,12 +4846,13 @@ def build_learn_bwrap_cmd(
     sec = config.get("security", {})
     agent_cfg = agent_config
 
-    # Resolve profile
+    # Resolve provider env-var bundle (legacy "profile" param name kept for
+    # API compat — see comment in build_bwrap_cmd).
     prof: dict = {}
     if profile:
-        profiles = resolve_profiles(config, agent_name)
-        if profile in profiles:
-            prof = profiles[profile]
+        providers = resolve_providers(config, agent_name)
+        if profile in providers:
+            prof = providers[profile]
 
     cmd: list[str] = ["bwrap"]
 
@@ -4990,11 +5158,12 @@ def cmd_learn(args) -> None:
     if config.get("security", {}).get("block_git_push", True):
         ensure_git_wrapper()
 
-    # 5. Resolve profile
-    profile = args.profile
+    # 5. Resolve provider (env-var bundle). The flag is ``--provider`` /
+    # ``--profile`` / ``-P`` — all share dest=provider. Local var ``profile``
+    # is kept because the bwrap-builder API still spells it that way.
+    profile = getattr(args, "provider", None)
     if profile is None:
-        dp = config.get("sandbox", {}).get("default_profile", "")
-        profile = dp or None
+        profile = resolve_default_provider(config)
 
     # 6. Build the permissive bwrap command
     bwrap_cmd = build_learn_bwrap_cmd(
@@ -5022,7 +5191,7 @@ def cmd_learn(args) -> None:
     print(f"  config      {config_path}")
     print(f"  agent       {agent_name} ({agent_cfg['command']})")
     if profile:
-        print(f"  profile     {profile}")
+        print(f"  provider    {profile}")
     print(f"  project     {project_dir}")
     print(f"  trace file  {trace_file}")
     print(
@@ -5151,8 +5320,13 @@ def main() -> None:
     p_run.add_argument("-a", "--agent", default="claude",
                        help="Agent to run (default: claude). "
                             "Looks up [agents.<name>] in config.")
-    p_run.add_argument("-P", "--profile", default=None,
-                       help="Provider profile name (defined in config.toml)")
+    p_run.add_argument(
+        "-P", "--provider", "--profile",
+        dest="provider", default=None,
+        help="Provider name — env-var bundle defined under [providers.*] / "
+             "[<agent>.providers.*] in config.toml (e.g. anthropic, vertex, "
+             "zai). --profile is the legacy spelling and still works.",
+    )
     p_run.add_argument("--log", action="store_true", default=None,
                        help="Enable session transcript logging")
     p_run.add_argument("--no-log", action="store_false", dest="log",
@@ -5331,8 +5505,10 @@ def main() -> None:
         help="Agent to learn (default: claude)",
     )
     p_learn.add_argument(
-        "-P", "--profile", default=None,
-        help="Provider profile name (defined in config.toml)",
+        "-P", "--provider", "--profile",
+        dest="provider", default=None,
+        help="Provider name (env-var bundle defined under [providers.*] in "
+             "config.toml). --profile is the legacy spelling.",
     )
     p_learn.add_argument(
         "--duration", type=int, default=None, metavar="SECONDS",
@@ -5351,6 +5527,17 @@ def main() -> None:
         help="Save TOML suggestions to FILE (default: temp file)",
     )
 
+    # migrate-providers
+    p_mig = sub.add_parser(
+        "migrate-providers",
+        help="Rewrite config.toml: [profiles.*] → [providers.*] "
+             "(see gh#81 for context)",
+    )
+    p_mig.add_argument(
+        "--dry-run", action="store_true",
+        help="Print a unified diff of the changes without writing the file.",
+    )
+
     # nono-sync
     p_nono = sub.add_parser(
         "nono-sync",
@@ -5365,8 +5552,11 @@ def main() -> None:
         help="Sync a specific agent only (default: all agents)",
     )
     p_nono.add_argument(
-        "-P", "--profile", default=None,
-        help="Provider profile name for env var mapping",
+        "-P", "--provider", "--profile",
+        dest="provider", default=None,
+        help="Provider name (env-var bundle defined in config.toml) — "
+             "selects which env vars to bake into the generated nono profile. "
+             "--profile is the legacy spelling.",
     )
 
     # ---- Split argv on '--' so extra args go to the agent -------------------
@@ -5405,6 +5595,7 @@ def main() -> None:
         "snapshot-prune": lambda: cmd_snapshot_prune(args),
         "learn": lambda: cmd_learn(args),
         "nono-sync": lambda: cmd_nono_sync(args),
+        "migrate-providers": lambda: cmd_migrate_providers(args),
     }
     dispatch[args.command]()
 

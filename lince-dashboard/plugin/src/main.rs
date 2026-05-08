@@ -232,18 +232,18 @@ impl ZellijPlugin for State {
                             let (cfg, err) = DashboardConfig::parse_toml(&content);
                             // Preserve async-loaded fields that config.toml doesn't contain.
                             let prev_agent_types = std::mem::take(&mut self.config.agent_types);
-                            let prev_profiles = std::mem::take(&mut self.config.profiles_by_agent);
-                            let prev_details = std::mem::take(&mut self.config.profile_details_by_agent);
+                            let prev_providers = std::mem::take(&mut self.config.providers_by_agent);
+                            let prev_details = std::mem::take(&mut self.config.provider_details_by_agent);
                             self.config = cfg;
                             self.config_error = err;
                             if self.config.agent_types.is_empty() {
                                 self.config.agent_types = prev_agent_types;
                             }
-                            if self.config.profiles_by_agent.is_empty() {
-                                self.config.profiles_by_agent = prev_profiles;
+                            if self.config.providers_by_agent.is_empty() {
+                                self.config.providers_by_agent = prev_providers;
                             }
-                            if self.config.profile_details_by_agent.is_empty() {
-                                self.config.profile_details_by_agent = prev_details;
+                            if self.config.provider_details_by_agent.is_empty() {
+                                self.config.provider_details_by_agent = prev_details;
                             }
                         }
                         // Mark as loaded so timer doesn't retry
@@ -253,8 +253,8 @@ impl ZellijPlugin for State {
                     Some(CMD_GET_CWD) if exit_code == Some(0) => {
                         let dir = String::from_utf8_lossy(&stdout).trim().to_string();
                         if !dir.is_empty() {
-                            // Kick off async profile discovery (reads sandbox config via shell).
-                            config::discover_profiles_async(
+                            // Kick off async provider discovery (reads sandbox config via shell).
+                            config::discover_providers_async(
                                 self.config.sandbox_config_path.as_deref(),
                                 Some(&dir),
                             );
@@ -304,14 +304,14 @@ impl ZellijPlugin for State {
                         // Nothing to do, just acknowledge.
                         false
                     }
-                    Some(config::CMD_DISCOVER_PROFILES) => {
+                    Some(config::CMD_DISCOVER_PROVIDERS) => {
                         // Each config file's output is separated by NUL.
                         // Parse each independently to avoid duplicate-section TOML errors.
                         for chunk in stdout.split(|&b| b == 0) {
                             if chunk.is_empty() { continue; }
                             let content = String::from_utf8_lossy(chunk);
-                            let (by_agent, details_by_agent) = config::parse_profiles_from_toml(&content);
-                            self.config.merge_profiles(&by_agent, &details_by_agent);
+                            let (by_agent, details_by_agent) = config::parse_providers_from_toml(&content);
+                            self.config.merge_providers(&by_agent, &details_by_agent);
                         }
                         true
                     }
@@ -580,9 +580,9 @@ impl State {
                 } else {
                     default_base.to_string()
                 };
-                let available_profiles = self.config.profiles_for_agent_type(&effective_type);
-                let default_profile_index = self.config.default_profile.as_ref()
-                    .and_then(|dp| available_profiles.iter().position(|p| p == dp))
+                let available_providers = self.config.providers_for_agent_type(&effective_type);
+                let default_provider_index = self.config.default_provider.as_ref()
+                    .and_then(|dp| available_providers.iter().position(|p| p == dp))
                     .unwrap_or(0);
                 // Sandbox levels follow the canonical sandboxed entry (skipped when backend = None).
                 // Levels are backend-aware: discovered custom levels from
@@ -615,8 +615,8 @@ impl State {
                     sandbox_level_index,
                     name: String::new(),
                     default_name,
-                    available_profiles,
-                    profile_index: default_profile_index,
+                    available_providers,
+                    provider_index: default_provider_index,
                     project_dir: default_dir,
                     completions: Vec::new(),
                     completion_index: None,
@@ -758,7 +758,7 @@ impl State {
                         &self.agents,
                         name,
                         &effective_type,
-                        self.config.default_profile.clone(),
+                        self.config.default_provider.clone(),
                         self.config
                             .default_project_dir
                             .clone()
@@ -848,9 +848,9 @@ impl State {
                     // profile list. The SandboxBackend Enter handler still re-resolves
                     // when shown, which is fine and cheap.
                     let effective = wizard.effective_agent_type();
-                    wizard.available_profiles = self.config.profiles_for_agent_type(&effective);
-                    wizard.profile_index = self.config.default_profile.as_ref()
-                        .and_then(|dp| wizard.available_profiles.iter().position(|p| p == dp))
+                    wizard.available_providers = self.config.providers_for_agent_type(&effective);
+                    wizard.provider_index = self.config.default_provider.as_ref()
+                        .and_then(|dp| wizard.available_providers.iter().position(|p| p == dp))
                         .unwrap_or(0);
                     // Update default name to reflect the new base.
                     wizard.default_name = format!("{}-{}", base, self.next_agent_id + 1);
@@ -878,9 +878,9 @@ impl State {
                     // Resolve profiles against the *effective* agent_type now that the
                     // user has committed to a backend (sandboxed canonical vs unsandboxed).
                     let effective = wizard.effective_agent_type();
-                    wizard.available_profiles = self.config.profiles_for_agent_type(&effective);
-                    wizard.profile_index = self.config.default_profile.as_ref()
-                        .and_then(|dp| wizard.available_profiles.iter().position(|p| p == dp))
+                    wizard.available_providers = self.config.providers_for_agent_type(&effective);
+                    wizard.provider_index = self.config.default_provider.as_ref()
+                        .and_then(|dp| wizard.available_providers.iter().position(|p| p == dp))
                         .unwrap_or(0);
                     // Re-resolve sandbox levels for the just-chosen backend (custom levels
                     // are backend-specific: nono profile dirs differ from agent-sandbox).
@@ -974,7 +974,7 @@ impl State {
                 }
                 _ => {}
             },
-            WizardStep::Profile => match bare {
+            WizardStep::Provider => match bare {
                 BareKey::Enter | BareKey::Tab => {
                     if let Some(next) = wizard.next_step() {
                         wizard.step = next;
@@ -986,16 +986,16 @@ impl State {
                     }
                 }
                 BareKey::Up | BareKey::Char('k') => {
-                    if wizard.profile_index > 0 {
-                        wizard.profile_index -= 1;
+                    if wizard.provider_index > 0 {
+                        wizard.provider_index -= 1;
                     } else {
-                        wizard.profile_index = wizard.available_profiles.len().saturating_sub(1);
+                        wizard.provider_index = wizard.available_providers.len().saturating_sub(1);
                     }
                 }
                 BareKey::Down | BareKey::Char('j') => {
-                    let len = wizard.available_profiles.len();
+                    let len = wizard.available_providers.len();
                     if len > 0 {
-                        wizard.profile_index = (wizard.profile_index + 1) % len;
+                        wizard.provider_index = (wizard.provider_index + 1) % len;
                     }
                 }
                 _ => {}
@@ -1046,7 +1046,7 @@ impl State {
                     // Clone values out before dropping the borrow.
                     let name = wizard.name.clone();
                     let agent_type = wizard.effective_agent_type();
-                    let profile = wizard.selected_profile().map(|s| s.to_string());
+                    let provider = wizard.selected_provider().map(|s| s.to_string());
                     let project_dir = wizard.project_dir.clone();
                     let backend_choice = wizard.selected_sandbox_backend();
                     // Skip level when the chosen backend is `None` (unsandboxed) — it's a no-op.
@@ -1060,7 +1060,7 @@ impl State {
                     self.spawn_wizard_agent(
                         name,
                         &agent_type,
-                        profile,
+                        provider,
                         project_dir,
                         sandbox_level,
                         sandbox_backend,
@@ -1083,7 +1083,7 @@ impl State {
         &mut self,
         name: String,
         agent_type: &str,
-        profile: Option<String>,
+        provider: Option<String>,
         project_dir: String,
         sandbox_level_override: Option<String>,
         sandbox_backend_override: Option<sandbox_backend::SandboxBackend>,
@@ -1094,7 +1094,7 @@ impl State {
             &self.agents,
             name,
             agent_type,
-            profile,
+            provider,
             project_dir,
             self.launch_dir.as_deref(),
             sandbox_level_override,
@@ -1321,7 +1321,7 @@ impl State {
                 &self.agents,
                 saved.name,
                 &saved.agent_type,
-                saved.profile,
+                saved.provider,
                 saved.project_dir,
                 self.launch_dir.as_deref(),
                 saved.sandbox_level,
