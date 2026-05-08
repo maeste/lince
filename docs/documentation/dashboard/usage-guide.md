@@ -4,10 +4,17 @@ How to launch, navigate, and operate the LINCE Dashboard for multi-agent managem
 
 ## Launching
 
-Start the dashboard with the `zd` shell alias (installed by `install.sh`):
+Start the dashboard with the `lince` shell alias (installed by `install.sh`):
 
 ```bash
-zd
+lince
+```
+
+For the tiled (3-pane) layout:
+
+```bash
+lince            # tiled is the default
+lince-floating   # floating overlay layout
 ```
 
 This opens Zellij with the dashboard layout. The plugin loads in a dedicated pane, ready to spawn and manage agents. If a `.lince-dashboard` state file exists in the current directory, saved agents are automatically restored.
@@ -82,7 +89,7 @@ when only one is installed, `Sandbox Level` for unsandboxed agents,
 
 **Step 5: Provider** -- Conditional step, shown only when the selected agent type has providers configured (`providers = ["__discover__"]` or an explicit list in `agents-defaults.toml`). Pick a provider name (env-var bundle: `vertex`, `anthropic`, `zai`, …) discovered from `~/.agent-sandbox/config.toml`. The Provider axis is **independent** of Sandbox Level — combine freely. Was named "Profile" pre-#81.
 
-**Step 6: Project Directory** -- Text input for the working directory path. Tab-completion is available. Defaults to the directory where `zd` was launched.
+**Step 6: Project Directory** -- Text input for the working directory path. Tab-completion is available. Defaults to the directory where `lince` was launched.
 
 **Step 7: Confirm** -- Review all settings (Type / Backend / Profile / Name / Provider / Dir). Press `Enter` to create the agent, or `Backspace` to go back and change a setting.
 
@@ -153,34 +160,30 @@ When agents span multiple project directories, the dashboard automatically group
 
 Press `Q` to save the current agent configuration and quit Zellij. On next launch from the same directory, agents are automatically re-spawned with their saved names, providers, project directories, and token counts. (Pre-#81 saved-state files use `profile` as the field name; they continue to load thanks to a serde alias on `provider`.)
 
-- State is saved to `.lince-dashboard` in the directory where `zd` was launched.
+- State is saved to `.lince-dashboard` in the directory where `lince` was launched.
 - Different directories maintain independent state. Launch from `~/project-a` and `~/project-b` for separate sessions.
 - The state file is kept after restore, so an ungraceful quit (`Ctrl-Q`) still preserves the last saved state.
 - If no `.lince-dashboard` file exists, the dashboard starts empty.
 
 ## Tiled Pane Layout
 
-By default, agents spawn as floating overlay panes. Set `agent_layout = "tiled"` in `config.toml` to place agents as tiled panes in a fixed position within the Zellij layout grid.
-
-Use the included tiled layout for a split view:
-
-```bash
-zellij --layout ~/.config/zellij/layouts/dashboard-tiled.kdl
-```
+Set `agent_layout = "tiled"` in `config.toml` and launch with `lince` for a fixed three-pane layout:
 
 ```
-+--------------------+----------------+
-| Agent panes (60%)  | Dashboard (40%)|
-| (spawned by plugin)| plugin         |
-+--------------------+----------------+
+┌──────────────┬─────────────────────┐
+│              │                     │
+│  Dashboard   │  Shell / VoxCode    │
+│  plugin      │                     │
+├──────────────┤                     │
+│  Agent       │                     │
+│  viewport    │                     │
+└──────────────┴─────────────────────┘
 ```
 
-In tiled mode:
-
-- New agents appear as tiled panes. Zellij places them in the largest available area.
-- Focus (`f` / `Enter`) switches terminal focus to the agent pane.
-- No show/hide toggling -- tiled panes are always visible.
-- `h` / `Esc` returns focus to the dashboard.
+- The dashboard plugin occupies the top-left pane (A).
+- The bottom-left pane (C) is the **agent viewport** — an ASCII art placeholder that is covered by the focused agent's floating pane.
+- The right column (B) is the agent viewport — covered by the focused agent's floating pane.
+- Press `f` to focus an agent — its pane overlays the viewport. Press `h` to unfocus and return to the placeholder.
 
 ## Voice Relay
 

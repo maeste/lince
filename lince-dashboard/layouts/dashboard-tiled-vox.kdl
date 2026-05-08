@@ -1,13 +1,11 @@
-// Tiled layout for lince-dashboard — three fixed panes.
+// Tiled layout with VoxCode — three fixed panes, VoxCode in B.
 //
-// Agents are spawned as floating overlays that cover the viewport pane (C)
-// when focused. The underlying placeholder shows ASCII art when no agent
-// is focused.
+// Same as dashboard-tiled.kdl but pane B runs VoxCode instead of a plain shell.
 //
 // Requires `agent_layout = "tiled"` in config.toml.
 //
 // Usage:
-//   lince-tiled
+//   lince-tiled-vox
 //
 // Structure:
 //   ┌──────────────┬─────────────────────┐
@@ -15,13 +13,13 @@
 //   ├──────────────┬─────────────────────┤
 //   │              │                     │
 //   │   A          │        B            │
-//   │  Dashboard   │       Agent         │  ~70%
+//   │  Dashboard   │      Agent          │  ~70%
 //   │  plugin      │                     │
 //   │   40%×70%    │     60%×100%        │
 //   │              │                     │
 //   ├──────────────┤                     │
 //   │   C          │                     │  ~30%
-//   │  Shell       │                     │
+//   │  VoxCode     │                     │
 //   │              │                     │
 //   │  40%×30%     │                     │
 //   ├──────────────┴─────────────────────┤
@@ -49,17 +47,18 @@ layout {
                         config_path "~/.config/lince-dashboard/config.toml"
                     }
                 }
-                // C — Shell viewport (30% of left column)
+                // C — Agent viewport (30% of left column)
                 // Shows ASCII art placeholder; agent floating overlay covers this on focus.
                 pane size="30%" {
-                    
+                    command "voxcode"
+                    args "--use-pipe"
                 }
             }
             // Right column — 60%, full height (B)
             pane size="60%" {
-                // B — Agent (full height)
+                // B — VoxCode (full height)
                 command "lince-viewport-placeholder"
-            }
+                }
         }
     }
 }

@@ -64,12 +64,12 @@ What it does:
 - Installs layouts to `~/.config/zellij/layouts/`
 - Installs Claude Code status hooks
 - Offers to install optimized Zellij keybindings (Ctrl+O disabled for agent compatibility)
-- Creates shell aliases: `zd`, `z`, `zn`
+- Creates shell aliases: `lince`, `lince-floating`, `zd` (legacy), `z`, `zn`
 
 Verification:
 ```bash
 source ~/.bashrc
-zd    # launch the dashboard
+lince    # launch the dashboard
 ```
 
 ---
@@ -80,7 +80,7 @@ zd    # launch the dashboard
 
 ```bash
 source ~/.bashrc
-zd
+lince
 ```
 
 ### Dashboard Controls
@@ -143,7 +143,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 3. Check aliases:
    ```bash
-   alias zd
+   alias lince
    ```
 
 ### Ctrl+Shift+C kills agent (Terminator + Zellij)
@@ -189,5 +189,5 @@ cd sandbox && ./update.sh
 cd lince-dashboard && ./update.sh
 
 # Launch
-zd
+lince
 ```

@@ -103,7 +103,7 @@ pub enum AgentLayout {
 
 impl Default for AgentLayout {
     fn default() -> Self {
-        AgentLayout::Floating
+        AgentLayout::Tiled
     }
 }
 

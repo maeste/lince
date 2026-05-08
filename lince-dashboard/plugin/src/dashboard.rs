@@ -203,15 +203,35 @@ pub fn render_dashboard(
 
     render_header(agents.len(), cols);
 
-    if rows < 5 {
-        for _ in 1..rows.saturating_sub(1) {
+    if rows < 6 {
+        // Not enough room for the full layout. Reserve 2 rows for the status
+        // bar at the bottom (or fall back to a single line / nothing on
+        // extremely small terminals).
+        let status_lines: usize = if rows >= 3 { 2 } else if rows == 2 { 1 } else { 0 };
+        let blank_lines = rows.saturating_sub(1 + status_lines); // header + status
+        for _ in 0..blank_lines {
             println!();
         }
-        if rows > 1 {
+        if status_lines == 2 {
+            if let Some(prompt) = name_prompt {
+                render_name_prompt_bar(prompt, cols);
+                print_status_pad_line(cols);
+            } else {
+                render_status_bar(cols, status_message, agents, focused, detail);
+            }
+        } else if status_lines == 1 {
             if let Some(prompt) = name_prompt {
                 render_name_prompt_bar(prompt, cols);
             } else {
-                render_status_bar(cols, status_message, agents, focused, detail);
+                // Single-line compact fallback: just print the first half of hints.
+                let is_empty = agents.is_empty();
+                let is_focused = focused.is_some();
+                let is_detail = detail.is_some();
+                let hints = status_bar_hints(is_empty, is_focused, is_detail);
+                let mid = hints.len().div_ceil(2);
+                let (first_half, _) = hints.split_at(mid);
+                let text = format_key_hints(first_half);
+                print_status_line(&text, first_half, cols);
             }
         }
         return;
@@ -220,7 +240,7 @@ pub fn render_dashboard(
     println!(); // separator
 
     let detail_panel_rows = if detail.is_some() { 10 } else { 0 };
-    let available = rows.saturating_sub(4); // header + 2 seps + statusbar
+    let available = rows.saturating_sub(5); // header + 2 seps + 2-line statusbar
     let table_rows = available.saturating_sub(detail_panel_rows);
 
     if agents.is_empty() {
@@ -238,6 +258,7 @@ pub fn render_dashboard(
     println!(); // separator
     if let Some(prompt) = name_prompt {
         render_name_prompt_bar(prompt, cols);
+        print_status_pad_line(cols);
     } else {
         render_status_bar(cols, status_message, agents, focused, detail);
     }
@@ -626,7 +647,7 @@ fn status_bar_hints(empty: bool, focused: bool, detail: bool) -> Vec<KeyHint> {
     if empty {
         vec![("n", "New-defaults"), ("N", "New-wizard"), ("Q", "Save+Quit"), ("?", "Help")]
     } else if focused {
-        vec![("h/Esc", "Unfocus"), ("[]", "Cycle"), ("r", "Rename"), ("x", "Kill"), ("i", "Info"), ("n", "New"), ("Q", "Save+Quit"), ("?", "Help")]
+        vec![("Alt-f", "Unfocus"), ("[]", "Cycle"), ("r", "Rename"), ("x", "Kill"), ("i", "Info"), ("n", "New"), ("Q", "Save+Quit"), ("?", "Help")]
     } else if detail {
         vec![("i", "Hide info"), ("f/Enter", "Focus"), ("j/k", "Nav"), ("r", "Rename"), ("x", "Kill"), ("n", "New"), ("Q", "Save+Quit"), ("?", "Help")]
     } else {
@@ -634,7 +655,9 @@ fn status_bar_hints(empty: bool, focused: bool, detail: bool) -> Vec<KeyHint> {
     }
 }
 
-/// Context-sensitive status bar.
+/// Context-sensitive status bar (always rendered as 2 lines for legibility on
+/// narrow windows). Hints are split into two roughly equal halves; an
+/// optional status message is prefixed to the first line.
 fn render_status_bar(
     cols: usize,
     status_message: Option<&str>,
@@ -647,26 +670,45 @@ fn render_status_bar(
     let is_detail = detail.is_some();
     let hints = status_bar_hints(is_empty, is_focused, is_detail);
 
-    let text = if let Some(msg) = status_message {
-        let key_hints = format!(" {}", format_key_hints(&hints));
+    let mid = hints.len().div_ceil(2);
+    let (first_half, second_half) = hints.split_at(mid);
+
+    let line1 = if let Some(msg) = status_message {
+        let key_hints = format!(" {}", format_key_hints(first_half));
         let hints_visible = strip_ansi_len(&key_hints);
         let msg_max = cols.saturating_sub(hints_visible + 2);
         format!("{}{}", truncate(msg, msg_max), key_hints)
     } else {
-        format_key_hints(&hints)
+        format_key_hints(first_half)
     };
+    print_status_line(&line1, first_half, cols);
 
-    let visible_len = strip_ansi_len(&text);
+    let line2 = format_key_hints(second_half);
+    print_status_line(&line2, second_half, cols);
+}
+
+/// Print one status-bar line with REVERSE background, falling back to the
+/// compact `key:label` format if the rich text overflows.
+fn print_status_line(text: &str, hints: &[KeyHint], cols: usize) {
+    let visible_len = strip_ansi_len(text);
     let display = if visible_len > cols.saturating_sub(2) {
-        let short = format_key_hints_short(&hints);
+        let short = format_key_hints_short(hints);
         truncate(&short, cols.saturating_sub(2))
     } else {
-        text
+        text.to_string()
     };
 
     let display_visible = strip_ansi_len(&display);
     let padding = cols.saturating_sub(display_visible + 1);
     print!("{} {}{:>pad$}{}", REVERSE, display, "", RESET, pad = padding);
+    println!();
+}
+
+/// Print a blank REVERSE-styled line, used to pad single-line overlays
+/// (e.g. the name prompt) so the bottom bar always occupies 2 rows.
+fn print_status_pad_line(cols: usize) {
+    let padding = cols.saturating_sub(1);
+    print!("{} {:>pad$}{}", REVERSE, "", RESET, pad = padding);
     println!();
 }
 

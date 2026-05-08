@@ -218,7 +218,7 @@ echo -e "${GREEN}[5/14] Installing layouts...${NC}"
 LAYOUT_DIR="$HOME/.config/zellij/layouts"
 mkdir -p "$LAYOUT_DIR"
 
-for layout in dashboard.kdl dashboard-vox.kdl agent-single.kdl agent-multi.kdl; do
+for layout in dashboard.kdl dashboard-vox.kdl dashboard-tiled.kdl dashboard-tiled-vox.kdl agent-single.kdl agent-multi.kdl; do
     SRC="$SCRIPT_DIR/layouts/$layout"
     DST="$LAYOUT_DIR/$layout"
     if [ -f "$SRC" ]; then
@@ -291,6 +291,13 @@ echo -e "${GREEN}[8/14] Installing agent platform hooks...${NC}"
 
 if [ -f "$SCRIPT_DIR/hooks/install-hooks.sh" ]; then
     bash "$SCRIPT_DIR/hooks/install-hooks.sh"
+    # Install viewport placeholder for the tiled layout
+    PLACEHOLDER_SRC="$SCRIPT_DIR/hooks/lince-viewport-placeholder"
+    if [ -f "$PLACEHOLDER_SRC" ]; then
+        cp "$PLACEHOLDER_SRC" "$HOME/.local/bin/lince-viewport-placeholder"
+        chmod +x "$HOME/.local/bin/lince-viewport-placeholder"
+        echo -e "${GREEN}  ✓ lince-viewport-placeholder${NC}"
+    fi
 else
     echo -e "${YELLOW}  ⚠ hooks/install-hooks.sh not found — skipping${NC}"
 fi
@@ -396,7 +403,9 @@ echo ""
 # ── Step 13: Shell aliases ────────────────────────────────────────────
 echo -e "${GREEN}[13/14] Setting up shell aliases...${NC}"
 
-ALIAS_LINES='alias zd="zellij --layout dashboard"
+ALIAS_LINES='alias lince="zellij --layout dashboard-tiled"
+alias lince-floating="zellij --layout dashboard"
+alias zd="zellij --layout dashboard-tiled"
 alias z="zellij"
 alias zn="zellij attach -c"'
 ALIAS_COMMENT="# LINCE aliases"
@@ -404,13 +413,19 @@ ALIAS_COMMENT="# LINCE aliases"
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     if [ -f "$rc" ]; then
         if grep -q "# LINCE aliases" "$rc" 2>/dev/null; then
-            echo -e "${YELLOW}  LINCE aliases already in $(basename $rc)${NC}"
-        else
-            echo "" >> "$rc"
-            echo "$ALIAS_COMMENT" >> "$rc"
-            echo "$ALIAS_LINES" >> "$rc"
-            echo -e "${GREEN}  ✓ Added aliases (zd, z, zn) to $(basename $rc)${NC}"
+            echo -e "${YELLOW}  Updating LINCE aliases in $(basename $rc)${NC}"
+            # Remove old LINCE alias block and re-add
+            sed -i '/# LINCE aliases/d' "$rc"
+            sed -i '/alias lince=/d' "$rc"
+            sed -i '/alias lince-floating=/d' "$rc"
+            sed -i '/alias zd=/d' "$rc"
+            sed -i '/alias z="zellij"/d' "$rc"
+            sed -i '/alias zn=/d' "$rc"
         fi
+        echo "" >> "$rc"
+        echo "$ALIAS_COMMENT" >> "$rc"
+        echo "$ALIAS_LINES" >> "$rc"
+        echo -e "${GREEN}  ✓ Updated aliases (lince, lince-floating, zd, z, zn) in $(basename $rc)${NC}"
     fi
 done
 echo ""
@@ -424,6 +439,11 @@ if command -v voxcode >/dev/null 2>&1; then
     if [ -f "$LAYOUT_DIR/dashboard-vox.kdl" ]; then
         cp "$LAYOUT_DIR/dashboard-vox.kdl" "$LAYOUT_DIR/dashboard.kdl"
         echo -e "${GREEN}  ✓ Dashboard layout updated with VoxCode pane${NC}"
+    fi
+    # Also update tiled layout to VoxCode variant
+    if [ -f "$LAYOUT_DIR/dashboard-tiled-vox.kdl" ]; then
+        cp "$LAYOUT_DIR/dashboard-tiled-vox.kdl" "$LAYOUT_DIR/dashboard-tiled.kdl"
+        echo -e "${GREEN}  ✓ Tiled layout updated with VoxCode pane${NC}"
     fi
 else
     echo -e "${YELLOW}  VoxCode not found — using standard dashboard layout${NC}"
@@ -478,6 +498,7 @@ echo "  Config:   $CONFIG_DST"
 echo "  Hooks:    ~/.local/bin/claude-status-hook.sh"
 echo "            ~/.local/bin/codex-status-hook.sh"
 echo "  Wrapper:  ~/.local/bin/lince-agent-wrapper"
+echo "  Viewport: ~/.local/bin/lince-viewport-placeholder  (tiled layout)"
 echo "  Defaults: ~/.config/lince-dashboard/agents-defaults.toml"
 echo "  Template: ~/.config/lince-dashboard/agents-template.toml"
 if [ -n "$SELECTED_LEVELS" ]; then
@@ -512,7 +533,9 @@ if [ "$HAS_NONO" = true ]; then
 fi
 echo -e "${GREEN}Usage:${NC}"
 echo "  source ~/.bashrc   # reload aliases"
-echo "  zd                 # launch dashboard layout"
+echo "  lince              # launch dashboard (tiled layout)"
+echo "  lince-floating     # launch floating layout"
+echo "  zd                 # legacy alias for lince"
 echo ""
 echo -e "${GREEN}Keybindings:${NC}"
 echo "  n       Spawn new agent"

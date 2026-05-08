@@ -20,7 +20,7 @@ sandbox_command = "agent-sandbox"
 
 # Agent pane layout: "floating" (overlay, default) or "tiled" (fixed position in layout grid)
 # Use "tiled" with layouts/dashboard-tiled.kdl for a split view (agents left, dashboard right)
-agent_layout = "floating"
+agent_layout = "tiled"
 
 # How to show agent pane: "floating" (overlay) or "replace" (tab switch)
 focus_mode = "floating"

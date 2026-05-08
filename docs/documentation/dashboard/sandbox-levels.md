@@ -233,7 +233,7 @@ Then point `gh` inside the sandbox at that token instead of your daily one. The 
 
 ```bash
 export GH_TOKEN='github_pat_...'   # from "Generate token"
-zd                                  # launch the dashboard normally
+lince                              # launch the dashboard normally
 ```
 
 `gh` inside the sandbox finds `GH_TOKEN` via the passthrough, ignores the broader OAuth token in `~/.config/gh/hosts.yml` (which the agent can still read but `gh` does not prefer when `GH_TOKEN` is set), and operates with the narrow permissions you granted. When you stop the dashboard, `unset GH_TOKEN` if you want the host shell to fall back to your daily token.
@@ -533,7 +533,7 @@ The gate that bails paranoid when no credential rule fires (`Error: [security] u
 # Use a real key from your provider; a placeholder will fail at the
 # server-side validation step inside the proxy.
 export GEMINI_API_KEY='AIza...'
-zd
+lince
 ```
 
 **(b) Ship a custom level that adds the OAuth refresh endpoints to `allow_domains`.** This gives the agent a path to refresh its OAuth token on top of the model API. Append to your `~/.agent-sandbox/config.toml` (bwrap) and ship a matching nono profile:

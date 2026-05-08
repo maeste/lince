@@ -45,13 +45,16 @@ The installer:
 4. Installs layouts to `~/.config/zellij/layouts/`
 5. Creates config at `~/.config/lince-dashboard/config.toml`
 6. Installs Claude Code status hooks
-7. Adds `zd` shell alias
+7. Adds `lince` shell alias
+8. Optionally adds `lince-tiled` / `lince-tiled-vox` aliases
 
 After installation:
 
 ```bash
 source ~/.bashrc
-zd                # launch the dashboard
+lince              # launch the dashboard (tiled layout)
+lince-floating     # launch the floating overlay layout
+zd                 # legacy alias for lince
 ```
 
 ## Quick Start

@@ -81,6 +81,30 @@ pub fn default_agent_pane_coords() -> FloatingPaneCoordinates {
         .with_height_percent(85)
 }
 
+/// Floating pane coordinates for the tiled layout's viewport area (B).
+///
+/// The tiled layout has three fixed panes:
+/// ```text
+/// ┌──────────────┬─────────────────────┐
+/// │  A 40%×70%   │  B 60%×100%          │
+/// │  (dashboard) │  (agent viewport)    │
+/// ├──────────────┤                      │
+/// │  C 40%×30%   │                      │
+/// │  (shell/vox) │                      │
+/// └──────────────┴─────────────────────┘
+/// ```
+///
+/// B is the right column — full height, 60% width. Accounting for the
+/// tab-bar (~2%) and status-bar (~4%), the overlay starts at y=2% and
+/// spans roughly 99% height.
+pub fn tiled_viewport_coords() -> FloatingPaneCoordinates {
+    FloatingPaneCoordinates::default()
+        .with_x_percent(40)
+        .with_y_percent(2)
+        .with_width_percent(60)
+        .with_height_percent(99)
+}
+
 use crate::config::now_secs;
 
 /// Apply placeholder substitution to a command template.
@@ -414,7 +438,9 @@ fn spawn_inner(
             open_command_pane_floating(command, Some(default_agent_pane_coords()), BTreeMap::new());
         }
         AgentLayout::Tiled => {
-            open_command_pane(command, BTreeMap::new());
+            // Tiled layout: agents are still floating panes, but hidden at spawn.
+            // When focused, they overlay the viewport pane (B) in the 3-pane layout.
+            open_command_pane_floating(command, Some(tiled_viewport_coords()), BTreeMap::new());
         }
     }
 
@@ -505,7 +531,7 @@ pub fn stop_agent(agent: &AgentInfo) {
 pub fn reconcile_panes(
     agents: &mut Vec<AgentInfo>,
     manifest: &PaneManifest,
-    agent_layout: &AgentLayout,
+    _agent_layout: &AgentLayout,
     agent_types: &HashMap<String, AgentTypeConfig>,
 ) -> bool {
     let mut changed = false;
@@ -523,7 +549,9 @@ pub fn reconcile_panes(
 
     let all_pane_ids: HashSet<u32> = all_panes.iter().map(|p| p.id).collect();
     let mut assigned_ids: HashSet<u32> = agents.iter().filter_map(|a| a.pane_id).collect();
-    let expect_floating = !agent_layout.is_tiled();
+    // Both Floating and Tiled layouts spawn agents as floating panes.
+    // (In tiled mode, the floating pane overlays the viewport area on focus.)
+    let expect_floating = true;
 
     for agent in agents.iter_mut() {
         if let Some(pid) = agent.pane_id {

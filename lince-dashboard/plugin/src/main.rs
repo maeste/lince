@@ -1125,12 +1125,9 @@ impl State {
     }
 
     /// Hide all agent floating panes (used after spawn to prevent unwanted pane visibility).
-    /// No-op in tiled mode — tiled panes should remain visible.
     fn hide_all_agent_panes(&mut self) {
         pane_manager::hide_agent_panes(&self.agents, None, &self.config.agent_layout);
-        if !self.config.agent_layout.is_tiled() {
-            self.focused_agent = None;
-        }
+        self.focused_agent = None;
     }
 
     /// Unfocus the currently focused agent (hide its pane).
