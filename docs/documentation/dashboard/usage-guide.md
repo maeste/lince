@@ -269,4 +269,5 @@ Option 2 — Via GUI: **Terminator → Preferences → Keybindings → copy_clip
 - [Configuration Reference](dashboard/config-reference.md) -- all config keys and their defaults
 - [Agent Examples](dashboard/agent-examples.md) -- preset agents and custom configuration examples
 - [Sandbox CLI Reference](sandbox/cli-reference.md) -- the `agent-sandbox` command
+- [lince-config CLI](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md) -- structured CLI for reading and editing LINCE configuration
 - [Multi-Agent Guide](https://github.com/RisorseArtificiali/lince/blob/main/lince-dashboard/MULTI-AGENT-GUIDE.md) -- migration guide for multi-agent support

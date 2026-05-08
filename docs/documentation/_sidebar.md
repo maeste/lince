@@ -11,3 +11,6 @@
   - [Configuration Reference](dashboard/config-reference.md)
   - [Agent Examples](dashboard/agent-examples.md)
   - [Sandbox Levels](dashboard/sandbox-levels.md)
+
+- **Configuration CLI (lince-config)**
+  - [README & Commands](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md)

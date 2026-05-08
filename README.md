@@ -124,6 +124,12 @@ The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that mana
 
 Documentation: [Usage Guide](https://lince.sh/documentation/#/dashboard/usage-guide) | [Configuration](https://lince.sh/documentation/#/dashboard/config-reference) | [Agent Examples](https://lince.sh/documentation/#/dashboard/agent-examples)
 
+### [lince-config/](lince-config/)
+
+Structured CLI for reading and editing LINCE configuration files (`~/.agent-sandbox/config.toml` and `~/.config/lince-dashboard/config.toml`). Preserves comments and formatting via `tomlkit`. Installed to `~/.local/bin/lince-config`.
+
+Also powers the **`/lince-configure` skill** — a natural-language interface that lets any AI coding agent read and modify its own configuration interactively (conversational or guided-menu mode). Installed automatically by `quickstart.sh` or `lince-dashboard/install.sh`.
+
 ### [sandbox/](sandbox/)
 
 Bubblewrap-based sandbox for running AI coding agents safely. Restricts filesystem access, blocks git push, isolates environment variables, and hides host processes — with near-zero overhead. Supports any agent via `--agent` flag (`agent-sandbox run -a codex`, `-a gemini`, etc.). Used by the dashboard to spawn every agent.
@@ -133,6 +139,10 @@ Documentation: [CLI Reference](https://lince.sh/documentation/#/sandbox/cli-refe
 ### `/lince-setup` skill (bundled with lince-dashboard)
 
 An [agentskills.io](https://agentskills.io)-compliant skill that lets any AI coding agent register itself with the lince ecosystem. Generates correct TOML configuration for both agent-sandbox and lince-dashboard. Installed automatically by `lince-dashboard/install.sh`.
+
+### `/lince-configure` skill (bundled with lince-dashboard)
+
+An [agentskills.io](https://agentskills.io)-compliant skill for natural-language configuration of LINCE. Ask any AI agent to configure providers, change sandbox levels, set API keys, adjust dashboard settings, or diagnose issues — it drives `lince-config` under the hood. Supports conversational and guided-menu interaction. Installed automatically by `lince-dashboard/install.sh` (requires the `lince-config` CLI).
 
 ## Related Projects
 

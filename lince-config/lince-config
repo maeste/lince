@@ -1,0 +1,1211 @@
+#!/usr/bin/env python3
+"""lince-config — Structured CLI for reading and editing LINCE configuration files.
+
+Reads and writes TOML config files for both the sandbox (agent-sandbox) and
+the dashboard (lince-dashboard), preserving comments and formatting via tomlkit.
+
+Usage:
+    lince-config get <dotted.key> [--target sandbox|dashboard] [--json]
+    lince-config set <dotted.key> <value> [--target sandbox|dashboard]
+    lince-config append <dotted.key> <value> [--target sandbox|dashboard]
+    lince-config remove <dotted.key> <value> [--target sandbox|dashboard]
+    lince-config unset <dotted.key> [--target sandbox|dashboard]
+    lince-config list [section] [--target sandbox|dashboard] [--json]
+    lince-config check [--target sandbox|dashboard] [--json]
+    lince-config validate [--target sandbox|dashboard] [--json]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    print("Error: Python 3.11+ required (for tomllib).", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    import tomlkit
+except ImportError:
+    print(
+        "Error: 'tomlkit' is required. Install it with:\n"
+        "  pip install tomlkit",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+__version__ = "1.0.0"
+
+
+# ── Constants ────────────────────────────────────────────────────────────
+
+SANDBOX_DIR = Path.home() / ".agent-sandbox"
+DASHBOARD_DIR = Path.home() / ".config" / "lince-dashboard"
+
+CONFIG_FILES = {
+    "sandbox": [
+        Path.cwd() / ".agent-sandbox" / "config.toml",  # project-local
+        SANDBOX_DIR / "config.toml",                      # global
+    ],
+    "dashboard": [
+        DASHBOARD_DIR / "config.toml",
+    ],
+}
+
+AGENTS_DEFAULTS_SEARCH = [
+    Path.cwd() / ".agent-sandbox" / "agents-defaults.toml",
+    SANDBOX_DIR / "agents-defaults.toml",
+    Path(__file__).resolve().parent.parent / "sandbox" / "agents-defaults.toml",
+]
+
+# All known top-level sections and their schemas for validation.
+# Format: section -> {key: (type, required, description)}
+SANDBOX_SCHEMA = {
+    "sandbox": {
+        "extra_rw": (list, False, "Extra directories the agent can write to"),
+        "ro_dirs": (list, False, "Directories the agent can read but not write"),
+        "persist_toolchains": (bool, False, "Persist build-tool caches between sessions"),
+        "auto_expose_path": (bool, False, "Auto-detect $PATH entries under $HOME"),
+        "home_ro_dirs": (list, False, "Additional home subdirectories to expose read-only"),
+        "default_provider": (str, False, "Default provider when -P is not specified"),
+        "backend": (str, False, "Sandbox backend: agent-sandbox, nono, or auto"),
+    },
+    "security": {
+        "unshare_pid": (bool, False, "PID namespace: hide host processes"),
+        "new_session": (bool, False, "New terminal session"),
+        "block_git_push": (bool, False, "Block git push via wrapper script"),
+        "credential_proxy": (bool, False, "Intercept API calls and inject credentials on host"),
+        "unshare_net": (bool, False, "Network namespace isolation"),
+        "allow_domains": (list, False, "Extra hosts the credential proxy allows"),
+    },
+    "credential_proxy": {
+        "blocked_hosts": (list, False, "Extra hosts to block"),
+    },
+    "git": {
+        "strip_sections": (list, False, "Regex patterns for .gitconfig section stripping"),
+    },
+    "env": {
+        "passthrough": (list, False, "Host environment variables to pass into sandbox"),
+    },
+    "logging": {
+        "enabled": (bool, False, "Enable transcript logging by default"),
+        "dir": (str, False, "Directory for log files"),
+    },
+    "snapshot": {
+        "auto_project": (bool, False, "Auto-snapshot project before each run"),
+        "auto_config": (bool, False, "Auto-snapshot agent config before each run"),
+        "max_project_snapshots": (int, False, "Max project snapshots to keep"),
+        "max_config_snapshots": (int, False, "Max config snapshots to keep"),
+        "project_exclude": (list, False, "Directories excluded from snapshots"),
+    },
+    "claude": {
+        "config_dir": (str, False, "Sandbox isolated copy of Claude config directory"),
+        "use_real_config": (bool, False, "Use real ~/.claude directly"),
+    },
+}
+
+DASHBOARD_SCHEMA = {
+    "dashboard": {
+        "default_provider": (str, False, "Default provider for new agents"),
+        "sandbox_config_path": (str, False, "Path to sandbox config"),
+        "default_project_dir": (str, False, "Default working directory for new agents"),
+        "sandbox_command": (str, False, "Path to agent-sandbox binary"),
+        "agent_layout": (str, False, "How agent panes are created (floating/tiled)"),
+        "focus_mode": (str, False, "How focusing works (floating/replace)"),
+        "status_method": (str, False, "Status detection method (pipe/file)"),
+        "status_file_dir": (str, False, "Directory for status files when status_method = file"),
+        "max_agents": (int, False, "Maximum concurrent agents"),
+        "sandbox_backend": (str, False, "Sandbox backend preference"),
+        "default_agent_type": (str, False, "Default agent type for new agents"),
+    },
+}
+
+# Agent fields (shared between sandbox agents.* and dashboard agents.*)
+AGENT_FIELDS = {
+    "command": (str, True, "Binary name to execute"),
+    "default_args": (list, False, "Default CLI arguments"),
+    "env": (dict, False, "Extra environment variables"),
+    "home_ro_dirs": (list, False, "Home subdirs to bind read-only"),
+    "home_rw_dirs": (list, False, "Home subdirs to bind read-write"),
+    "bwrap_conflict": (bool, False, "Agent uses bwrap internally"),
+    "disable_inner_sandbox_args": (list, False, "Args to disable agent's own sandbox"),
+}
+
+DASHBOARD_AGENT_FIELDS = {
+    "command": (list, True, "Command template with placeholders"),
+    "pane_title_pattern": (str, True, "Pattern to match Zellij pane titles"),
+    "status_pipe_name": (str, True, "Zellij pipe name for status messages"),
+    "display_name": (str, True, "Full name shown in UI"),
+    "short_label": (str, True, "3-char label for table column"),
+    "color": (str, True, "ANSI color name"),
+    "sandboxed": (bool, True, "Whether agent runs inside sandbox"),
+    "has_native_hooks": (bool, False, "Agent sends its own status events"),
+    "providers": (list, False, "Provider discovery mode"),
+    "sandbox_backend": (str, False, "Per-agent sandbox backend override"),
+    "sandbox_level": (str, False, "Sandbox isolation level"),
+    "env_vars": (dict, False, "Environment variables for the agent"),
+    "event_map": (dict, False, "Custom event-to-status mapping"),
+}
+
+PROVIDER_FIELDS = {
+    "description": (str, False, "Human-readable label"),
+    "env": (dict, False, "Environment variables injected via --setenv"),
+    "env_unset": (list, False, "Environment variables to explicitly unset"),
+    "default_args": (list, False, "Override agent default_args when active"),
+}
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+def _aggregate_dynamic_section(doc: dict, section: str) -> dict | None:
+    """For dynamic sections like 'providers'/'profiles'/'agents', aggregate
+    from top-level and all agent-specific sub-sections."""
+    if section not in ("providers", "profiles", "agents"):
+        return None
+
+    result = {}
+    # Top-level [providers.*] / [profiles.*] / [agents.*]
+    top = doc.get(section)
+    if isinstance(top, dict):
+        for k, v in top.items():
+            result[k] = _python_value_to_json(v)
+
+    # Agent-specific [<agent>.providers.*] / [<agent>.profiles.*]
+    if section in ("providers", "profiles"):
+        for agent_key, agent_val in doc.items():
+            if isinstance(agent_val, dict):
+                sub = agent_val.get(section)
+                if isinstance(sub, dict):
+                    for pk, pv in sub.items():
+                        full_key = f"{agent_key}.{pk}"
+                        result[full_key] = _python_value_to_json(pv)
+
+    return result if result else None
+
+
+def _resolve_config_path(target: str) -> Path | None:
+    """Find the primary config file for the given target."""
+    for candidate in CONFIG_FILES.get(target, []):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolve_all_config_paths(target: str) -> list[Path]:
+    """Return all existing config files for the target (project-local first)."""
+    return [p for p in CONFIG_FILES.get(target, []) if p.is_file()]
+
+
+def _load_tomlkit(path: Path) -> tomlkit.TOMLDocument:
+    """Load a TOML file preserving comments and formatting via tomlkit."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return tomlkit.load(fh)
+    except PermissionError as exc:
+        print(f"Error: cannot read {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"Error: failed to open {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _save_tomlkit(doc: tomlkit.TOMLDocument, path: Path) -> None:
+    """Save a tomlkit document back to file, preserving formatting."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            tomlkit.dump(doc, fh)
+    except PermissionError as exc:
+        print(f"Error: cannot write {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"Error: failed to write {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _dotted_get(doc: tomlkit.TOMLDocument, key: str):
+    """Navigate a dotted key path into a tomlkit document.
+
+    Supports:
+        "security.unshare_net"  -> doc["security"]["unshare_net"]
+        "providers.vertex.env"  -> doc["providers"]["vertex"]["env"]
+        "agents.claude"         -> doc["agents"]["claude"]
+
+    Returns (value, found).
+    """
+    parts = key.split(".")
+    current = doc
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None, False
+    return current, True
+
+
+def _dotted_set(doc: tomlkit.TOMLDocument, key: str, value) -> None:
+    """Set a value at a dotted key path, creating intermediate tables as needed."""
+    parts = key.split(".")
+    current = doc
+    for part in parts[:-1]:
+        if part not in current:
+            current[part] = tomlkit.table()
+        current = current[part]
+
+    leaf = parts[-1]
+    current[leaf] = _coerce_value(value, leaf)
+
+
+def _dotted_unset(doc: tomlkit.TOMLDocument, key: str) -> bool:
+    """Remove a key or section at a dotted path. Returns True if anything was removed."""
+    parts = key.split(".")
+    current = doc
+    # Navigate to parent
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return False
+
+    leaf = parts[-1]
+    if isinstance(current, dict) and leaf in current:
+        del current[leaf]
+        return True
+    return False
+
+
+def _coerce_value(raw: str, key_hint: str = ""):
+    """Parse a CLI string value into the appropriate Python type.
+
+    Rules:
+        "true"/"false"           -> bool
+        bare integer             -> int
+        decimal/scientific       -> float
+        [...]                    -> parsed as JSON list
+        {...}                    -> parsed as JSON dict
+        otherwise                -> str
+    """
+    s = raw.strip()
+
+    # Boolean
+    if s.lower() == "true":
+        return True
+    if s.lower() == "false":
+        return False
+
+    # Integer
+    if re.fullmatch(r"-?\d+", s):
+        return int(s)
+
+    # Float (decimal or scientific notation, e.g. 3.14, 1e10, 1.5e-3)
+    if re.fullmatch(r"-?\d+\.\d+([eE][+-]?\d+)?", s) or re.fullmatch(r"-?\d+[eE][+-]?\d+", s):
+        try:
+            return float(s)
+        except ValueError:
+            pass  # fall through to string
+
+    # JSON list or dict
+    if s.startswith("[") or s.startswith("{"):
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            pass  # fall through to string
+
+    return s
+
+
+def _python_value_to_json(val):
+    """Convert a tomlkit value to a JSON-serializable Python value."""
+    if isinstance(val, (bool, int, float, str)):
+        return val
+    if isinstance(val, (list, tuple)):
+        return [_python_value_to_json(v) for v in val]
+    if isinstance(val, dict):
+        return {k: _python_value_to_json(v) for k, v in val.items()}
+    # tomlkit item types
+    if hasattr(val, "value"):
+        return _python_value_to_json(val.value)
+    return str(val)
+
+
+def _format_value(val, indent: int = 0) -> str:
+    """Format a value for human-readable output (recurses into nested dicts)."""
+    if val is None:
+        return "(not set)"
+    if isinstance(val, bool):
+        return str(val).lower()
+    if isinstance(val, dict):
+        if not val:
+            return "{}"
+        prefix = "  " * indent
+        lines = []
+        for k, v in val.items():
+            if isinstance(v, dict) and v:
+                lines.append(f"{prefix}{k}:")
+                lines.append(_format_value(v, indent + 1))
+            else:
+                lines.append(f"{prefix}{k} = {_format_value(v)}")
+        return "\n".join(lines)
+    if isinstance(val, list):
+        if not val:
+            return "[]"
+        return "[" + ", ".join(str(v) for v in val) + "]"
+    return str(val)
+
+
+def _find_schema_section(key: str, target: str) -> dict | None:
+    """Find the schema definition for a dotted key's parent section."""
+    parts = key.split(".")
+    schema = SANDBOX_SCHEMA if target == "sandbox" else DASHBOARD_SCHEMA
+    if parts[0] in schema:
+        return schema[parts[0]]
+    return None
+
+
+# ── Commands ─────────────────────────────────────────────────────────────
+
+def cmd_get(args) -> int:
+    """Read and print a config value."""
+    target = args.target
+    key = args.key
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        print(f"Error: no {target} config file found.", file=sys.stderr)
+        return 1
+
+    doc = _load_tomlkit(config_path)
+    val, found = _dotted_get(doc, key)
+
+    if not found:
+        # Also check merged view for sandbox
+        if target == "sandbox":
+            merged = _get_merged_sandbox_view()
+            val, found = _dotted_get_dict(merged, key)
+        if not found:
+            print(f"(not set): {key}", file=sys.stderr)
+            return 1
+
+    if args.json:
+        print(json.dumps(_python_value_to_json(val), indent=2))
+    else:
+        print(_format_value(val))
+    return 0
+
+
+def _dotted_get_dict(d: dict, key: str):
+    """Like _dotted_get but for plain dicts."""
+    parts = key.split(".")
+    current = d
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None, False
+    return current, True
+
+
+def _get_merged_sandbox_view() -> dict:
+    """Load sandbox config with merge (global + project-local), plain dict."""
+    global_path = SANDBOX_DIR / "config.toml"
+    local_path = Path.cwd() / ".agent-sandbox" / "config.toml"
+
+    result = {}
+    if global_path.is_file():
+        with open(global_path, "rb") as fh:
+            result = tomllib.load(fh)
+    if local_path.is_file():
+        with open(local_path, "rb") as fh:
+            overlay = tomllib.load(fh)
+        result = _deep_merge_dict(result, overlay)
+    return result
+
+
+def _deep_merge_dict(base: dict, overlay: dict) -> dict:
+    """Deep-merge overlay into base (lists append, scalars replace)."""
+    result = dict(base)
+    for k, v in overlay.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge_dict(result[k], v)
+        elif k in result and isinstance(result[k], list) and isinstance(v, list):
+            # repr()-based dedup: safe for TOML scalars (str/int/float/bool) and
+            # nested tables since tomlkit values yield deterministic reprs. It is
+            # NOT a general object identity check.
+            seen = set()
+            merged = []
+            for item in result[k] + v:
+                key = repr(item)
+                if key not in seen:
+                    seen.add(key)
+                    merged.append(item)
+            result[k] = merged
+        else:
+            result[k] = v
+    return result
+
+
+def cmd_set(args) -> int:
+    """Set a config value."""
+    target = args.target
+    key = args.key
+    value = args.value
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        # If user is setting something on the global sandbox config and it
+        # doesn't exist yet, try to create it
+        if target == "sandbox":
+            config_path = SANDBOX_DIR / "config.toml"
+            if not config_path.is_file():
+                print(
+                    f"Error: {config_path} does not exist. "
+                    f"Run 'agent-sandbox init' first.",
+                    file=sys.stderr,
+                )
+                return 1
+        else:
+            print(f"Error: no {target} config file found.", file=sys.stderr)
+            return 1
+
+    doc = _load_tomlkit(config_path)
+    _dotted_set(doc, key, value)
+    _save_tomlkit(doc, config_path)
+
+    # Verify file permissions (config may contain API keys)
+    _check_permissions(config_path, quiet=args.quiet)
+
+    if not args.quiet:
+        print(f"Set {key} in {config_path}")
+    return 0
+
+
+def cmd_append(args) -> int:
+    """Append a value to a list config key."""
+    target = args.target
+    key = args.key
+    value = args.value
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        print(f"Error: no {target} config file found.", file=sys.stderr)
+        return 1
+
+    doc = _load_tomlkit(config_path)
+    current, found = _dotted_get(doc, key)
+
+    if not found:
+        # Create the list directly (no string round-trip)
+        coerced = _coerce_value(value, key)
+        parts = key.split(".")
+        cur = doc
+        for part in parts[:-1]:
+            if part not in cur:
+                cur[part] = tomlkit.table()
+            cur = cur[part]
+        cur[parts[-1]] = [coerced]
+    elif isinstance(current, list):
+        coerced = _coerce_value(value, key)
+        if coerced not in [_python_value_to_json(v) for v in current]:
+            current.append(coerced)
+        else:
+            if not args.quiet:
+                print(f"Value already in {key}, skipping.")
+            return 0
+    else:
+        print(f"Error: {key} is not a list (found {type(current).__name__}).", file=sys.stderr)
+        return 1
+
+    _save_tomlkit(doc, config_path)
+    if not args.quiet:
+        print(f"Appended to {key} in {config_path}")
+    return 0
+
+
+def cmd_remove(args) -> int:
+    """Remove a value from a list config key."""
+    target = args.target
+    key = args.key
+    value = args.value
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        print(f"Error: no {target} config file found.", file=sys.stderr)
+        return 1
+
+    doc = _load_tomlkit(config_path)
+    current, found = _dotted_get(doc, key)
+
+    if not found or not isinstance(current, list):
+        print(f"Error: {key} is not a list or not set.", file=sys.stderr)
+        return 1
+
+    coerced = _coerce_value(value, key)
+    json_vals = [_python_value_to_json(v) for v in current]
+    if coerced not in json_vals:
+        print(f"Value not found in {key}.", file=sys.stderr)
+        return 1
+
+    idx = json_vals.index(coerced)
+    del current[idx]
+
+    _save_tomlkit(doc, config_path)
+    if not args.quiet:
+        print(f"Removed from {key} in {config_path}")
+    return 0
+
+
+def cmd_unset(args) -> int:
+    """Remove a config key or entire section."""
+    target = args.target
+    key = args.key
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        print(f"Error: no {target} config file found.", file=sys.stderr)
+        return 1
+
+    doc = _load_tomlkit(config_path)
+    if _dotted_unset(doc, key):
+        _save_tomlkit(doc, config_path)
+        if not args.quiet:
+            print(f"Unset {key} in {config_path}")
+        return 0
+    else:
+        print(f"Key not found: {key}", file=sys.stderr)
+        return 1
+
+
+def cmd_list(args) -> int:
+    """List config sections or entries."""
+    target = args.target
+    section = args.section
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        print(f"Error: no {target} config file found.", file=sys.stderr)
+        return 1
+
+    doc = _load_tomlkit(config_path)
+
+    if section:
+        val, found = _dotted_get(doc, section)
+        if not found:
+            # Try merged view for sandbox
+            if target == "sandbox":
+                merged = _get_merged_sandbox_view()
+                val, found = _dotted_get_dict(merged, section)
+        if not found:
+            # For common dynamic sections (providers, profiles, agents),
+            # try aggregating from all agent-specific sub-sections
+            val = _aggregate_dynamic_section(doc, section)
+            if val is not None:
+                found = True
+        if not found:
+            if args.json:
+                print(json.dumps({}))
+            else:
+                print(f"  (section '{section}' not found)")
+            return 0
+
+        if args.json:
+            print(json.dumps(_python_value_to_json(val) if val is not None else {}, indent=2))
+        else:
+            if isinstance(val, dict):
+                if not val:
+                    print("  (empty)")
+                else:
+                    for k, v in val.items():
+                        print(f"  {k} = {_format_value(v)}")
+            elif isinstance(val, list):
+                for v in val:
+                    print(f"  {_format_value(v)}")
+            else:
+                print(_format_value(val))
+    else:
+        # List all top-level sections
+        if args.json:
+            sections = {}
+            for k, v in doc.items():
+                sections[k] = _python_value_to_json(v) if isinstance(v, (dict, list)) else str(v)
+            # Add merged info for sandbox
+            if target == "sandbox":
+                paths = _resolve_all_config_paths("sandbox")
+                sections["_files"] = [str(p) for p in paths]
+            print(json.dumps(sections, indent=2))
+        else:
+            print(f"Config: {config_path}")
+            if target == "sandbox":
+                paths = _resolve_all_config_paths("sandbox")
+                if len(paths) > 1:
+                    print(f"  (merged from: {', '.join(str(p) for p in paths)})")
+            print()
+            for k, v in doc.items():
+                if isinstance(v, dict):
+                    key_count = len(v)
+                    print(f"  [{k}]  ({key_count} keys)")
+                elif isinstance(v, list):
+                    print(f"  {k} = [{len(v)} items]")
+                else:
+                    print(f"  {k} = {_format_value(v)}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    """Run diagnostic checks on the configuration."""
+    target = args.target
+    issues: list[dict] = []
+    info: list[dict] = []
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        msg = f"No {target} config file found."
+        if args.json:
+            print(json.dumps({"error": msg}))
+        else:
+            print(f"✗ {msg}")
+        return 1
+
+    doc = _load_tomlkit(config_path)
+
+    # ── File permissions ─────────────────────────────────────────────
+    mode = config_path.stat().st_mode
+    perms = stat.filemode(mode)
+    has_api_keys = _has_sensitive_data(doc)
+    world_readable = bool(mode & stat.S_IROTH)
+    if has_api_keys and world_readable:
+        issues.append({
+            "level": "warn",
+            "key": "permissions",
+            "message": f"{config_path} is world-readable. Run: chmod 600 {config_path}",
+        })
+    else:
+        info.append({"level": "ok", "key": "permissions", "message": f"File permissions: {perms}"})
+
+    # ── Sandbox-specific checks ──────────────────────────────────────
+    if target == "sandbox":
+        _check_sandbox(doc, issues, info)
+
+    # ── Dashboard-specific checks ────────────────────────────────────
+    if target == "dashboard":
+        _check_dashboard(doc, issues, info)
+
+    # ── Output ───────────────────────────────────────────────────────
+    if args.json:
+        result = {
+            "config_file": str(config_path),
+            "issues": issues,
+            "info": info,
+            "ok": len(issues) == 0,
+        }
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"Config: {config_path}")
+        print()
+        for i in info:
+            icon = "✓" if i["level"] == "ok" else "ℹ"
+            print(f"  {icon} {i['message']}")
+        for i in issues:
+            icon = "✗" if i["level"] == "error" else "⚠"
+            print(f"  {icon} {i['message']}")
+        print()
+        if issues:
+            print(f"  {len(issues)} issue(s) found.")
+        else:
+            print(f"  All checks passed.")
+
+    return 1 if any(i["level"] == "error" for i in issues) else 0
+
+
+_SENSITIVE_KEY_KEYWORDS = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "ACCESS_KEY", "PRIVATE_KEY")
+
+# Regexes for credentials that are recognizable from the value alone, regardless
+# of the key name. Conservative — only matches well-known prefixes/structures to
+# avoid flagging arbitrary strings.
+_SENSITIVE_VALUE_PATTERNS = (
+    re.compile(r"^sk-[A-Za-z0-9_\-]{16,}"),         # Anthropic / OpenAI style
+    re.compile(r"^xai-[A-Za-z0-9_\-]{16,}"),        # xAI
+    re.compile(r"^xoxb-[A-Za-z0-9_\-]{16,}"),       # Slack bot
+    re.compile(r"^ghp_[A-Za-z0-9]{20,}"),           # GitHub personal token
+    re.compile(r"^gho_[A-Za-z0-9]{20,}"),           # GitHub OAuth
+    re.compile(r"^AKIA[0-9A-Z]{16}"),               # AWS access key
+    re.compile(r"^AIza[0-9A-Za-z_\-]{20,}"),        # Google API key
+    re.compile(r"^-----BEGIN [A-Z ]*PRIVATE KEY"),  # PEM private key
+)
+
+
+def _has_sensitive_data(doc: dict) -> bool:
+    """Check if config contains API keys or secrets, by key name OR value pattern."""
+    for key, val in doc.items():
+        if isinstance(val, dict):
+            if _has_sensitive_data(val):
+                return True
+            continue
+        if isinstance(val, str):
+            if any(kw in key.upper() for kw in _SENSITIVE_KEY_KEYWORDS):
+                return True
+            if any(p.match(val) for p in _SENSITIVE_VALUE_PATTERNS):
+                return True
+    return False
+
+
+def _check_sandbox(doc: dict, issues: list, info: list) -> None:
+    """Run sandbox-specific checks."""
+    # Provider check
+    providers = _find_providers(doc)
+    if providers:
+        info.append({
+            "level": "ok",
+            "key": "providers",
+            "message": f"Providers configured: {', '.join(providers)}",
+        })
+    else:
+        info.append({
+            "level": "info",
+            "key": "providers",
+            "message": "No providers configured. Set API keys via [providers.*] or [<agent>.providers.*].",
+        })
+
+    # Default provider
+    sandbox_section = doc.get("sandbox", {})
+    if isinstance(sandbox_section, dict):
+        default = sandbox_section.get("default_provider", "")
+        if default:
+            info.append({
+                "level": "ok",
+                "key": "default_provider",
+                "message": f"Default provider: {default}",
+            })
+        else:
+            info.append({
+                "level": "info",
+                "key": "default_provider",
+                "message": "No default_provider set. Pass -P each time or set sandbox.default_provider.",
+            })
+
+    # Security checks
+    security = doc.get("security", {})
+    if isinstance(security, dict):
+        if security.get("unshare_net") and not security.get("credential_proxy"):
+            issues.append({
+                "level": "warn",
+                "key": "security.unshare_net",
+                "message": "unshare_net is enabled but credential_proxy is off. "
+                           "Paranoid mode requires credential_proxy = true.",
+            })
+        if security.get("credential_proxy"):
+            if not providers:
+                issues.append({
+                    "level": "warn",
+                    "key": "security.credential_proxy",
+                    "message": "credential_proxy is on but no providers with API keys found.",
+                })
+
+    # Agent defaults
+    agents_defaults_path = _find_agents_defaults_path()
+    if agents_defaults_path:
+        info.append({
+            "level": "ok",
+            "key": "agents-defaults",
+            "message": f"Agent defaults: {agents_defaults_path}",
+        })
+
+    # Toolchain dir
+    toolchain_dir = SANDBOX_DIR / "toolchains"
+    if toolchain_dir.is_dir():
+        info.append({
+            "level": "ok",
+            "key": "toolchains",
+            "message": f"Toolchain cache: {toolchain_dir}",
+        })
+
+    # Logging
+    logging_section = doc.get("logging", {})
+    if isinstance(logging_section, dict) and logging_section.get("enabled"):
+        log_dir = logging_section.get("dir", str(SANDBOX_DIR / "logs"))
+        info.append({
+            "level": "ok",
+            "key": "logging",
+            "message": f"Session logging: enabled → {log_dir}",
+        })
+
+
+_MAX_AGENTS_LOWER = 1
+_MAX_AGENTS_UPPER = 64
+
+
+def _check_dashboard(doc: dict, issues: list, info: list) -> None:
+    """Run dashboard-specific checks."""
+    dashboard = doc.get("dashboard", {})
+    if isinstance(dashboard, dict):
+        sandbox_cmd = dashboard.get("sandbox_command", "agent-sandbox")
+        sandbox_cmd_path = shutil.which(sandbox_cmd)
+        if sandbox_cmd_path:
+            info.append({
+                "level": "ok",
+                "key": "sandbox_command",
+                "message": f"sandbox_command found: {sandbox_cmd_path}",
+            })
+        else:
+            issues.append({
+                "level": "warn",
+                "key": "sandbox_command",
+                "message": f"sandbox_command '{sandbox_cmd}' not found in PATH.",
+            })
+
+        sandbox_config = dashboard.get("sandbox_config_path", str(SANDBOX_DIR / "config.toml"))
+        if Path(sandbox_config).expanduser().is_file():
+            info.append({
+                "level": "ok",
+                "key": "sandbox_config",
+                "message": f"Sandbox config: {sandbox_config}",
+            })
+        else:
+            issues.append({
+                "level": "warn",
+                "key": "sandbox_config",
+                "message": f"Sandbox config not found at {sandbox_config}",
+            })
+
+        # max_agents bounds
+        max_agents = dashboard.get("max_agents")
+        if isinstance(max_agents, int):
+            if max_agents < _MAX_AGENTS_LOWER or max_agents > _MAX_AGENTS_UPPER:
+                issues.append({
+                    "level": "warn",
+                    "key": "max_agents",
+                    "message": (
+                        f"max_agents = {max_agents} is outside the recommended range "
+                        f"[{_MAX_AGENTS_LOWER}, {_MAX_AGENTS_UPPER}]."
+                    ),
+                })
+
+    # Check agent overrides
+    agents_overrides = doc.get("agents", {})
+    if isinstance(agents_overrides, dict) and agents_overrides:
+        info.append({
+            "level": "ok",
+            "key": "agents",
+            "message": f"Agent overrides: {', '.join(agents_overrides.keys())}",
+        })
+
+
+def _find_providers(doc: dict) -> list[str]:
+    """Find all provider names in the config."""
+    providers = []
+    # Top-level [providers.*] and legacy [profiles.*]
+    for section_name in ("providers", "profiles"):
+        section = doc.get(section_name)
+        if isinstance(section, dict):
+            providers.extend(section.keys())
+
+    # Agent-specific [<agent>.providers.*]
+    for key, val in doc.items():
+        if isinstance(val, dict):
+            for subkey in ("providers", "profiles"):
+                sub = val.get(subkey)
+                if isinstance(sub, dict):
+                    for pk in sub.keys():
+                        full = f"{key}.{pk}"
+                        if full not in providers:
+                            providers.append(full)
+
+    return providers
+
+
+def _find_agents_defaults_path() -> Path | None:
+    """Find the agents-defaults.toml path."""
+    for p in AGENTS_DEFAULTS_SEARCH:
+        if p.is_file():
+            return p
+    return None
+
+
+def cmd_validate(args) -> int:
+    """Validate config structure and semantics."""
+    target = args.target
+    issues: list[dict] = []
+
+    config_path = _resolve_config_path(target)
+    if config_path is None:
+        msg = f"No {target} config file found."
+        if args.json:
+            print(json.dumps({"valid": False, "issues": [{"level": "error", "message": msg}]}))
+        else:
+            print(f"✗ {msg}")
+        return 1
+
+    # Parse check
+    try:
+        with open(config_path, "rb") as fh:
+            parsed = tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        msg = f"TOML parse error: {exc}"
+        if args.json:
+            print(json.dumps({"valid": False, "issues": [{"level": "error", "message": msg}]}))
+        else:
+            print(f"✗ {msg}")
+        return 1
+
+    # Schema check
+    schema = SANDBOX_SCHEMA if target == "sandbox" else DASHBOARD_SCHEMA
+    for section_name, fields in schema.items():
+        section = parsed.get(section_name)
+        if section is None:
+            continue
+        if not isinstance(section, dict):
+            issues.append({
+                "level": "error",
+                "message": f"[{section_name}] is not a table (found {type(section).__name__})",
+            })
+            continue
+        for key, (expected_type, required, desc) in fields.items():
+            if key not in section:
+                if required:
+                    issues.append({
+                        "level": "error",
+                        "message": f"[{section_name}].{key} is required but missing. {desc}",
+                    })
+                continue
+            val = section[key]
+            if expected_type == bool and not isinstance(val, bool):
+                issues.append({
+                    "level": "error",
+                    "message": f"[{section_name}].{key} should be a boolean, got {type(val).__name__}",
+                })
+            elif expected_type == int and not isinstance(val, int):
+                issues.append({
+                    "level": "error",
+                    "message": f"[{section_name}].{key} should be an integer, got {type(val).__name__}",
+                })
+            elif expected_type == str and not isinstance(val, str):
+                issues.append({
+                    "level": "error",
+                    "message": f"[{section_name}].{key} should be a string, got {type(val).__name__}",
+                })
+            elif expected_type == list and not isinstance(val, list):
+                issues.append({
+                    "level": "error",
+                    "message": f"[{section_name}].{key} should be a list, got {type(val).__name__}",
+                })
+
+    # Check for unknown keys in known sections
+    # Dynamic sub-keys that are valid in any section (providers, profiles, env, etc.)
+    _DYNAMIC_KEYS = {"providers", "profiles", "env", "extra", "overrides", "env_vars"}
+
+    for section_name, fields in schema.items():
+        section = parsed.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        known_keys = set(fields.keys()) | _DYNAMIC_KEYS
+        for key in section:
+            if key not in known_keys and not _is_agent_or_provider_section(key, parsed):
+                issues.append({
+                    "level": "warn",
+                    "message": f"[{section_name}].{key} is not a recognized config key",
+                })
+
+    # Validate provider sections — top-level and agent-specific
+    _PROVIDER_FIELDS = set(PROVIDER_FIELDS.keys())
+    provider_sections: list[tuple[str, dict]] = []
+    for section_name in ("providers", "profiles"):
+        section = parsed.get(section_name)
+        if isinstance(section, dict):
+            provider_sections.append((section_name, section))
+    # Agent-specific [<agent>.providers.*] / [<agent>.profiles.*]
+    for top_key, top_val in parsed.items():
+        if not isinstance(top_val, dict):
+            continue
+        for sub in ("providers", "profiles"):
+            nested = top_val.get(sub)
+            if isinstance(nested, dict):
+                provider_sections.append((f"{top_key}.{sub}", nested))
+
+    for section_label, section in provider_sections:
+        for prov_name, prov_val in section.items():
+            if not isinstance(prov_val, dict):
+                continue
+            for key, val in prov_val.items():
+                if key in _PROVIDER_FIELDS:
+                    continue
+                # Allow nested sub-tables (e.g. extension fields) without warning
+                if isinstance(val, dict):
+                    continue
+                issues.append({
+                    "level": "warn",
+                    "message": f"[{section_label}.{prov_name}].{key} is not a recognized provider field",
+                })
+
+    # Output
+    if args.json:
+        print(json.dumps({
+            "valid": len([i for i in issues if i["level"] == "error"]) == 0,
+            "issues": issues,
+            "config_file": str(config_path),
+        }, indent=2))
+    else:
+        if issues:
+            for i in issues:
+                icon = "✗" if i["level"] == "error" else "⚠"
+                print(f"  {icon} {i['message']}")
+            errors = len([i for i in issues if i["level"] == "error"])
+            print(f"\n  {errors} error(s), {len(issues) - errors} warning(s).")
+        else:
+            print(f"  ✓ {config_path} is valid.")
+
+    return 1 if any(i["level"] == "error" for i in issues) else 0
+
+
+def _is_agent_or_provider_section(key: str, parsed: dict) -> bool:
+    """Detect whether a top-level key is an agent override section.
+
+    Structural detection (no hardcoded list): a top-level key is treated as an
+    agent section when it is itself a table containing nested `providers` or
+    `profiles` sub-tables, or when it appears in `[agents.<name>]` (dashboard
+    style). This lets users define custom agents without false-positive
+    "unrecognized config key" warnings.
+    """
+    val = parsed.get(key)
+    if isinstance(val, dict):
+        if any(isinstance(val.get(sub), dict) for sub in ("providers", "profiles")):
+            return True
+    agents = parsed.get("agents")
+    if isinstance(agents, dict) and key in agents:
+        return True
+    return False
+
+
+def _check_permissions(path: Path, quiet: bool = False) -> None:
+    """Warn if config file containing secrets is world-readable."""
+    if quiet:
+        return
+    mode = path.stat().st_mode
+    if mode & stat.S_IROTH:
+        print(
+            f"⚠ {path} is world-readable. API keys may be exposed.\n"
+            f"  Fix: chmod 600 {path}",
+            file=sys.stderr,
+        )
+
+
+# ── Argument parser ──────────────────────────────────────────────────────
+
+def _add_target_flag(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--target", "-t",
+        choices=["sandbox", "dashboard"],
+        default="sandbox",
+        help="Which config to operate on (default: sandbox)",
+    )
+
+
+def _add_json_flag(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--json", "-j",
+        action="store_true",
+        help="Output in JSON format",
+    )
+
+
+def _add_quiet_flag(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress confirmation output",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lince-config",
+        description="Structured CLI for reading and editing LINCE configuration.",
+    )
+    parser.add_argument(
+        "--version", "-V",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    sub = parser.add_subparsers(dest="command", help="Available commands")
+
+    # ── get ─────────────────────────────────────────────────────
+    p_get = sub.add_parser("get", help="Read a config value")
+    p_get.add_argument("key", help="Dotted key path (e.g. security.unshare_net)")
+    _add_target_flag(p_get)
+    _add_json_flag(p_get)
+    p_get.set_defaults(func=cmd_get)
+
+    # ── set ─────────────────────────────────────────────────────
+    p_set = sub.add_parser("set", help="Set a config value")
+    p_set.add_argument("key", help="Dotted key path (e.g. providers.vertex.description)")
+    p_set.add_argument("value", help="Value to set (auto-coerced: bool, int, list, string)")
+    _add_target_flag(p_set)
+    _add_quiet_flag(p_set)
+    p_set.set_defaults(func=cmd_set)
+
+    # ── append ──────────────────────────────────────────────────
+    p_append = sub.add_parser("append", help="Append a value to a list")
+    p_append.add_argument("key", help="Dotted key path to a list")
+    p_append.add_argument("value", help="Value to append")
+    _add_target_flag(p_append)
+    _add_quiet_flag(p_append)
+    p_append.set_defaults(func=cmd_append)
+
+    # ── remove ──────────────────────────────────────────────────
+    p_remove = sub.add_parser("remove", help="Remove a value from a list")
+    p_remove.add_argument("key", help="Dotted key path to a list")
+    p_remove.add_argument("value", help="Value to remove")
+    _add_target_flag(p_remove)
+    _add_quiet_flag(p_remove)
+    p_remove.set_defaults(func=cmd_remove)
+
+    # ── unset ───────────────────────────────────────────────────
+    p_unset = sub.add_parser("unset", help="Remove a config key or section")
+    p_unset.add_argument("key", help="Dotted key path to remove")
+    _add_target_flag(p_unset)
+    _add_quiet_flag(p_unset)
+    p_unset.set_defaults(func=cmd_unset)
+
+    # ── list ────────────────────────────────────────────────────
+    p_list = sub.add_parser("list", help="List config sections or entries")
+    p_list.add_argument("section", nargs="?", help="Section to list (e.g. providers, agents)")
+    _add_target_flag(p_list)
+    _add_json_flag(p_list)
+    p_list.set_defaults(func=cmd_list)
+
+    # ── check ───────────────────────────────────────────────────
+    p_check = sub.add_parser("check", help="Run diagnostic checks")
+    _add_target_flag(p_check)
+    _add_json_flag(p_check)
+    p_check.set_defaults(func=cmd_check)
+
+    # ── validate ────────────────────────────────────────────────
+    p_validate = sub.add_parser("validate", help="Validate config structure")
+    _add_target_flag(p_validate)
+    _add_json_flag(p_validate)
+    p_validate.set_defaults(func=cmd_validate)
+
+    return parser
+
+
+# ── Main ─────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

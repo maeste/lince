@@ -212,4 +212,5 @@ This means you can safely update `agents-defaults.toml` (via `update.sh`) withou
 - [Usage Guide](dashboard/usage-guide.md) -- how to operate the dashboard
 - [Agent Examples](dashboard/agent-examples.md) -- preset agents and custom configuration examples
 - [Sandbox CLI Reference](sandbox/cli-reference.md) -- the `agent-sandbox` command
+- [lince-config CLI](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md) -- structured CLI for reading and editing LINCE configuration
 - [Multi-Agent Guide](https://github.com/RisorseArtificiali/lince/blob/main/lince-dashboard/MULTI-AGENT-GUIDE.md) -- migration guide for multi-agent support

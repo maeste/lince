@@ -50,6 +50,8 @@ Use unsandboxed mode only in trusted environments where sandbox restrictions are
 
 The easiest way to add a new agent is the `/lince-setup` skill. Run the target agent outside the dashboard, invoke `/lince-setup`, and the agent describes its own requirements. The skill generates correct TOML for both sandbox and dashboard configs.
 
+For ongoing configuration changes (providers, sandbox levels, API keys, diagnostics), use the **`/lince-configure` skill** — a natural-language interface backed by the `lince-config` CLI that supports both conversational and guided-menu interaction.
+
 See the [Multi-Agent Guide](https://github.com/RisorseArtificiali/lince/blob/main/lince-dashboard/MULTI-AGENT-GUIDE.md) for the full flow and examples.
 
 ### Manual Configuration
@@ -223,4 +225,5 @@ If an incoming event matches the `event_map`, the mapped status is used. Otherwi
 - [Usage Guide](dashboard/usage-guide.md) -- how to operate the dashboard
 - [Configuration Reference](dashboard/config-reference.md) -- all config keys and their defaults
 - [Sandbox CLI Reference](sandbox/cli-reference.md) -- the `agent-sandbox` command
+- [lince-config CLI](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md) -- structured CLI for reading and editing LINCE configuration
 - [Multi-Agent Guide](https://github.com/RisorseArtificiali/lince/blob/main/lince-dashboard/MULTI-AGENT-GUIDE.md) -- migration guide for multi-agent support
