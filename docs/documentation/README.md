@@ -19,10 +19,17 @@ Multi-agent TUI dashboard for Zellij. Spawn, monitor, and switch between multipl
 - [Agent Examples](dashboard/agent-examples.md) -- defaults, custom agents, advanced setups
 - [Sandbox Levels](dashboard/sandbox-levels.md) -- paranoid / normal / permissive: what each level does and how to ship a custom one
 
+## Configuration CLI (lince-config)
+
+Structured CLI for reading and editing LINCE TOML configuration files. Also powers the `/lince-configure` skill for natural-language configuration.
+
+- [README & Commands](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md) -- install, commands, and examples
+
 ## Quick Links
 
 - [Getting Started](https://github.com/RisorseArtificiali/lince/blob/main/QUICKSTART.md)
 - [GitHub Repository](https://github.com/RisorseArtificiali/lince)
 - [Cheat Sheet](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/CHEATSHEET.md)
 - [Multi-Agent Guide](https://github.com/RisorseArtificiali/lince/blob/main/lince-dashboard/MULTI-AGENT-GUIDE.md)
+- [lince-config README](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md)
 - [nono Integration](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/docs/nono-integration.md)

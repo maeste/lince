@@ -340,3 +340,4 @@ ls ~/.agent-sandbox/logs/
 - [Configuration Reference](sandbox/config-reference.md) -- every TOML key documented
 - [Security Model](sandbox/security-model.md) -- threat model, defense layers, credential proxy details
 - [Cheatsheet](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/CHEATSHEET.md) -- quick-reference card
+- [lince-config CLI](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md) -- structured CLI for reading and editing LINCE configuration
