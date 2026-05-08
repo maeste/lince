@@ -22,7 +22,13 @@
 #   credential_proxy = true
 
 [sandbox]
-home_ro_dirs = [".config/gh", ".cache", ".ssh/known_hosts"]
+# NOTE: ~/.cache is intentionally NOT exposed read-only here. claude-cli
+# writes per-project state to ~/.cache/claude-cli-nodejs/<project>/ at
+# startup; an RO bind on ~/.cache makes that write fail and claude-cli
+# exits silently from its TUI alt-screen, leaving the dashboard with a
+# bare "exit 1". Tool-specific caches (cargo, npm, uv, go) are exposed
+# via persist_toolchains, so a blanket ~/.cache mount is unnecessary.
+home_ro_dirs = [".config/gh", ".ssh/known_hosts"]
 
 [env]
 # Pass host-env GitHub tokens through. gh CLI authenticated via
