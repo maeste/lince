@@ -81,28 +81,28 @@ pub fn default_agent_pane_coords() -> FloatingPaneCoordinates {
         .with_height_percent(85)
 }
 
-/// Floating pane coordinates for the tiled layout's viewport area (C).
+/// Floating pane coordinates for the tiled layout's viewport area (B).
 ///
 /// The tiled layout has three fixed panes:
 /// ```text
 /// ┌──────────────┬─────────────────────┐
 /// │  A 40%×70%   │  B 60%×100%          │
-/// │  (dashboard) │  (VoxCode / shell)    │
+/// │  (dashboard) │  (agent viewport)    │
 /// ├──────────────┤                      │
 /// │  C 40%×30%   │                      │
-/// │  (viewport)  │                      │
+/// │  (shell/vox) │                      │
 /// └──────────────┴─────────────────────┘
 /// ```
 ///
-/// C is the bottom-left quadrant. Accounting for the tab-bar (top, ~2%) and
-/// status-bar (bottom, ~4%), the viewport starts at roughly y=72% and spans
-/// 40% width × 24% height.
+/// B is the right column — full height, 60% width. Accounting for the
+/// tab-bar (~2%) and status-bar (~4%), the overlay starts at y=2% and
+/// spans roughly 94% height.
 pub fn tiled_viewport_coords() -> FloatingPaneCoordinates {
     FloatingPaneCoordinates::default()
-        .with_x_percent(0)
-        .with_y_percent(72)
-        .with_width_percent(40)
-        .with_height_percent(24)
+        .with_x_percent(40)
+        .with_y_percent(2)
+        .with_width_percent(60)
+        .with_height_percent(94)
 }
 
 use crate::config::now_secs;
@@ -439,7 +439,7 @@ fn spawn_inner(
         }
         AgentLayout::Tiled => {
             // Tiled layout: agents are still floating panes, but hidden at spawn.
-            // When focused, they overlay the viewport pane (C) in the 3-pane layout.
+            // When focused, they overlay the viewport pane (B) in the 3-pane layout.
             open_command_pane_floating(command, Some(tiled_viewport_coords()), BTreeMap::new());
         }
     }

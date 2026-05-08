@@ -15,14 +15,14 @@
 //   ├──────────────┬─────────────────────┤
 //   │              │                     │
 //   │   A          │        B            │
-//   │  Dashboard   │     Shell           │  ~70%
+//   │  Dashboard   │       Agent         │  ~70%
 //   │  plugin      │                     │
 //   │   40%×70%    │     60%×100%        │
 //   │              │                     │
 //   ├──────────────┤                     │
 //   │   C          │                     │  ~30%
-//   │  Agent       │                     │
-//   │  viewport    │                     │
+//   │  Shell       │                     │
+//   │              │                     │
 //   │  40%×30%     │                     │
 //   ├──────────────┴─────────────────────┤
 //   │ status-bar (borderless, size=2)    │
@@ -49,15 +49,16 @@ layout {
                         config_path "~/.config/lince-dashboard/config.toml"
                     }
                 }
-                // C — Agent viewport (30% of left column)
+                // C — Shell viewport (30% of left column)
                 // Shows ASCII art placeholder; agent floating overlay covers this on focus.
                 pane size="30%" {
-                    command "lince-viewport-placeholder"
+                    
                 }
             }
             // Right column — 60%, full height (B)
             pane size="60%" {
-                // B — Shell (full height)
+                // B — Agent (full height)
+                command "lince-viewport-placeholder"
             }
         }
     }

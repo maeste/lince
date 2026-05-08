@@ -13,14 +13,14 @@
 //   ├──────────────┬─────────────────────┤
 //   │              │                     │
 //   │   A          │        B            │
-//   │  Dashboard   │     VoxCode         │  ~70%
+//   │  Dashboard   │      Agent          │  ~70%
 //   │  plugin      │                     │
 //   │   40%×70%    │     60%×100%        │
 //   │              │                     │
 //   ├──────────────┤                     │
 //   │   C          │                     │  ~30%
-//   │  Agent       │                     │
-//   │  viewport    │                     │
+//   │  VoxCode     │                     │
+//   │              │                     │
 //   │  40%×30%     │                     │
 //   ├──────────────┴─────────────────────┤
 //   │ status-bar (borderless, size=2)    │
@@ -50,15 +50,15 @@ layout {
                 // C — Agent viewport (30% of left column)
                 // Shows ASCII art placeholder; agent floating overlay covers this on focus.
                 pane size="30%" {
-                    command "lince-viewport-placeholder"
+                    command "voxcode"
+                    args "--use-pipe"
                 }
             }
             // Right column — 60%, full height (B)
             pane size="60%" {
                 // B — VoxCode (full height)
-                command "voxcode"
-                args "--use-pipe"
-            }
+                command "lince-viewport-placeholder"
+                }
         }
     }
 }
