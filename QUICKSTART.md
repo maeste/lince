@@ -64,7 +64,7 @@ What it does:
 - Installs layouts to `~/.config/zellij/layouts/`
 - Installs Claude Code status hooks
 - Offers to install optimized Zellij keybindings (Ctrl+O disabled for agent compatibility)
-- Creates shell aliases: `lince`, `lince-tiled`, `zd` (legacy), `z`, `zn`
+- Creates shell aliases: `lince`, `lince-floating`, `zd` (legacy), `z`, `zn`
 
 Verification:
 ```bash

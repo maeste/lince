@@ -201,8 +201,9 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
             # Remove the LINCE aliases block (comment + all alias lines)
             sed -i '/# LINCE aliases/d' "$rc"
             sed -i '/alias lince=/d' "$rc"
-            sed -i '/alias lince-tiled=/d' "$rc"
-            sed -i '/alias lince-tiled-vox=/d' "$rc"
+            sed -i '/alias lince-floating=/d' "$rc"
+            
+            
             sed -i '/alias zd=/d' "$rc"
             sed -i '/alias z="zellij"/d' "$rc"
             sed -i '/alias zn=/d' "$rc"

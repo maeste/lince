@@ -403,10 +403,9 @@ echo ""
 # ── Step 13: Shell aliases ────────────────────────────────────────────
 echo -e "${GREEN}[13/14] Setting up shell aliases...${NC}"
 
-ALIAS_LINES='alias lince="zellij --layout dashboard"
-alias lince-tiled="zellij --layout dashboard-tiled"
-alias lince-tiled-vox="zellij --layout dashboard-tiled-vox"
-alias zd="zellij --layout dashboard"
+ALIAS_LINES='alias lince="zellij --layout dashboard-tiled"
+alias lince-floating="zellij --layout dashboard"
+alias zd="zellij --layout dashboard-tiled"
 alias z="zellij"
 alias zn="zellij attach -c"'
 ALIAS_COMMENT="# LINCE aliases"
@@ -418,8 +417,7 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
             # Remove old LINCE alias block and re-add
             sed -i '/# LINCE aliases/d' "$rc"
             sed -i '/alias lince=/d' "$rc"
-            sed -i '/alias lince-tiled=/d' "$rc"
-            sed -i '/alias lince-tiled-vox=/d' "$rc"
+            sed -i '/alias lince-floating=/d' "$rc"
             sed -i '/alias zd=/d' "$rc"
             sed -i '/alias z="zellij"/d' "$rc"
             sed -i '/alias zn=/d' "$rc"
@@ -427,7 +425,7 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
         echo "" >> "$rc"
         echo "$ALIAS_COMMENT" >> "$rc"
         echo "$ALIAS_LINES" >> "$rc"
-        echo -e "${GREEN}  ✓ Updated aliases (lince, lince-tiled, zd, z, zn) in $(basename $rc)${NC}"
+        echo -e "${GREEN}  ✓ Updated aliases (lince, lince-floating, zd, z, zn) in $(basename $rc)${NC}"
     fi
 done
 echo ""
@@ -535,9 +533,8 @@ if [ "$HAS_NONO" = true ]; then
 fi
 echo -e "${GREEN}Usage:${NC}"
 echo "  source ~/.bashrc   # reload aliases"
-echo "  lince              # launch dashboard (floating layout)"
-echo "  lince-tiled        # launch tiled (3-pane) layout"
-echo "  lince-tiled-vox    # launch tiled layout with VoxCode"
+echo "  lince              # launch dashboard (tiled layout)"
+echo "  lince-floating     # launch floating layout"
 echo "  zd                 # legacy alias for lince"
 echo ""
 echo -e "${GREEN}Keybindings:${NC}"

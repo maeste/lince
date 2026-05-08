@@ -13,7 +13,8 @@ lince
 For the tiled (3-pane) layout:
 
 ```bash
-lince-tiled
+lince            # tiled is the default
+lince-floating   # floating overlay layout
 ```
 
 This opens Zellij with the dashboard layout. The plugin loads in a dedicated pane, ready to spawn and manage agents. If a `.lince-dashboard` state file exists in the current directory, saved agents are automatically restored.
@@ -166,7 +167,7 @@ Press `Q` to save the current agent configuration and quit Zellij. On next launc
 
 ## Tiled Pane Layout
 
-Set `agent_layout = "tiled"` in `config.toml` and launch with `lince-tiled` for a fixed three-pane layout:
+Set `agent_layout = "tiled"` in `config.toml` and launch with `lince` for a fixed three-pane layout:
 
 ```
 ┌──────────────┬─────────────────────┐
@@ -181,7 +182,7 @@ Set `agent_layout = "tiled"` in `config.toml` and launch with `lince-tiled` for 
 
 - The dashboard plugin occupies the top-left pane (A).
 - The bottom-left pane (C) is the **agent viewport** — an ASCII art placeholder that is covered by the focused agent's floating pane.
-- The right column (B) is a full-height shell (or VoxCode if using `lince-tiled-vox`).
+- The right column (B) is the agent viewport — covered by the focused agent's floating pane.
 - Press `f` to focus an agent — its pane overlays the viewport. Press `h` to unfocus and return to the placeholder.
 
 ## Voice Relay

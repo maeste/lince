@@ -52,8 +52,8 @@ After installation:
 
 ```bash
 source ~/.bashrc
-lince              # launch the dashboard
-lince-tiled        # launch the tiled (3-pane) layout
+lince              # launch the dashboard (tiled layout)
+lince-floating     # launch the floating overlay layout
 zd                 # legacy alias for lince
 ```
 
