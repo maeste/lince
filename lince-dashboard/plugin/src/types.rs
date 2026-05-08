@@ -109,13 +109,19 @@ pub struct NamePromptState {
 }
 
 /// Which step the wizard is currently on.
+///
+/// Note: `Provider` selects an env-var bundle (Anthropic vs Vertex vs Z.ai
+/// vs ...) — distinct from `SandboxLevel`, which selects the isolation
+/// posture (paranoid/normal/permissive). The two axes are independent;
+/// users can run e.g. `paranoid + zai`. See gh#81.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WizardStep {
     AgentType,
     SandboxBackend,
     SandboxLevel,
     Name,
-    Profile,
+    /// Pick the provider env-var bundle (was `Profile` pre-#81).
+    Provider,
     ProjectDir,
     Confirm,
 }
@@ -145,10 +151,12 @@ pub struct WizardState {
     pub name: String,
     /// Auto-generated default name shown when the user leaves name empty (e.g. "claude-3").
     pub default_name: String,
-    /// Available sandbox profiles (from config).
-    pub available_profiles: Vec<String>,
-    /// Currently selected profile index in `available_profiles`.
-    pub profile_index: usize,
+    /// Available providers (env-var bundles) discovered from sandbox config.
+    /// Was `available_profiles` pre-#81.
+    pub available_providers: Vec<String>,
+    /// Currently selected provider index in `available_providers`.
+    /// Was `profile_index` pre-#81.
+    pub provider_index: usize,
     pub project_dir: String,
     /// Tab-completion suggestions for the project directory.
     pub completions: Vec<String>,
@@ -221,8 +229,8 @@ impl WizardState {
             steps.push(WizardStep::SandboxLevel);
         }
         steps.push(WizardStep::Name);
-        if self.has_profiles() {
-            steps.push(WizardStep::Profile);
+        if self.has_providers() {
+            steps.push(WizardStep::Provider);
         }
         steps.push(WizardStep::ProjectDir);
         steps.push(WizardStep::Confirm);
@@ -255,9 +263,9 @@ impl WizardState {
         }
     }
 
-    /// Whether there are selectable profiles.
-    pub fn has_profiles(&self) -> bool {
-        !self.available_profiles.is_empty()
+    /// Whether there are selectable providers (env-var bundles).
+    pub fn has_providers(&self) -> bool {
+        !self.available_providers.is_empty()
     }
 
     /// Clear any pending tab-completion state.
@@ -266,9 +274,10 @@ impl WizardState {
         self.completion_index = None;
     }
 
-    /// Return the selected profile name, or None if no profiles are available.
-    pub fn selected_profile(&self) -> Option<&str> {
-        self.available_profiles.get(self.profile_index).map(|s| s.as_str())
+    /// Return the selected provider name, or None if no providers are available.
+    /// Was `selected_profile()` pre-#81.
+    pub fn selected_provider(&self) -> Option<&str> {
+        self.available_providers.get(self.provider_index).map(|s| s.as_str())
     }
 }
 
@@ -277,7 +286,9 @@ pub struct AgentInfo {
     pub id: String,
     pub name: String,
     pub agent_type: String,
-    pub profile: Option<String>,
+    /// Provider env-var bundle name selected at spawn time (was `profile`
+    /// pre-#81). Distinct from `sandbox_level`, which is the isolation posture.
+    pub provider: Option<String>,
     pub project_dir: String,
     pub status: AgentStatus,
     pub pane_id: Option<u32>,
@@ -337,7 +348,10 @@ pub struct SavedAgentInfo {
     /// Agent type key referencing AgentTypeConfig in config. Defaults to DEFAULT_AGENT_TYPE for v1 compat.
     #[serde(default = "default_agent_type")]
     pub agent_type: String,
-    pub profile: Option<String>,
+    /// Provider env-var bundle name. `serde(alias = "profile")` keeps
+    /// pre-#81 `.lince-dashboard` files loadable.
+    #[serde(default, alias = "profile")]
+    pub provider: Option<String>,
     pub project_dir: String,
     pub group: Option<String>,
     pub tokens_in: u64,
@@ -359,7 +373,7 @@ impl From<&AgentInfo> for SavedAgentInfo {
         Self {
             name: a.name.clone(),
             agent_type: a.agent_type.clone(),
-            profile: a.profile.clone(),
+            provider: a.provider.clone(),
             project_dir: a.project_dir.clone(),
             group: a.group.clone(),
             tokens_in: a.tokens_in,

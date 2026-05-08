@@ -71,3 +71,54 @@ pub fn parse_loaded_state(stdout: &[u8]) -> Result<SavedState, String> {
     state.version = STATE_VERSION;
     Ok(state)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pre-#81 state files spelled the env-bundle field as `profile`. The
+    /// rename added `#[serde(alias = "profile")]` on `SavedAgentInfo.provider`
+    /// so old `.lince-dashboard` files keep loading transparently.
+    #[test]
+    fn loads_pre_issue81_state_file_with_profile_field() {
+        let json = br#"{
+            "version": 2,
+            "agents": [
+                {
+                    "name": "agent-1",
+                    "agent_type": "claude",
+                    "profile": "vertex",
+                    "project_dir": "/tmp/proj",
+                    "tokens_in": 0,
+                    "tokens_out": 0
+                }
+            ],
+            "next_agent_id": 1
+        }"#;
+        let state = parse_loaded_state(json).expect("legacy state must load");
+        assert_eq!(state.agents.len(), 1);
+        assert_eq!(state.agents[0].provider.as_deref(), Some("vertex"));
+    }
+
+    /// New state files use `provider`. Round-trip serialization writes
+    /// `provider` and reads it back without falling through the alias.
+    #[test]
+    fn round_trips_provider_field() {
+        let json = br#"{
+            "version": 2,
+            "agents": [
+                {
+                    "name": "agent-1",
+                    "agent_type": "claude",
+                    "provider": "zai",
+                    "project_dir": "/tmp/proj",
+                    "tokens_in": 0,
+                    "tokens_out": 0
+                }
+            ],
+            "next_agent_id": 1
+        }"#;
+        let state = parse_loaded_state(json).expect("canonical state must load");
+        assert_eq!(state.agents[0].provider.as_deref(), Some("zai"));
+    }
+}

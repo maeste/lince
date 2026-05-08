@@ -42,7 +42,7 @@ Agents with `sandboxed = false` run without any LINCE-managed isolation. The das
 - A red `[NON-SANDBOXED]` tag in the Zellij pane title.
 - A red `[NON-SANDBOXED]` warning in the detail panel.
 
-Use unsandboxed mode only in trusted environments where sandbox restrictions are impractical. Unsandboxed agents still support profiles for provider selection -- the dashboard uses `env -u VAR1 VAR2=val ...` to set and unset environment variables cleanly.
+Use unsandboxed mode only in trusted environments where sandbox restrictions are impractical. Unsandboxed agents still support providers (env-var bundles) -- the dashboard uses `env -u VAR1 VAR2=val ...` to set and unset environment variables cleanly.
 
 ## Adding a Custom Agent
 
@@ -59,7 +59,7 @@ To add a custom agent manually:
 1. Choose a unique key (lowercase, hyphens allowed).
 2. Add an `[agents.<key>]` section to `~/.config/lince-dashboard/config.toml`.
 3. Set the required fields: `command`, `pane_title_pattern`, `status_pipe_name`, `display_name`, `short_label`, `color`, `sandboxed`.
-4. Optionally set `has_native_hooks`, `env_vars`, `home_ro_dirs`, `profiles`, etc.
+4. Optionally set `has_native_hooks`, `env_vars`, `home_ro_dirs`, `providers` (legacy `profiles`), etc.
 5. Restart the dashboard. The new type appears in the wizard.
 
 No code changes or recompilation required.
@@ -98,23 +98,23 @@ After spawning, the table shows:
 
 ## Example: Agent with Multiple Providers
 
-Claude Code can connect to different providers (Anthropic direct, Vertex AI, etc.) using profiles. This example shows how to configure provider switching for both sandboxed and unsandboxed modes.
+Claude Code can connect to different providers (Anthropic direct, Vertex AI, etc.) using **provider** entries (env-var bundles — gh#81 renamed these from "profiles" to disambiguate from sandbox isolation profiles). This example shows how to configure provider switching for both sandboxed and unsandboxed modes.
 
-**Sandbox profiles** (`~/.agent-sandbox/config.toml`):
+**Provider entries** in `~/.agent-sandbox/config.toml`:
 
 ```toml
-[profiles.anthropic]
+[claude.providers.anthropic]
 description = "Anthropic Direct API"
 env_unset = ["CLAUDE_CODE_USE_VERTEX", "CLOUD_ML_REGION"]
 
-[profiles.anthropic.env]
+[claude.providers.anthropic.env]
 ANTHROPIC_API_KEY = "sk-ant-..."
 
-[profiles.vertex]
+[claude.providers.vertex]
 description = "Vertex AI"
 env_unset = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]
 
-[profiles.vertex.env]
+[claude.providers.vertex.env]
 CLAUDE_CODE_USE_VERTEX = "1"
 CLOUD_ML_REGION = "us-east5"
 ```
@@ -131,12 +131,16 @@ short_label = "CLU"
 color = "red"
 sandboxed = false
 has_native_hooks = true
-profiles = ["__discover__"]
+providers = ["__discover__"]   # legacy name `profiles` is also accepted
 ```
 
 The `env_unset` field is critical for unsandboxed agents. Because they inherit the full host environment, switching from Anthropic to Vertex requires **unsetting** `ANTHROPIC_API_KEY` before **setting** `CLAUDE_CODE_USE_VERTEX`. Without `env_unset`, both keys would be present and the agent could pick the wrong provider.
 
 For sandboxed agents, `env_unset` is a no-op because `agent-sandbox` uses `--clearenv` to start from a blank environment.
+
+> Pre-#81 configs spelled these `[profiles.*]` / `[<agent>.profiles.*]`. The
+> legacy form still works (with a one-shot deprecation note); run
+> `agent-sandbox migrate-providers` to rewrite the file in place.
 
 ## Handling bwrap Conflicts
 

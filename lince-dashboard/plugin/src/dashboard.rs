@@ -291,22 +291,22 @@ fn render_agent_table(
     let col_type: usize = 5;  // 3 chars label + "!" marker + space
     let col_sandbox: usize = 6; // "bwrap" / "nono" / "NOSB" + padding
     let col_name: usize = 20;
-    let col_profile: usize = 12;
+    let col_provider: usize = 12;
     let col_status: usize = 12;
 
     // Show optional columns only when terminal is wide enough
     let base_width: usize = 1 + col_idx + 1 + col_type + 1 + col_name + 1 + col_status;
     let show_sandbox = cols >= base_width + 1 + col_sandbox;
-    let show_profile = cols >= base_width + 1 + col_sandbox + 1 + col_profile;
+    let show_provider = cols >= base_width + 1 + col_sandbox + 1 + col_provider;
 
     let hdr_sandbox = if show_sandbox { format!("{} ", pad_left("Sbox", col_sandbox)) } else { String::new() };
-    let hdr_profile = if show_profile { format!("{} ", pad_left("Profile", col_profile)) } else { String::new() };
+    let hdr_provider = if show_provider { format!("{} ", pad_left("Provider", col_provider)) } else { String::new() };
     let hdr = format!(
         " {} {} {} {} {}{}",
         pad_left("#", col_idx), pad_left("Agent", col_type),
         pad_left("Name", col_name),
         pad_left("Status", col_status),
-        hdr_sandbox, hdr_profile,
+        hdr_sandbox, hdr_provider,
     );
     println!("{}{}{}", BOLD, truncate(&hdr, cols), RESET);
 
@@ -421,10 +421,12 @@ fn render_agent_table(
                     String::new()
                 };
 
-                // Build optional profile column string
-                let profile_col = if show_profile {
-                    let p = agent.profile.as_deref().unwrap_or("-");
-                    format!("{} ", pad_left(p, col_profile))
+                // Build optional provider column string (the env-var bundle —
+                // gh#81 renamed this from "Profile"). The sandbox isolation
+                // level is shown via the row color, not as a separate column.
+                let provider_col = if show_provider {
+                    let p = agent.provider.as_deref().unwrap_or("-");
+                    format!("{} ", pad_left(p, col_provider))
                 } else {
                     String::new()
                 };
@@ -436,7 +438,7 @@ fn render_agent_table(
                         pad_left(&agent.name, col_name),
                     );
                     let status_str = pad_left(&status_label, col_status);
-                    let trailing = format!(" {}{}", sandbox_col, profile_col);
+                    let trailing = format!(" {}{}", sandbox_col, provider_col);
                     let main_visible = strip_ansi_len(&main_part);
                     let suffix_visible_len = strip_ansi_len(&subagent_suffix);
                     let trailing_visible = strip_ansi_len(&trailing);
@@ -471,7 +473,7 @@ fn render_agent_table(
                         prefix, pad_left(&idx_str, col_idx), type_col, name_field,
                         status_color, if needs_attention { BOLD } else { "" },
                         pad_left(&status_label, col_status), subagent_suffix, RESET,
-                        sandbox_col, profile_col,
+                        sandbox_col, provider_col,
                     );
                     println!("{}", truncate(&line, cols));
                 }
@@ -520,9 +522,18 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
         );
         row += 1;
     }
+    // Show "Profile" (sandbox isolation level — paranoid/normal/permissive)
+    // and "Provider" (env-var bundle — anthropic/vertex/zai/...) on
+    // SEPARATE lines. They're orthogonal axes; conflating them confused users
+    // (gh#81). Either may be `(default)` independently.
     if row < max_rows {
-        let profile = agent.profile.as_deref().unwrap_or("(default)");
+        let profile = agent.sandbox_level.as_deref().unwrap_or("(default)");
         println!(" {}Profile:{} {}", CYAN, RESET, profile);
+        row += 1;
+    }
+    if row < max_rows {
+        let provider = agent.provider.as_deref().unwrap_or("(default)");
+        println!(" {}Provider:{} {}", CYAN, RESET, provider);
         row += 1;
     }
     if row < max_rows {
@@ -687,9 +698,10 @@ pub fn render_wizard(
     let step_label = match wizard.step {
         WizardStep::AgentType => "Agent Type",
         WizardStep::SandboxBackend => "Sandbox Backend",
-        WizardStep::SandboxLevel => "Sandbox Level",
+        WizardStep::SandboxLevel => "Sandbox Level (Profile)",
         WizardStep::Name => "Agent Name",
-        WizardStep::Profile => "Profile",
+        // gh#81: this step picks an env-var bundle, not a sandbox profile.
+        WizardStep::Provider => "Provider",
         WizardStep::ProjectDir => "Project Directory",
         WizardStep::Confirm => "Confirm",
     };
@@ -761,34 +773,37 @@ pub fn render_wizard(
         }
         WizardStep::Confirm => {
             let base_display = wizard.selected_base_agent();
-            let profile_display = wizard.selected_profile().unwrap_or("(none)");
+            let provider_display = wizard.selected_provider().unwrap_or("(none)");
             let dir_display = if wizard.project_dir.is_empty() { "(current dir)" } else { &wizard.project_dir };
             // Show base agent + backend separately rather than the resolved
             // `<base>-unsandboxed` key — matches the user's mental model.
-            push_box_line(&mut lines, &format!("  Type:    {}", base_display), box_width);
+            push_box_line(&mut lines, &format!("  Type:     {}", base_display), box_width);
             if let Some(backend) = wizard.selected_sandbox_backend() {
-                push_box_line(&mut lines, &format!("  Backend: {}", backend.display_name()), box_width);
+                push_box_line(&mut lines, &format!("  Backend:  {}", backend.display_name()), box_width);
             }
-            // Level is meaningful only when a sandboxed backend is selected.
+            // Profile (sandbox isolation level) is meaningful only when a sandboxed backend is selected.
             if !wizard.is_unsandboxed_choice() {
                 if let Some(level) = wizard.selected_sandbox_level() {
-                    push_box_line(&mut lines, &format!("  Level:   {}", level), box_width);
+                    push_box_line(&mut lines, &format!("  Profile:  {}", level), box_width);
                 }
             }
             let effective_name = if wizard.name.is_empty() { &wizard.default_name } else { &wizard.name };
-            push_box_line(&mut lines, &format!("  Name:    {}", effective_name), box_width);
-            push_box_line(&mut lines, &format!("  Profile: {}", profile_display), box_width);
-            push_box_line(&mut lines, &format!("  Dir:     {}", dir_display), box_width);
+            push_box_line(&mut lines, &format!("  Name:     {}", effective_name), box_width);
+            // Provider is the env-var bundle (gh#81 — distinct from Profile/sandbox-level above).
+            push_box_line(&mut lines, &format!("  Provider: {}", provider_display), box_width);
+            push_box_line(&mut lines, &format!("  Dir:      {}", dir_display), box_width);
             push_box_line(&mut lines, "", box_width);
             push_box_line(&mut lines, "  [Enter] Create  [Bksp] Back  [Esc] Cancel", box_width);
         }
-        WizardStep::Profile => {
-            // Render profile list with selection marker.
-            // Profiles named after sandbox levels (paranoid/normal/permissive)
-            // pick up the configured palette; custom profile names get the
-            // default color. Matches the per-pane title indicator (gh#63).
-            for (i, name) in wizard.available_profiles.iter().enumerate() {
-                let marker = if i == wizard.profile_index { ">" } else { " " };
+        WizardStep::Provider => {
+            // Render provider list with selection marker. Providers named
+            // after sandbox levels (paranoid/normal/permissive) historically
+            // picked up the level palette; we keep that color hint for
+            // visual continuity even though the two concepts are distinct
+            // (gh#63 / gh#81). Most provider names are env-bundle names
+            // (anthropic / vertex / zai) which fall through to the default color.
+            for (i, name) in wizard.available_providers.iter().enumerate() {
+                let marker = if i == wizard.provider_index { ">" } else { " " };
                 let color = color_name_to_ansi(sandbox_colors.for_level(name));
                 push_box_line(
                     &mut lines,
@@ -797,6 +812,11 @@ pub fn render_wizard(
                 );
             }
             push_box_line(&mut lines, "", box_width);
+            push_box_line(
+                &mut lines,
+                "  Provider = env-var bundle (e.g. anthropic, vertex, zai).",
+                box_width,
+            );
             push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);
         }
         WizardStep::ProjectDir => {

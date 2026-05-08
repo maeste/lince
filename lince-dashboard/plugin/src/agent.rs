@@ -84,19 +84,24 @@ pub fn default_agent_pane_coords() -> FloatingPaneCoordinates {
 use crate::config::now_secs;
 
 /// Apply placeholder substitution to a command template.
-/// Replaces `{agent_id}`, `{project_dir}`, `{profile}` in each arg.
+///
+/// Replaces `{agent_id}`, `{project_dir}`, `{provider}` (canonical) and
+/// `{profile}` (legacy alias — kept for back-compat with existing
+/// `agents-defaults.toml` files; both expand to the provider name).
 fn expand_command_template(
     template: &[String],
     agent_id: &str,
     project_dir: &str,
-    profile: Option<&str>,
+    provider: Option<&str>,
 ) -> Vec<String> {
+    let prov = provider.unwrap_or("");
     template
         .iter()
         .map(|arg| {
             arg.replace("{agent_id}", agent_id)
                 .replace("{project_dir}", project_dir)
-                .replace("{profile}", profile.unwrap_or(""))
+                .replace("{provider}", prov)
+                .replace("{profile}", prov)
         })
         .collect()
 }
@@ -266,7 +271,7 @@ fn spawn_inner(
     agents: &[AgentInfo],
     name: String,
     agent_type: &str,
-    profile: Option<String>,
+    provider: Option<String>,
     project_dir: String,
     group: Option<String>,
     sandbox_level_override: Option<String>,
@@ -284,24 +289,24 @@ fn spawn_inner(
     let id = format!("{}-{}", base, next_id);
     let name = if name.is_empty() { id.clone() } else { name };
 
-    // Validate profile: drop it if it doesn't exist for this agent type.
-    // Prevents failures when e.g. default_profile is "anthropic" but a codex
-    // agent has no such profile, or when restoring a saved agent whose profile
-    // was removed from config.
-    let profile = profile.and_then(|p| {
-        let available = config.profiles_for_agent_type(agent_type);
+    // Validate provider: drop it if it doesn't exist for this agent type.
+    // Prevents failures when e.g. default_provider is "anthropic" but a codex
+    // agent has no such provider, or when restoring a saved agent whose
+    // provider was removed from config.
+    let provider = provider.and_then(|p| {
+        let available = config.providers_for_agent_type(agent_type);
         if available.iter().any(|a| a == &p) { Some(p) } else { None }
     });
 
     let args: Vec<String> = if let Some(type_config) = config.agent_types.get(agent_type) {
         let mut expanded: Vec<String> = Vec::new();
 
-        // For non-sandboxed agents, apply profile env vars via `env` command.
+        // For non-sandboxed agents, apply provider env vars via `env` command.
         // Sandboxed agents go through agent-sandbox which handles env internally.
         if !type_config.sandboxed {
-            // Unset conflicting env vars from profile
-            if let Some(ref prof_name) = profile {
-                if let Some(details) = config.profile_details_for(agent_type, prof_name) {
+            // Unset conflicting env vars from provider
+            if let Some(ref prov_name) = provider {
+                if let Some(details) = config.provider_details_for(agent_type, prov_name) {
                     for var in &details.env_unset {
                         expanded.push("-u".to_string());
                         expanded.push(var.clone());
@@ -364,14 +369,15 @@ fn spawn_inner(
                 &type_config.command,
                 &id,
                 &project_dir,
-                profile.as_deref(),
+                provider.as_deref(),
             ));
         }
-        // For agent-sandbox (bwrap) agents, pass the profile via -P flag so
-        // agent-sandbox can resolve the profile's env vars internally.
-        // Nono agents already have --profile baked into their command template.
+        // For agent-sandbox (bwrap) agents, pass the provider via -P flag so
+        // agent-sandbox can resolve the provider's env vars internally. Nono
+        // agents already have `--profile` (nono's own concept, unrelated to
+        // provider) baked into their command template.
         if type_config.sandboxed && *effective_backend == SandboxBackend::AgentSandbox {
-            if let Some(ref p) = profile {
+            if let Some(ref p) = provider {
                 if !p.is_empty() {
                     expanded.push("-P".to_string());
                     expanded.push(p.clone());
@@ -386,7 +392,7 @@ fn spawn_inner(
             config.sandbox_command.clone(),
             "run".to_string(),
         ];
-        if let Some(ref p) = profile {
+        if let Some(ref p) = provider {
             if !p.is_empty() {
                 args.push("-P".to_string());
                 args.push(p.clone());
@@ -425,7 +431,7 @@ fn spawn_inner(
         id,
         name,
         agent_type: agent_type.to_string(),
-        profile,
+        provider,
         project_dir,
         status: AgentStatus::Starting,
         pane_id: None,
@@ -444,7 +450,7 @@ fn spawn_inner(
     })
 }
 
-/// Spawn a new agent with custom name, profile, project directory, and optional sandbox overrides.
+/// Spawn a new agent with custom name, provider, project directory, and optional sandbox overrides.
 ///
 /// `sandbox_level_override` / `sandbox_backend_override` are the runtime values selected in the
 /// wizard (or restored from saved state). When `None`, `spawn_inner` falls back to the
@@ -455,13 +461,13 @@ pub fn spawn_agent_custom(
     agents: &[AgentInfo],
     custom_name: String,
     agent_type: &str,
-    custom_profile: Option<String>,
+    custom_provider: Option<String>,
     custom_project_dir: String,
     launch_dir: Option<&str>,
     sandbox_level_override: Option<String>,
     sandbox_backend_override: Option<SandboxBackend>,
 ) -> Result<AgentInfo, String> {
-    let profile = match custom_profile {
+    let provider = match custom_provider {
         Some(ref p) if p.is_empty() => None,
         other => other,
     };
@@ -478,7 +484,7 @@ pub fn spawn_agent_custom(
         agents,
         custom_name,
         agent_type,
-        profile,
+        provider,
         project_dir,
         None,
         sandbox_level_override,

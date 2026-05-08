@@ -48,7 +48,7 @@ Name: my-agent          (default: agent-3)  [Enter] OK  [Esc] Cancel
 
 - Type a custom name or press `Enter` to accept the default (`agent-N`).
 - `Esc` cancels without spawning.
-- Profile and project directory use config defaults. Use `N` (wizard) for full control.
+- Provider and project directory use config defaults. Use `N` (wizard) for full control.
 
 ### Wizard Mode
 
@@ -67,17 +67,24 @@ Keys `1` through `9` focus the corresponding agent by its row number in the tabl
 
 ## Agent Creation Wizard
 
-The wizard (`N`) walks through five steps to create a new agent.
+The wizard (`N`) walks through up to seven steps to create a new agent
+(steps that are not applicable are auto-skipped — e.g. `Sandbox Backend`
+when only one is installed, `Sandbox Level` for unsandboxed agents,
+`Provider` for agent types with no providers configured).
 
-**Step 1: Agent Type** -- Select from available agent types using `j`/`k`. Sandboxed agents are shown in green; unsandboxed agents are shown in red. This step is skipped if only one agent type is configured.
+**Step 1: Agent Type** -- Select from available agent types using `j`/`k`. Sandboxed agents are shown in green; unsandboxed agents are shown in red. Skipped when only one agent type is configured.
 
-**Step 2: Agent Name** -- Text input for a custom name. Leave empty and press `Enter` to accept the auto-generated default (e.g. `agent-3`).
+**Step 2: Sandbox Backend** -- Pick `bwrap` (agent-sandbox) or `nono`. Skipped when only one backend is detected on this host. Selecting "no sandbox" routes to the agent type's `<base>-unsandboxed` entry.
 
-**Step 3: Profile** -- Conditional step, shown only when the selected agent type has profiles configured. Select a sandbox profile from the list (e.g. `vertex`, `anthropic`). Profiles control provider selection and environment variables.
+**Step 3: Sandbox Level (Profile)** -- Pick the isolation posture: `paranoid`, `normal`, `permissive`, or any custom level discovered on disk. This is the **sandbox profile** axis (gh#81) — the wizard label is "Sandbox Level" but the value also appears as `Profile:` in the detail pane. Skipped for unsandboxed runs.
 
-**Step 4: Project Directory** -- Text input for the working directory path. Tab-completion is available. Defaults to the directory where `zd` was launched.
+**Step 4: Agent Name** -- Text input for a custom name. Leave empty and press `Enter` to accept the auto-generated default (e.g. `agent-3`).
 
-**Step 5: Confirm** -- Review all settings. Press `Enter` to create the agent, or `Backspace` to go back and change a setting.
+**Step 5: Provider** -- Conditional step, shown only when the selected agent type has providers configured (`providers = ["__discover__"]` or an explicit list in `agents-defaults.toml`). Pick a provider name (env-var bundle: `vertex`, `anthropic`, `zai`, …) discovered from `~/.agent-sandbox/config.toml`. The Provider axis is **independent** of Sandbox Level — combine freely. Was named "Profile" pre-#81.
+
+**Step 6: Project Directory** -- Text input for the working directory path. Tab-completion is available. Defaults to the directory where `zd` was launched.
+
+**Step 7: Confirm** -- Review all settings (Type / Backend / Profile / Name / Provider / Dir). Press `Enter` to create the agent, or `Backspace` to go back and change a setting.
 
 ## Agent Lifecycle
 
@@ -105,11 +112,12 @@ The wizard (`N`) walks through five steps to create a new agent.
 
 ## Agent Detail Panel
 
-Press `Enter` on any agent to toggle a detail panel below the table. It displays:
+Press `i` to toggle a detail panel below the table. It displays:
 
 - **Agent type** -- display name with color. Red `[UNSANDBOXED]` warning if applicable.
 - **Status** -- current status with color coding.
-- **Profile** -- the sandbox profile in use (if any).
+- **Profile** -- the sandbox isolation level in use (paranoid / normal / permissive / custom). `(default)` for unsandboxed agents.
+- **Provider** -- the provider env-var bundle in use (e.g. `anthropic`, `vertex`, `zai`). `(default)` if none was selected. **Distinct from Profile (gh#81).**
 - **Project directory** -- the working directory path.
 - **Token usage** -- input and output token counts with `k`/`M` suffixes.
 - **Active tool** -- the tool name currently in use (reported during `PreToolUse` events).
@@ -143,7 +151,7 @@ When agents span multiple project directories, the dashboard automatically group
 
 ## Session Save and Restore
 
-Press `Q` to save the current agent configuration and quit Zellij. On next launch from the same directory, agents are automatically re-spawned with their saved names, profiles, project directories, and token counts.
+Press `Q` to save the current agent configuration and quit Zellij. On next launch from the same directory, agents are automatically re-spawned with their saved names, providers, project directories, and token counts. (Pre-#81 saved-state files use `profile` as the field name; they continue to load thanks to a serde alias on `provider`.)
 
 - State is saved to `.lince-dashboard` in the directory where `zd` was launched.
 - Different directories maintain independent state. Launch from `~/project-a` and `~/project-b` for separate sessions.

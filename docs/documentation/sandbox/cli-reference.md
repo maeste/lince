@@ -42,13 +42,13 @@ Launch an AI coding agent inside the sandbox. Defaults to Claude Code in the cur
 
 Options not recognized by `agent-sandbox run` are passed directly to the agent. This means agent flags like `--continue`, `--model`, `--resume`, and `--print` (long form) work without the `--` separator. Use `--` for edge cases where a flag conflicts (e.g., `-p` is used by both agent-sandbox and some agents).
 
-On launch, a banner displays active protections (profile, project path, filesystem mode, network, PID isolation, git push status, env var policy, and credential proxy state).
+On launch, a banner displays active protections (provider, project path, filesystem mode, network, PID isolation, git push status, env var policy, and credential proxy state).
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-p`, `--project` | `.` (cwd) | Project directory to mount writable |
 | `-a`, `--agent` | `claude` | Agent to run (looks up `[agents.<name>]` in config) |
-| `-P`, `--profile` | config default | Provider profile name (defined in `config.toml`) |
+| `-P`, `--provider`, `--profile` | config default | Provider name — env-var bundle defined under `[providers.*]` / `[<agent>.providers.*]` in `config.toml` (e.g. `anthropic`, `vertex`, `zai`). `--profile` is the legacy spelling and still works (gh#81). |
 | `--sandbox-level NAME` | per-agent default | Sandbox isolation level: `paranoid`, `normal`, `permissive`, or any custom name. Loads `sandbox/profiles/<NAME>.toml` (built-in) or `~/.agent-sandbox/profiles/<NAME>.toml` (user-supplied) and deep-merges it into the config. See [Configuration Reference](sandbox/config-reference.md#sandbox-levels) |
 | `--log` | config value | Enable session transcript logging |
 | `--no-log` | config value | Disable session transcript logging |
@@ -200,7 +200,7 @@ Remove old snapshots beyond the configured maximum count (`max_project_snapshots
 ### learn
 
 ```
-agent-sandbox learn [-a AGENT] [-P PROFILE] [--duration SECONDS]
+agent-sandbox learn [-a AGENT] [-P PROVIDER] [--duration SECONDS]
                     [--compare] [--apply] [--output FILE]
 ```
 
@@ -211,7 +211,7 @@ Requires `strace` (standard on all Linux distributions).
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-a`, `--agent` | `claude` | Agent to learn |
-| `-P`, `--profile` | none | Provider profile name |
+| `-P`, `--provider`, `--profile` | none | Provider name (env-var bundle) |
 | `--duration` | unlimited | Kill the agent after N seconds |
 | `--compare` | off | Compare observed needs vs current config |
 | `--apply` | off | Auto-merge suggestions into `config.toml` |
@@ -219,10 +219,25 @@ Requires `strace` (standard on all Linux distributions).
 
 ---
 
+### migrate-providers
+
+```
+agent-sandbox migrate-providers [--dry-run]
+```
+
+Rewrite the resolved `config.toml` in place, translating the legacy
+`[profiles.*]` / `[<agent>.profiles.*]` keys (and `default_profile`) to
+the canonical `[providers.*]` / `[<agent>.providers.*]` / `default_provider`
+spelling introduced in gh#81. A `.bak` backup is written next to the
+original. Use `--dry-run` to preview a unified diff. Idempotent — re-running
+on an already-migrated file is a no-op.
+
+---
+
 ### nono-sync
 
 ```
-agent-sandbox nono-sync [--dry-run] [--agent NAME] [-P PROFILE]
+agent-sandbox nono-sync [--dry-run] [--agent NAME] [-P PROVIDER]
 ```
 
 Generate nono JSON profiles from lince agent configuration. Used when the `nono` backend is selected or on macOS.
@@ -231,7 +246,7 @@ Generate nono JSON profiles from lince agent configuration. Used when the `nono`
 |------|---------|-------------|
 | `--dry-run` | off | Print generated JSON without writing files |
 | `--agent` | all agents | Sync a specific agent only |
-| `-P`, `--profile` | none | Provider profile name for env var mapping |
+| `-P`, `--provider`, `--profile` | none | Provider name (env-var bundle) for env var mapping |
 
 ---
 
@@ -250,7 +265,7 @@ If neither exists, the sandbox refuses to start with a clear error. There is no 
 2. `[agents.<name>]` in user `config.toml`
 3. Hardcoded fallback for `claude`
 
-**Environment handling** -- all host environment variables are cleared via `--clearenv`. Only variables listed in `[env].passthrough` and those defined in the active profile are injected. API keys belong in `[*.profiles.*.env]` sections, not in your shell.
+**Environment handling** -- all host environment variables are cleared via `--clearenv`. Only variables listed in `[env].passthrough` and those defined in the active provider are injected. API keys belong in `[*.providers.*.env]` sections (legacy `[*.profiles.*.env]` still works), not in your shell.
 
 ---
 
@@ -267,10 +282,11 @@ agent-sandbox run -a codex
 agent-sandbox run -a gemini
 ```
 
-Switch provider profiles:
+Switch providers (env-var bundles):
 ```bash
-agent-sandbox run -P zai          # Vertex AI
-agent-sandbox run -P mm           # Direct Anthropic API
+agent-sandbox run --provider zai          # Z.AI / GLM
+agent-sandbox run -P vertex               # Vertex AI (-P is a shorter form)
+agent-sandbox run -P anthropic            # Direct Anthropic API
 ```
 
 Review and merge config changes after a session:

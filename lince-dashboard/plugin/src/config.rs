@@ -17,7 +17,9 @@ pub const DEFAULT_SANDBOX_COMMAND: &str = "agent-sandbox";
 /// String keys only — no enum, fully data-driven.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTypeConfig {
-    /// Command template. Supports `{agent_id}`, `{project_dir}`, `{profile}` placeholders.
+    /// Command template. Supports `{agent_id}`, `{project_dir}`, and the
+    /// equivalent provider placeholders `{provider}` (canonical) /
+    /// `{profile}` (legacy alias) — both expand to the selected provider name.
     pub command: Vec<String>,
     /// Pattern to match pane titles for reconciliation (e.g. "agent-sandbox").
     pub pane_title_pattern: String,
@@ -57,12 +59,16 @@ pub struct AgentTypeConfig {
     /// Custom mapping from agent event names to lince status strings.
     #[serde(default)]
     pub event_map: HashMap<String, String>,
-    /// Sandbox profiles applicable to this agent type.
-    /// - `["__discover__"]` means use all auto-discovered profiles (default for sandboxed agents via agent-sandbox).
-    /// - Empty or omitted means no profiles (skip profile wizard step).
-    /// - Explicit list restricts the wizard to those profile names.
-    #[serde(default)]
-    pub profiles: Vec<String>,
+    /// Providers (env-var bundles) applicable to this agent type.
+    /// - `["__discover__"]` means use all auto-discovered providers (default
+    ///   for sandboxed agents via agent-sandbox).
+    /// - Empty or omitted means no providers (skip the wizard's Provider step).
+    /// - An explicit list restricts the wizard to those provider names.
+    ///
+    /// Was `profiles` pre-#81 — the legacy spelling is still accepted via
+    /// `serde(alias)` so existing user `agents-defaults.toml` files keep working.
+    #[serde(default, alias = "profiles")]
+    pub providers: Vec<String>,
     /// Sandbox backend used by this agent type.
     /// Overrides the global `[dashboard].sandbox_backend` setting.
     /// Defaults to `AgentSandbox` for backward compatibility.
@@ -200,29 +206,37 @@ fn default_max_agents() -> usize {
     8
 }
 
-/// Parsed profile details from sandbox config (env vars to set/unset).
+/// Parsed provider details from sandbox config (env vars to set/unset).
+///
+/// Each provider corresponds to a `[providers.<name>]` (canonical) or
+/// legacy `[profiles.<name>]` table in `~/.agent-sandbox/config.toml`. See
+/// gh#81 for the rename rationale.
 #[derive(Debug, Clone, Default)]
-pub struct ProfileDetails {
-    /// Environment variables to set (from `[profiles.<name>.env]`).
+pub struct ProviderDetails {
+    /// Environment variables to set (from `[<...>.<name>.env]`).
     pub env: HashMap<String, String>,
-    /// Environment variables to unset (from `[profiles.<name>.env_unset]`).
+    /// Environment variables to unset (from `[<...>.<name>.env_unset]`).
     pub env_unset: Vec<String>,
 }
 
 /// Main dashboard configuration, deserialized from the `[dashboard]` TOML table.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashboardConfig {
-    #[serde(default)]
-    pub default_profile: Option<String>,
-    /// Per-agent-type profile names, keyed by agent base name (e.g. "claude", "codex").
-    /// Populated from `[profiles.*]` (legacy → "claude") and `[<agent>.profiles.*]`
+    /// Default provider (env-var bundle) name. Was `default_profile` pre-#81;
+    /// the legacy spelling is still accepted as a serde alias.
+    #[serde(default, alias = "default_profile")]
+    pub default_provider: Option<String>,
+    /// Per-agent-type provider names, keyed by agent base name (e.g. "claude",
+    /// "codex"). Populated from `[providers.*]` / `[<agent>.providers.*]`
+    /// (canonical) and the legacy `[profiles.*]` / `[<agent>.profiles.*]`
     /// sections in the sandbox config.
     #[serde(skip)]
-    pub profiles_by_agent: HashMap<String, Vec<String>>,
-    /// Per-agent-type profile details (env vars), keyed by agent base name then profile name.
+    pub providers_by_agent: HashMap<String, Vec<String>>,
+    /// Per-agent-type provider details (env vars), keyed by agent base name
+    /// then provider name.
     #[serde(skip)]
-    pub profile_details_by_agent: HashMap<String, HashMap<String, ProfileDetails>>,
-    /// Path to sandbox config for profile auto-discovery.
+    pub provider_details_by_agent: HashMap<String, HashMap<String, ProviderDetails>>,
+    /// Path to sandbox config for provider auto-discovery.
     /// Defaults to `~/.agent-sandbox/config.toml`.
     #[serde(default)]
     pub sandbox_config_path: Option<String>,
@@ -267,9 +281,9 @@ pub struct DashboardConfig {
 impl Default for DashboardConfig {
     fn default() -> Self {
         DashboardConfig {
-            default_profile: None,
-            profiles_by_agent: HashMap::new(),
-            profile_details_by_agent: HashMap::new(),
+            default_provider: None,
+            providers_by_agent: HashMap::new(),
+            provider_details_by_agent: HashMap::new(),
             sandbox_config_path: None,
             default_project_dir: None,
             sandbox_command: default_sandbox_command(),
@@ -359,8 +373,9 @@ pub fn common_prefix(items: &[String]) -> String {
 
 /// Context key for identifying RunCommandResult callbacks (shared with state_file).
 pub const CMD_TYPE_KEY: &str = "type";
-/// Command type for async profile discovery via `run_command`.
-pub const CMD_DISCOVER_PROFILES: &str = "discover_profiles";
+/// Command type for async provider discovery via `run_command` (was
+/// `CMD_DISCOVER_PROFILES` pre-#81).
+pub const CMD_DISCOVER_PROVIDERS: &str = "discover_providers";
 /// Command type for async loading of agent type defaults via `run_command`.
 pub const CMD_LOAD_AGENT_DEFAULTS: &str = "load_agent_defaults";
 
@@ -391,11 +406,12 @@ pub const CMD_PATH_COMPLETE: &str = "path_complete";
 /// suffix-less "normal" profile). See `discover_sandbox_levels_async()`.
 pub const CMD_DISCOVER_SANDBOX_LEVELS: &str = "discover_sandbox_levels";
 
-/// Extract profile details from a TOML table (the value side of a `[*.profiles.<name>]` entry).
-fn parse_profile_details(profile_table: &toml::Table) -> ProfileDetails {
-    let mut pd = ProfileDetails::default();
+/// Extract provider details from a TOML table (the value side of a
+/// `[*.providers.<name>]` / `[*.profiles.<name>]` entry).
+fn parse_provider_details(table: &toml::Table) -> ProviderDetails {
+    let mut pd = ProviderDetails::default();
     // Parse env vars to set
-    if let Some(env_table) = profile_table.get("env").and_then(|v| v.as_table()) {
+    if let Some(env_table) = table.get("env").and_then(|v| v.as_table()) {
         for (k, v) in env_table {
             if let Some(s) = v.as_str() {
                 pd.env.insert(k.clone(), s.to_string());
@@ -403,7 +419,7 @@ fn parse_profile_details(profile_table: &toml::Table) -> ProfileDetails {
         }
     }
     // Parse env vars to unset
-    if let Some(unset_arr) = profile_table.get("env_unset").and_then(|v| v.as_array()) {
+    if let Some(unset_arr) = table.get("env_unset").and_then(|v| v.as_array()) {
         for v in unset_arr {
             if let Some(s) = v.as_str() {
                 pd.env_unset.push(s.to_string());
@@ -413,64 +429,82 @@ fn parse_profile_details(profile_table: &toml::Table) -> ProfileDetails {
     pd
 }
 
-/// Parse sandbox profiles from TOML content, returning per-agent-type maps.
+/// Parse providers (env-var bundles) from sandbox config TOML content,
+/// returning per-agent-type maps.
 ///
-/// Recognises two formats:
-///   - Legacy `[profiles.<name>]`          → attributed to agent base "claude"
-///   - Namespaced `[<agent>.profiles.<name>]` → attributed to `<agent>`
+/// Recognises four formats — canonical first, legacy second:
+///   - `[providers.<name>]`              → attributed to agent base "claude"
+///   - `[<agent>.providers.<name>]`      → attributed to `<agent>`
+///   - Legacy `[profiles.<name>]`        → attributed to "claude"
+///   - Legacy `[<agent>.profiles.<name>]` → attributed to `<agent>`
 ///
-/// Returns `(profiles_by_agent, details_by_agent)`.
-pub fn parse_profiles_from_toml(
+/// When both forms exist for the same agent + name, the canonical entry wins.
+/// Returns `(providers_by_agent, details_by_agent)`.
+pub fn parse_providers_from_toml(
     content: &str,
-) -> (HashMap<String, Vec<String>>, HashMap<String, HashMap<String, ProfileDetails>>) {
+) -> (HashMap<String, Vec<String>>, HashMap<String, HashMap<String, ProviderDetails>>) {
     let table: toml::Table = match toml::from_str(content) {
         Ok(t) => t,
         Err(_) => return (HashMap::new(), HashMap::new()),
     };
 
     let mut by_agent: HashMap<String, Vec<String>> = HashMap::new();
-    let mut details_by_agent: HashMap<String, HashMap<String, ProfileDetails>> = HashMap::new();
+    let mut details_by_agent: HashMap<String, HashMap<String, ProviderDetails>> = HashMap::new();
 
-    // 1) Legacy `[profiles.*]` → attributed to "claude"
-    if let Some(profiles) = table.get("profiles").and_then(|v| v.as_table()) {
-        let agent = "claude".to_string();
-        let names = by_agent.entry(agent.clone()).or_default();
-        let details = details_by_agent.entry(agent).or_default();
-        for (name, value) in profiles {
-            if !names.contains(name) {
-                names.push(name.clone());
-            }
-            if let Some(profile_table) = value.as_table() {
-                details.entry(name.clone()).or_insert_with(|| parse_profile_details(profile_table));
-            }
+    fn push_one(
+        agent: &str,
+        name: &str,
+        detail_table: Option<&toml::Table>,
+        by_agent: &mut HashMap<String, Vec<String>>,
+        details_by_agent: &mut HashMap<String, HashMap<String, ProviderDetails>>,
+    ) {
+        let names = by_agent.entry(agent.to_string()).or_default();
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+        // Last-wins semantics: a later (higher-precedence) call OVERWRITES the
+        // previous detail for the same agent + name. Match the Python reader's
+        // dict.update() behaviour so the same config produces the same env-var
+        // bundle on both sides — see the precedence comment below.
+        if let Some(t) = detail_table {
+            details_by_agent
+                .entry(agent.to_string())
+                .or_default()
+                .insert(name.to_string(), parse_provider_details(t));
         }
     }
 
-    // 2) Namespaced `[<agent>.profiles.*]`
-    // Scan all top-level keys: any that contain a `profiles` subtable are treated
-    // as agent-type profile namespaces. This supports custom agent types too.
-    for (key, value) in &table {
-        if key == "profiles" {
-            continue; // Already handled above as legacy
+    // Process from LOWEST to HIGHEST precedence so the last write wins
+    // (matches `resolve_providers` in sandbox/agent-sandbox: legacy top →
+    // legacy ns → canonical top → canonical ns, with later layers replacing
+    // earlier ones for any colliding agent + name pair).
+    //
+    // 1) Legacy top-level [profiles.*]      → "claude"
+    // 2) Canonical top-level [providers.*]  → "claude"
+    for top_key in ["profiles", "providers"] {
+        if let Some(top) = table.get(top_key).and_then(|v| v.as_table()) {
+            for (name, value) in top {
+                push_one("claude", name, value.as_table(), &mut by_agent, &mut details_by_agent);
+            }
         }
-        if let Some(agent_section) = value.as_table() {
-            if let Some(profiles) = agent_section.get("profiles").and_then(|v| v.as_table()) {
-                let agent = key.clone();
-                let names = by_agent.entry(agent.clone()).or_default();
-                let details = details_by_agent.entry(agent).or_default();
-                for (name, val) in profiles {
-                    if !names.contains(name) {
-                        names.push(name.clone());
-                    }
-                    if let Some(profile_table) = val.as_table() {
-                        details.entry(name.clone()).or_insert_with(|| parse_profile_details(profile_table));
-                    }
+    }
+    // 3) Legacy namespaced [<agent>.profiles.*]
+    // 4) Canonical namespaced [<agent>.providers.*] — highest precedence
+    for (agent_key, agent_value) in &table {
+        if agent_key == "providers" || agent_key == "profiles" {
+            continue;
+        }
+        let Some(agent_section) = agent_value.as_table() else { continue };
+        for sub_key in ["profiles", "providers"] {
+            if let Some(provs) = agent_section.get(sub_key).and_then(|v| v.as_table()) {
+                for (name, val) in provs {
+                    push_one(agent_key, name, val.as_table(), &mut by_agent, &mut details_by_agent);
                 }
             }
         }
     }
 
-    // Sort each agent's profile names
+    // Sort each agent's provider names
     for names in by_agent.values_mut() {
         names.sort();
     }
@@ -483,15 +517,16 @@ pub fn shell_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
-/// Kick off async discovery of sandbox profiles by reading config files
-/// via `run_command`. Results arrive in `Event::RunCommandResult` with
-/// context `type=discover_profiles`.
+/// Kick off async discovery of providers (env-var bundles) by reading sandbox
+/// config files via `run_command`. Results arrive in `Event::RunCommandResult`
+/// with context `type=discover_providers`. Was `discover_profiles_async`
+/// pre-#81 — see issue for naming rationale.
 ///
 /// Reads the global config and optionally a project-local config. Each file
 /// is cat'd separately and their outputs are joined by a NUL byte so the
 /// handler can parse them independently (avoiding invalid TOML from
-/// concatenating files with duplicate `[profiles]` headers).
-pub fn discover_profiles_async(sandbox_config_path: Option<&str>, launch_dir: Option<&str>) {
+/// concatenating files with duplicate `[providers]` headers).
+pub fn discover_providers_async(sandbox_config_path: Option<&str>, launch_dir: Option<&str>) {
     // Build the global config path for the shell script.
     // IMPORTANT: We must NOT quote paths that start with `~` because the shell
     // only performs tilde expansion on unquoted tildes.  `expand_tilde()` uses
@@ -516,7 +551,7 @@ pub fn discover_profiles_async(sandbox_config_path: Option<&str>, launch_dir: Op
         );
     }
 
-    run_typed_command(&["sh", "-c", &script], CMD_DISCOVER_PROFILES);
+    run_typed_command(&["sh", "-c", &script], CMD_DISCOVER_PROVIDERS);
 }
 
 /// Kick off async discovery of custom sandbox-level profile files.
@@ -694,7 +729,7 @@ impl DashboardConfig {
     /// Returns `(config, error)` where `error` is `Some(msg)` if reading or
     /// parsing failed (in which case `config` holds all defaults).
     ///
-    /// Profile auto-discovery happens asynchronously via `discover_profiles_async()`
+    /// Provider auto-discovery happens asynchronously via `discover_providers_async()`
     /// after the plugin has permissions and knows the launch directory.
     ///
     /// # Manual testing
@@ -718,14 +753,14 @@ impl DashboardConfig {
     }
 
 
-    /// Merge discovered per-agent-type profiles, deduplicating.
-    pub fn merge_profiles(
+    /// Merge discovered per-agent-type providers, deduplicating.
+    pub fn merge_providers(
         &mut self,
         by_agent: &HashMap<String, Vec<String>>,
-        details_by_agent: &HashMap<String, HashMap<String, ProfileDetails>>,
+        details_by_agent: &HashMap<String, HashMap<String, ProviderDetails>>,
     ) {
         for (agent, names) in by_agent {
-            let existing = self.profiles_by_agent.entry(agent.clone()).or_default();
+            let existing = self.providers_by_agent.entry(agent.clone()).or_default();
             for name in names {
                 if !existing.contains(name) {
                     existing.push(name.clone());
@@ -734,35 +769,36 @@ impl DashboardConfig {
             existing.sort();
         }
         for (agent, details) in details_by_agent {
-            let existing = self.profile_details_by_agent.entry(agent.clone()).or_default();
+            let existing = self.provider_details_by_agent.entry(agent.clone()).or_default();
             for (name, detail) in details {
                 existing.entry(name.clone()).or_insert_with(|| detail.clone());
             }
         }
     }
 
-    /// Resolve the effective profile list for a given agent type.
+    /// Resolve the effective provider list for a given agent type.
     ///
-    /// - If the agent type has `profiles = ["__discover__"]`, returns discovered profiles
-    ///   for the agent's base name (e.g. "claude", "codex").
-    /// - If the agent type has an explicit list, returns the intersection with discovered.
-    /// - If the agent type has no profiles (empty), returns an empty list.
-    pub fn profiles_for_agent_type(&self, agent_type: &str) -> Vec<String> {
+    /// - If the agent type has `providers = ["__discover__"]`, returns
+    ///   discovered providers for the agent's base name (e.g. "claude", "codex").
+    /// - If the agent type has an explicit list, returns the intersection with
+    ///   discovered providers (so unknown names are silently filtered).
+    /// - If the agent type has no providers (empty), returns an empty list.
+    pub fn providers_for_agent_type(&self, agent_type: &str) -> Vec<String> {
         let cfg = match self.agent_types.get(agent_type) {
             Some(c) => c,
             None => return Vec::new(),
         };
-        if cfg.profiles.is_empty() {
+        if cfg.providers.is_empty() {
             return Vec::new();
         }
         let base = crate::agent::agent_type_base_name(agent_type);
-        let discovered = self.profiles_by_agent.get(base);
-        if cfg.profiles.len() == 1 && cfg.profiles[0] == "__discover__" {
+        let discovered = self.providers_by_agent.get(base);
+        if cfg.providers.len() == 1 && cfg.providers[0] == "__discover__" {
             return discovered.cloned().unwrap_or_default();
         }
-        // Explicit list: intersect with discovered profiles for validation
+        // Explicit list: intersect with discovered providers for validation
         let disc = discovered.cloned().unwrap_or_default();
-        cfg.profiles
+        cfg.providers
             .iter()
             .filter(|p| disc.contains(p))
             .cloned()
@@ -912,12 +948,12 @@ impl DashboardConfig {
         0
     }
 
-    /// Look up profile details for a given agent type and profile name.
-    pub fn profile_details_for(&self, agent_type: &str, profile_name: &str) -> Option<&ProfileDetails> {
+    /// Look up provider details for a given agent type and provider name.
+    pub fn provider_details_for(&self, agent_type: &str, provider_name: &str) -> Option<&ProviderDetails> {
         let base = crate::agent::agent_type_base_name(agent_type);
-        self.profile_details_by_agent
+        self.provider_details_by_agent
             .get(base)
-            .and_then(|m| m.get(profile_name))
+            .and_then(|m| m.get(provider_name))
     }
 
     /// Return the event_map for a given agent type, or None if empty/missing.
@@ -926,5 +962,78 @@ impl DashboardConfig {
             .get(agent_type)
             .map(|c| &c.event_map)
             .filter(|m| !m.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pre-#81 `agents-defaults.toml` files used `profiles = [...]`. The
+    /// rename added `#[serde(alias = "profiles")]` on `AgentTypeConfig.providers`
+    /// so legacy files keep working without the user editing them.
+    #[test]
+    fn legacy_profiles_field_in_agent_defaults_loads() {
+        let toml_text = r#"
+            [agents.claude]
+            command = ["claude"]
+            pane_title_pattern = "claude"
+            status_pipe_name = "claude-status"
+            display_name = "Claude"
+            short_label = "CLA"
+            color = "blue"
+            sandboxed = true
+            profiles = ["__discover__"]
+        "#;
+        let parsed = parse_agent_defaults(toml_text.as_bytes());
+        let claude = parsed.get("claude").expect("claude should parse");
+        assert_eq!(claude.providers, vec!["__discover__"]);
+    }
+
+    /// Sandbox config dual-read: namespaced canonical `[<agent>.providers.X]`
+    /// must beat top-level legacy `[profiles.X]` for the same name. Matches
+    /// the precedence implemented by `resolve_providers` in
+    /// `sandbox/agent-sandbox` (legacy → canonical, last wins).
+    #[test]
+    fn namespaced_canonical_overrides_top_level_legacy() {
+        let toml_text = r#"
+            [profiles.zai]
+            description = "from-legacy-top"
+            [profiles.zai.env]
+            ANTHROPIC_BASE_URL = "https://legacy.example.com"
+
+            [claude.providers.zai]
+            description = "from-canonical-ns"
+            [claude.providers.zai.env]
+            ANTHROPIC_BASE_URL = "https://canonical.example.com"
+        "#;
+        let (_names, details) = parse_providers_from_toml(toml_text);
+        let claude = details.get("claude").expect("claude bucket");
+        let zai = claude.get("zai").expect("zai entry");
+        assert_eq!(
+            zai.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://canonical.example.com"),
+            "namespaced canonical must replace top-level legacy",
+        );
+    }
+
+    /// Both forms in the same file must each contribute their distinct
+    /// providers without dropping anything. Uses an explicit name list assert
+    /// so a regression in iteration order would still surface a missing entry.
+    #[test]
+    fn legacy_and_canonical_coexist() {
+        let toml_text = r#"
+            [profiles.legacyOnly]
+            [profiles.legacyOnly.env]
+            X = "1"
+
+            [claude.providers.canonicalOnly]
+            [claude.providers.canonicalOnly.env]
+            Y = "2"
+        "#;
+        let (names, _details) = parse_providers_from_toml(toml_text);
+        let mut claude = names.get("claude").cloned().unwrap_or_default();
+        claude.sort();
+        assert_eq!(claude, vec!["canonicalOnly", "legacyOnly"]);
     }
 }
