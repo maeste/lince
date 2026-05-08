@@ -472,6 +472,7 @@ confirm_installation() {
     fi
 
     echo -e "  ${GREEN}✓${NC} lince-dashboard  ${DIM}(multi-agent TUI)${NC}"
+    echo -e "  ${GREEN}✓${NC} lince-config     ${DIM}(config CLI + lince-configure skill)${NC}"
 
     if [ "$INSTALL_VOXCODE" = true ]; then
         echo -e "  ${GREEN}✓${NC} voxcode          ${DIM}(voice input via Whisper)${NC}"
@@ -631,6 +632,23 @@ do_install_sandbox() {
     fi
 }
 
+# ── Install lince-config CLI ────────────────────────────────────────
+do_install_lince_config() {
+    echo ""
+    print_separator
+    echo -e "${BOLD}Installing lince-config CLI...${NC}"
+    echo ""
+
+    cd "$SCRIPT_DIR/lince-config"
+    if bash install.sh; then
+        echo -e "${GREEN}✓ lince-config installed${NC}"
+    else
+        echo -e "${RED}✗ lince-config installation failed${NC}"
+        echo -e "  ${DIM}The lince-configure skill will not be functional without it.${NC}"
+        if ! confirm "Continue anyway?"; then exit 1; fi
+    fi
+}
+
 # ── Install dashboard ───────────────────────────────────────────────
 do_install_dashboard() {
     echo ""
@@ -682,6 +700,16 @@ check_prerequisites() {
         else
             echo -e "      ${DIM}# Fedora/RHEL: sudo dnf install python3.11${NC}"
             echo -e "      ${DIM}# Ubuntu/Debian: sudo apt install python3.11${NC}"
+        fi
+    fi
+
+    # tomlkit (for lince-config CLI). Informational only — lince-config/install.sh
+    # will pip-install it if missing.
+    if command -v python3 >/dev/null 2>&1; then
+        if python3 -c "import tomlkit" 2>/dev/null; then
+            echo -e "  ${GREEN}✓${NC} python tomlkit"
+        else
+            echo -e "  ${YELLOW}✗${NC} python tomlkit — ${DIM}will be installed by lince-config${NC}"
         fi
     fi
 
@@ -821,6 +849,9 @@ print_summary() {
     if has_backend unsandboxed; then
         echo -e "  ${RED}!${NC} unsandboxed mode"
     fi
+    if [ -x "$HOME/.local/bin/lince-config" ]; then
+        echo -e "  ${GREEN}✓${NC} lince-config CLI (powers /lince-configure)"
+    fi
     if command -v voxcode >/dev/null 2>&1; then
         echo -e "  ${GREEN}✓${NC} voxcode (voice input)"
     fi
@@ -909,6 +940,7 @@ check_prerequisites
 print_separator
 
 do_install_sandbox
-do_install_voxcode    # before dashboard so step 12 detects voxcode
+do_install_voxcode        # before dashboard so step 14 detects voxcode
 do_install_dashboard
+do_install_lince_config   # CLI required by the lince-configure skill
 print_summary

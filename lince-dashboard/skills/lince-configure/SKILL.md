@@ -6,7 +6,7 @@ compatibility: Requires lince-config CLI installed (lince-config/install.sh). Py
 metadata:
   author: lince
   version: "1.0"
-allowed-tools: Bash(lince-config:*) Read(//home/maeste/.agent-sandbox/**) Read(//home/maeste/.config/lince-dashboard/**)
+allowed-tools: Bash(lince-config:*) Read(//home/**/.agent-sandbox/**) Read(//home/**/.config/lince-dashboard/**)
 ---
 
 # lince-configure: Natural Language Configuration for LINCE
@@ -54,7 +54,28 @@ Always use `--json` for read operations to parse results programmatically.
 
 ## Workflow
 
-### Step 0: Understand Intent
+### Step 0: Choose Interaction Style (FIRST ACTION)
+
+**Before doing anything else**, unless the user has already stated a clear intent
+(e.g. "configure Vertex AI", "enable paranoid mode"), ask the user how they want
+to proceed using `AskUserQuestion`:
+
+- **Conversational** — free-form natural language back-and-forth
+- **Guided menu** — multiple-choice menus driving them through the configuration
+
+If the user's first message already contains a specific configuration request,
+skip this step and go straight to Step 1 (intent is clear). The choice question
+is only for ambiguous "help me configure LINCE" openings.
+
+When in **guided menu** mode, use `AskUserQuestion` at every decision point
+(area to configure, specific option, confirmation) rather than free-text prompts.
+When in **conversational** mode, ask open questions and infer intent.
+
+**Language**: Match the language the user is using in the current session. Do not
+hardcode a language in the skill — if they write in Italian, respond in Italian;
+if English, respond in English.
+
+### Step 1: Understand Intent
 
 Listen to what the user wants. Common intents:
 
@@ -70,7 +91,7 @@ Listen to what the user wants. Common intents:
 | "Fix this error" / "Something's broken" | Run check + diagnose |
 | "What sandbox level should I use?" | Explain levels, help choose |
 
-### Step 1: Read Current State
+### Step 2: Read Current State
 
 Before making changes, always check the current configuration:
 

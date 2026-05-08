@@ -6,13 +6,15 @@ Structured CLI for reading and editing LINCE configuration files.
 
 `lince-config` is the programmatic interface between natural-language skills (or power users) and LINCE's TOML config files. It reads and writes both sandbox (`~/.agent-sandbox/config.toml`) and dashboard (`~/.config/lince-dashboard/config.toml`) configurations, preserving comments and formatting.
 
-## Install
+## Install / update / uninstall
 
 ```bash
-cd lince-config && ./install.sh
+cd lince-config && ./install.sh    # install to ~/.local/bin/lince-config
+./update.sh                        # refresh after pulling new changes
+./uninstall.sh                     # remove from ~/.local/bin
 ```
 
-Requires Python 3.11+ and `tomlkit` (auto-installed by `install.sh`).
+Requires Python 3.11+ and `tomlkit` (auto-installed by `install.sh` and `update.sh`).
 
 ## Commands
 

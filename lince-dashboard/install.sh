@@ -99,7 +99,7 @@ setup_clipboard_backend() {
 }
 
 # ── Step 1: Prerequisites ─────────────────────────────────────────────
-echo -e "${GREEN}[1/12] Checking prerequisites...${NC}"
+echo -e "${GREEN}[1/14] Checking prerequisites...${NC}"
 
 MISSING=()
 
@@ -133,7 +133,7 @@ fi
 echo ""
 
 # ── Step 2: WASM target ───────────────────────────────────────────────
-echo -e "${GREEN}[2/12] Checking wasm32-wasip1 target...${NC}"
+echo -e "${GREEN}[2/14] Checking wasm32-wasip1 target...${NC}"
 
 # Ensure rustup toolchain takes precedence
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -150,7 +150,7 @@ fi
 echo ""
 
 # ── Step 3: Build plugin ──────────────────────────────────────────────
-echo -e "${GREEN}[3/12] Building plugin...${NC}"
+echo -e "${GREEN}[3/14] Building plugin...${NC}"
 
 if ! "$SCRIPT_DIR/plugin/build.sh"; then
     echo -e "${RED}Build failed. Check errors above.${NC}"
@@ -159,7 +159,7 @@ fi
 echo ""
 
 # ── Step 4: Install WASM plugin ───────────────────────────────────────
-echo -e "${GREEN}[4/12] Installing plugin...${NC}"
+echo -e "${GREEN}[4/14] Installing plugin...${NC}"
 
 PLUGIN_DIR="$HOME/.config/zellij/plugins"
 mkdir -p "$PLUGIN_DIR"
@@ -213,7 +213,7 @@ fi
 echo ""
 
 # ── Step 5: Install layouts ───────────────────────────────────────────
-echo -e "${GREEN}[5/12] Installing layouts...${NC}"
+echo -e "${GREEN}[5/14] Installing layouts...${NC}"
 
 LAYOUT_DIR="$HOME/.config/zellij/layouts"
 mkdir -p "$LAYOUT_DIR"
@@ -229,7 +229,7 @@ done
 echo ""
 
 # ── Step 6: Zellij keybinding configuration ──────────────────────────
-echo -e "${GREEN}[6/12] Zellij keybinding configuration...${NC}"
+echo -e "${GREEN}[6/14] Zellij keybinding configuration...${NC}"
 
 ZELLIJ_CONFIG="$HOME/.config/zellij/config.kdl"
 LINCE_ZELLIJ_CONFIG="$SCRIPT_DIR/zellij-config/config.kdl"
@@ -270,7 +270,7 @@ fi
 echo ""
 
 # ── Step 7: Install config ────────────────────────────────────────────
-echo -e "${GREEN}[7/12] Installing configuration...${NC}"
+echo -e "${GREEN}[7/14] Installing configuration...${NC}"
 
 CONFIG_DIR="$HOME/.config/lince-dashboard"
 CONFIG_DST="$CONFIG_DIR/config.toml"
@@ -287,7 +287,7 @@ echo -e "${GREEN}  ✓ Installed: $CONFIG_DST${NC}"
 echo ""
 
 # ── Step 8: Install hooks ─────────────────────────────────────────────
-echo -e "${GREEN}[8/12] Installing agent platform hooks...${NC}"
+echo -e "${GREEN}[8/14] Installing agent platform hooks...${NC}"
 
 if [ -f "$SCRIPT_DIR/hooks/install-hooks.sh" ]; then
     bash "$SCRIPT_DIR/hooks/install-hooks.sh"
@@ -297,7 +297,7 @@ fi
 echo ""
 
 # ── Step 9: Install agents-defaults.toml + agents-template.toml ──────
-echo -e "${GREEN}[9/12] Installing agent defaults and templates...${NC}"
+echo -e "${GREEN}[9/14] Installing agent defaults and templates...${NC}"
 
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
@@ -343,7 +343,7 @@ fi
 echo ""
 
 # ── Step 10: Install nono profiles ────────────────────────────────────
-echo -e "${GREEN}[10/13] Installing nono sandbox profiles...${NC}"
+echo -e "${GREEN}[10/14] Installing nono sandbox profiles...${NC}"
 
 NONO_PROFILES_SRC="$SCRIPT_DIR/nono-profiles"
 NONO_PROFILES_DST="$HOME/.config/nono/profiles"
@@ -363,7 +363,7 @@ fi
 echo ""
 
 # ── Step 11: Install lince-setup skill ────────────────────────────────
-echo -e "${GREEN}[11/13] Installing lince-setup skill...${NC}"
+echo -e "${GREEN}[11/14] Installing lince-setup skill...${NC}"
 
 SKILL_SRC="$SCRIPT_DIR/skills/lince-setup"
 SKILL_DST="$HOME/.claude/skills/lince-setup"
@@ -377,8 +377,24 @@ else
 fi
 echo ""
 
-# ── Step 12: Shell aliases ────────────────────────────────────────────
-echo -e "${GREEN}[12/13] Setting up shell aliases...${NC}"
+# ── Step 12: Install lince-configure skill ────────────────────────────
+echo -e "${GREEN}[12/14] Installing lince-configure skill...${NC}"
+
+CONFIGURE_SKILL_SRC="$SCRIPT_DIR/skills/lince-configure"
+CONFIGURE_SKILL_DST="$HOME/.claude/skills/lince-configure"
+
+if [ -d "$CONFIGURE_SKILL_SRC" ]; then
+    mkdir -p "$CONFIGURE_SKILL_DST"
+    cp -r "$CONFIGURE_SKILL_SRC/." "$CONFIGURE_SKILL_DST/"
+    echo -e "${GREEN}  ✓ Installed: $CONFIGURE_SKILL_DST${NC}"
+    echo -e "  ${BLUE}  Requires lince-config CLI (installed by quickstart.sh).${NC}"
+else
+    echo -e "${YELLOW}  ⚠ skills/lince-configure/ not found — skipping${NC}"
+fi
+echo ""
+
+# ── Step 13: Shell aliases ────────────────────────────────────────────
+echo -e "${GREEN}[13/14] Setting up shell aliases...${NC}"
 
 ALIAS_LINES='alias zd="zellij --layout dashboard"
 alias z="zellij"
@@ -399,8 +415,8 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 echo ""
 
-# ── Step 13: VoxCode layout selection ─────────────────────────────────
-echo -e "${GREEN}[13/13] VoxCode layout configuration...${NC}"
+# ── Step 14: VoxCode layout selection ─────────────────────────────────
+echo -e "${GREEN}[14/14] VoxCode layout configuration...${NC}"
 
 if command -v voxcode >/dev/null 2>&1; then
     echo -e "${GREEN}  ✓ voxcode detected${NC}"
@@ -468,7 +484,8 @@ if [ -n "$SELECTED_LEVELS" ]; then
     echo "  Levels:   $SELECTED_LEVELS (added to ~/.config/lince-dashboard/config.toml)"
 fi
 echo "  Nono:     ~/.config/nono/profiles/lince-*.json"
-echo "  Skill:    ~/.claude/skills/lince-setup/"
+echo "  Skills:   ~/.claude/skills/lince-setup/"
+echo "            ~/.claude/skills/lince-configure/"
 echo ""
 echo -e "${GREEN}Sandbox backend:${NC}"
 if [ "$OS_NAME" = "Darwin" ]; then
