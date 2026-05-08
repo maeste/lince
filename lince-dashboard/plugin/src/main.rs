@@ -66,7 +66,7 @@ impl Default for State {
             agents: Vec::new(),
             selected_index: 0,
             focused_agent: None,
-            show_detail: true,
+            show_detail: false,
             show_help: false,
             status_message: None,
             next_agent_id: 0,
