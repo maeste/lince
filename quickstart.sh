@@ -64,6 +64,19 @@ LEVELS=(
 )
 LEVEL_SELECTED=(1 0 0)
 
+# Shell agents (gh#91): key|display|description. Pre-selection is computed
+# at runtime from $SHELL by select_shells() so it tracks the host's actual
+# default shell instead of hard-coding bash.
+SHELLS=(
+    "bash|Bash|GNU bash — Linux default shell"
+    "zsh|Zsh|Z shell — macOS default shell"
+    "fish|Fish|Friendly interactive shell — auto-suggestions, syntax highlighting"
+)
+SHELL_SELECTED=(0 0 0)
+SELECTED_SHELLS=()         # ordered subset of {bash,zsh,fish}
+DEFAULT_SHELL=""           # one of SELECTED_SHELLS, used by the tiled placeholder
+DEFAULT_SHELL_BIN=""       # absolute path resolved via `command -v`
+
 # ── Helpers ──────────────────────────────────────────────────────────
 confirm() {
     local prompt="$1"
@@ -394,11 +407,198 @@ select_agents() {
     fi
 }
 
+# ── TUI: Shell selection (multi-select) + default shell ─────────────
+#
+# Configures the gh#91 shell agents. Picks (a) which shells become dashboard
+# agents and (b) which one runs in the tiled layout's right-hand placeholder
+# pane (the ASCII-art viewport B). Pre-selection follows `$SHELL`: a user
+# whose login shell is zsh sees zsh pre-checked, etc.
+select_shells() {
+    echo ""
+    print_separator
+    echo -e "${BOLD}Step 4: Select shell agents${NC}"
+    echo ""
+    echo -e "  ${DIM}Shell agents open a raw shell pane in the project dir —${NC}"
+    echo -e "  ${DIM}useful for quick command execution alongside coding agents.${NC}"
+    echo -e "  ${DIM}Skip this step (Enter with nothing selected) if you don't want any.${NC}"
+    echo ""
+
+    # Auto-detect host shell and pre-check the matching entry. basename($SHELL)
+    # so "/usr/bin/zsh" → "zsh". Falls back to bash if $SHELL is unset/unknown.
+    local host_shell
+    host_shell=$(basename "${SHELL:-/bin/bash}" 2>/dev/null)
+    for i in "${!SHELLS[@]}"; do
+        IFS='|' read -r key _ _ <<< "${SHELLS[$i]}"
+        if [ "$key" = "$host_shell" ]; then
+            SHELL_SELECTED[$i]=1
+        fi
+    done
+    # If $SHELL didn't match any of our entries (e.g. dash, ksh), fall back
+    # to bash — universally available, safe default.
+    local any_preselected=0
+    for v in "${SHELL_SELECTED[@]}"; do
+        [ "$v" = "1" ] && any_preselected=1
+    done
+    if [ "$any_preselected" = "0" ]; then
+        SHELL_SELECTED[0]=1   # bash
+    fi
+
+    echo -e "  ${DIM}Toggle with number keys, press Enter when done:${NC}"
+    echo ""
+
+    while true; do
+        for i in "${!SHELLS[@]}"; do
+            IFS='|' read -r key name desc <<< "${SHELLS[$i]}"
+            local marker=""
+            if command -v "$key" >/dev/null 2>&1; then
+                marker="${GREEN}(installed)${NC}"
+            else
+                marker="${YELLOW}(not in PATH)${NC}"
+            fi
+            if [ "${SHELL_SELECTED[$i]}" = "1" ]; then
+                echo -e "  ${GREEN}[x]${NC} ${BOLD}$((i+1))) $name${NC} ${DIM}— $desc${NC} $marker"
+            else
+                echo -e "  ${DIM}[ ] $((i+1))) $name — $desc${NC} $marker"
+            fi
+        done
+        echo ""
+        echo -e "  ${DIM}Press 1-${#SHELLS[@]} to toggle, Enter to confirm, 'a' for all, 'n' for none${NC}"
+        read -p "  > " -n 1 -r
+        echo ""
+
+        case "$REPLY" in
+            [1-9])
+                local idx=$((REPLY - 1))
+                if [ $idx -lt ${#SHELLS[@]} ]; then
+                    if [ "${SHELL_SELECTED[$idx]}" = "1" ]; then
+                        SHELL_SELECTED[$idx]=0
+                    else
+                        SHELL_SELECTED[$idx]=1
+                    fi
+                fi
+                ;;
+            a|A)
+                for i in "${!SHELLS[@]}"; do SHELL_SELECTED[$i]=1; done
+                ;;
+            n|N)
+                for i in "${!SHELLS[@]}"; do SHELL_SELECTED[$i]=0; done
+                ;;
+            "")
+                break
+                ;;
+        esac
+
+        redraw_up $(( ${#SHELLS[@]} + 3 ))
+    done
+
+    SELECTED_SHELLS=()
+    for i in "${!SHELLS[@]}"; do
+        if [ "${SHELL_SELECTED[$i]}" = "1" ]; then
+            IFS='|' read -r key _ _ <<< "${SHELLS[$i]}"
+            SELECTED_SHELLS+=("$key")
+        fi
+    done
+
+    if [ ${#SELECTED_SHELLS[@]} -eq 0 ]; then
+        echo -e "  ${DIM}No shell agents selected — placeholder will use \$SHELL.${NC}"
+        return
+    fi
+
+    echo -e "  ${GREEN}✓${NC} Shells: ${BOLD}${SELECTED_SHELLS[*]}${NC}"
+
+    # Warn for shells that aren't installed on this host. Don't block — pre-staging
+    # configs is a legitimate use case.
+    for sh in "${SELECTED_SHELLS[@]}"; do
+        if ! command -v "$sh" >/dev/null 2>&1; then
+            echo -e "  ${YELLOW}⚠${NC} ${BOLD}$sh${NC} ${YELLOW}is not in PATH${NC} — install it on this host before spawning the agent."
+        fi
+    done
+
+    # Append to SELECTED_AGENTS so generate_agent_defaults / generate_sandbox_defaults
+    # emit their TOML blocks. De-dup in case the user runs interactively twice.
+    for sh in "${SELECTED_SHELLS[@]}"; do
+        local already=0
+        for a in "${SELECTED_AGENTS[@]}"; do
+            [ "$a" = "$sh" ] && already=1 && break
+        done
+        [ $already -eq 0 ] && SELECTED_AGENTS+=("$sh")
+    done
+}
+
+# Single-select default shell. Only invoked when ≥1 shell was chosen above.
+# The chosen shell's absolute path is written into $DEFAULT_SHELL_BIN and used
+# by do_install_dashboard to rewrite lince-viewport-placeholder's exec line.
+select_default_shell() {
+    if [ ${#SELECTED_SHELLS[@]} -eq 0 ]; then
+        return
+    fi
+
+    echo ""
+    print_separator
+    echo -e "${BOLD}Step 4b: Default shell for the dashboard placeholder${NC}"
+    echo ""
+    echo -e "  ${DIM}The right-hand pane in the tiled layout (the ASCII-art one)${NC}"
+    echo -e "  ${DIM}drops into a shell after the banner. Pick which one:${NC}"
+    echo ""
+
+    # Pre-select the host shell if it's in the chosen set, otherwise the first.
+    local host_shell
+    host_shell=$(basename "${SHELL:-/bin/bash}" 2>/dev/null)
+    local default_idx=0
+    for i in "${!SELECTED_SHELLS[@]}"; do
+        if [ "${SELECTED_SHELLS[$i]}" = "$host_shell" ]; then
+            default_idx=$i
+            break
+        fi
+    done
+
+    local idx=$default_idx
+    while true; do
+        for i in "${!SELECTED_SHELLS[@]}"; do
+            local sh="${SELECTED_SHELLS[$i]}"
+            if [ "$i" = "$idx" ]; then
+                echo -e "  ${GREEN}(•)${NC} ${BOLD}$((i+1))) $sh${NC}"
+            else
+                echo -e "  ${DIM}( ) $((i+1))) $sh${NC}"
+            fi
+        done
+        echo ""
+        echo -e "  ${DIM}Press 1-${#SELECTED_SHELLS[@]} to pick, Enter to confirm${NC}"
+        read -p "  > " -n 1 -r
+        echo ""
+
+        case "$REPLY" in
+            [1-9])
+                local pick=$((REPLY - 1))
+                if [ $pick -lt ${#SELECTED_SHELLS[@]} ]; then
+                    idx=$pick
+                fi
+                ;;
+            "")
+                break
+                ;;
+        esac
+
+        redraw_up $(( ${#SELECTED_SHELLS[@]} + 3 ))
+    done
+
+    DEFAULT_SHELL="${SELECTED_SHELLS[$idx]}"
+    # Resolve absolute path. If `command -v` fails (shell not installed),
+    # leave DEFAULT_SHELL_BIN empty — do_install_dashboard skips the rewrite
+    # so the placeholder keeps its current `exec "${SHELL:-/bin/bash}"` line.
+    DEFAULT_SHELL_BIN=$(command -v "$DEFAULT_SHELL" 2>/dev/null || true)
+    if [ -n "$DEFAULT_SHELL_BIN" ]; then
+        echo -e "  ${GREEN}✓${NC} Default shell: ${BOLD}$DEFAULT_SHELL${NC} ${DIM}($DEFAULT_SHELL_BIN)${NC}"
+    else
+        echo -e "  ${YELLOW}⚠${NC} ${BOLD}$DEFAULT_SHELL${NC} ${YELLOW}not in PATH — placeholder will fall back to \$SHELL${NC}"
+    fi
+}
+
 # ── TUI: VoxCode (voice input) ───────────────────────────────────────
 select_voxcode() {
     echo ""
     print_separator
-    echo -e "${BOLD}Step 4: Voice input (VoxCode)${NC}"
+    echo -e "${BOLD}Step 5: Voice input (VoxCode)${NC}"
     echo ""
     echo -e "  VoxCode lets you speak to your agents — transcriptions are"
     echo -e "  routed to the focused agent via the dashboard."
@@ -496,6 +696,18 @@ confirm_installation() {
         fi
     done
 
+    if [ ${#SELECTED_SHELLS[@]} -gt 0 ]; then
+        echo ""
+        echo -e "  Shells:"
+        for sh in "${SELECTED_SHELLS[@]}"; do
+            local marker=""
+            if [ "$sh" = "$DEFAULT_SHELL" ]; then
+                marker=" ${DIM}(default for tiled placeholder)${NC}"
+            fi
+            echo -e "    ${GREEN}✓${NC} $sh$marker"
+        done
+    fi
+
     echo ""
     if ! confirm "  Proceed with installation?"; then
         echo "  Cancelled."
@@ -551,25 +763,47 @@ generate_agent_defaults() {
     done
 }
 
-# Extract a TOML block from [agents.X] to the next [agents.Y] or EOF
+# Extract a TOML block from [agents.X] to the next TOML section or EOF.
+#
+# Captures the matched [agents.X] header plus any of its sub-tables
+# (e.g. [agents.X.env_vars]). Trailing blank lines and standalone `#`
+# comments after the section's last in-section line are buffered and
+# dropped on the next section boundary — without that, a freestanding
+# comment block before the *next* [agents.Y] would leak into this
+# extraction (see gh#91 regression).
 extract_agent_block() {
     local file="$1"
     local section="$2"
 
-    # Use awk to extract from [section] to next [agents.*] or EOF.
-    # Also captures sub-tables like [agents.codex.env_vars].
-    # We match the exact section header and any sub-table whose name
-    # starts with "section." (e.g. agents.codex.env_vars for agents.codex).
     awk -v sec="[$section]" -v secpfx="[$section." '
-        BEGIN { printing=0 }
-        /^\[agents\./ {
+        BEGIN { printing=0; buf="" }
+        # Any TOML section header is a potential boundary — not just [agents.*],
+        # so future top-level sections (e.g. [providers]) cant slip through.
+        /^\[/ {
             if ($0 == sec || (printing && index($0, secpfx) == 1)) {
+                # Flush buffered blanks/comments (they belong inside the section
+                # since real content followed them).
+                if (buf != "") { printf "%s", buf; buf="" }
                 printing=1
             } else if (printing) {
+                # Crossed into a different section. Discard the trailing buffer
+                # — those blanks/comments belong to whatever comes next.
                 printing=0
+                buf=""
             }
         }
-        printing { print }
+        printing {
+            if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                # Buffer; emit only if more in-section content follows.
+                buf = buf $0 "\n"
+            } else {
+                if (buf != "") { printf "%s", buf; buf="" }
+                print
+            }
+        }
+        # Intentionally no END flush: a section that runs to EOF with only
+        # trailing blanks/comments still drops them, which is what we want
+        # for clean output.
     ' "$file"
 }
 
@@ -611,6 +845,35 @@ do_install_voxcode() {
     fi
 }
 
+# Filter sandbox/agents-defaults.toml the same way we filter the dashboard's,
+# so `agent-sandbox run --agent <x>` only resolves the agents the user picked.
+# Sandbox schema is one block per agent (no `-unsandboxed` siblings) so this is
+# simpler than generate_agent_defaults — we just emit each [agents.<name>]
+# block. install.sh writes the file to two locations; we overwrite both.
+generate_sandbox_defaults() {
+    local src="$SCRIPT_DIR/sandbox/agents-defaults.toml"
+    local dst="$1"
+
+    if [ ! -f "$src" ]; then
+        return
+    fi
+
+    # Preserve the file header (top comment block) so the schema docs survive.
+    # The header runs from line 1 until the first [agents.*] line.
+    local header_end
+    header_end=$(grep -n '^\[agents\.' "$src" | head -1 | cut -d: -f1)
+    if [ -z "$header_end" ]; then
+        # No agent blocks in source — nothing to filter, leave file alone.
+        return
+    fi
+    head -n $((header_end - 1)) "$src" > "$dst"
+
+    for agent in "${SELECTED_AGENTS[@]}"; do
+        echo "" >> "$dst"
+        extract_agent_block "$src" "agents.${agent}" >> "$dst"
+    done
+}
+
 # ── Install sandbox ─────────────────────────────────────────────────
 do_install_sandbox() {
     # Only install agent-sandbox if bwrap backend is selected
@@ -629,6 +892,22 @@ do_install_sandbox() {
     else
         echo -e "${RED}✗ agent-sandbox installation failed${NC}"
         if ! confirm "Continue anyway?"; then exit 1; fi
+    fi
+
+    # Overwrite both copies install.sh wrote with a SELECTED_AGENTS-filtered
+    # version. Without this, the sandbox would happily resolve agents the
+    # user explicitly opted out of (e.g. zsh on a bash-only Linux setup).
+    if [ ${#SELECTED_AGENTS[@]} -gt 0 ]; then
+        local sandbox_targets=(
+            "$HOME/.agent-sandbox/agents-defaults.toml"
+            "$HOME/.local/bin/agents-defaults.toml"
+        )
+        for target in "${sandbox_targets[@]}"; do
+            if [ -f "$target" ]; then
+                generate_sandbox_defaults "$target"
+            fi
+        done
+        echo -e "  ${GREEN}✓ Sandbox agents filtered: ${SELECTED_AGENTS[*]}${NC}"
     fi
 }
 
@@ -674,6 +953,24 @@ do_install_dashboard() {
         generate_agent_defaults "$defaults_dst"
         echo -e "${GREEN}✓ Agent defaults written: $defaults_dst${NC}"
         echo -e "  ${DIM}Configured: ${SELECTED_AGENTS[*]}${NC}"
+    fi
+
+    # Hardcode the chosen default shell into lince-viewport-placeholder.
+    # The source ships with `exec "${SHELL:-/bin/bash}"` as a sentinel; we
+    # rewrite that line to `exec "<absolute-path>"` so the tiled layout's
+    # right-hand pane drops into the user-chosen shell instead of guessing
+    # from $SHELL (which may differ between the install host and the user's
+    # interactive sessions, e.g. when login=bash but interactive=zsh).
+    if [ -n "$DEFAULT_SHELL_BIN" ]; then
+        local placeholder="$HOME/.local/bin/lince-viewport-placeholder"
+        if [ -f "$placeholder" ]; then
+            # Match `exec "..."` lines — covers both the original
+            # `exec "${SHELL:-/bin/bash}"` and any prior rewrite of ours,
+            # so re-running quickstart with a different choice is idempotent.
+            sed -i.bak -E "s|^exec \".*\"\$|exec \"$DEFAULT_SHELL_BIN\"|" "$placeholder"
+            rm -f "${placeholder}.bak"
+            echo -e "${GREEN}✓ Tiled placeholder shell: ${BOLD}$DEFAULT_SHELL${NC} ${DIM}($DEFAULT_SHELL_BIN)${NC}"
+        fi
     fi
 }
 
@@ -924,12 +1221,23 @@ if [ "$USE_DEFAULTS" = true ]; then
         IFS='|' read -r key _ _ <<< "${AGENTS[$i]}"
         SELECTED_AGENTS+=("$key")
     done
+    # Ship the host's default shell as the only shell agent; everything else stays opt-in.
+    DEFAULT_SHELL=$(basename "${SHELL:-/bin/bash}" 2>/dev/null)
+    case "$DEFAULT_SHELL" in
+        bash|zsh|fish) ;;
+        *) DEFAULT_SHELL=bash ;;
+    esac
+    SELECTED_SHELLS=("$DEFAULT_SHELL")
+    SELECTED_AGENTS+=("$DEFAULT_SHELL")
+    DEFAULT_SHELL_BIN=$(command -v "$DEFAULT_SHELL" 2>/dev/null || true)
     SELECTED_LEVELS=""  # normal-only by default
-    echo -e "  ${DIM}Using defaults: all agents, bwrap sandbox, normal level only${NC}"
+    echo -e "  ${DIM}Using defaults: all agents, $DEFAULT_SHELL shell, bwrap sandbox, normal level only${NC}"
 else
     select_backends
     select_sandbox_levels
     select_agents
+    select_shells
+    select_default_shell
     if [ "$(uname -s)" != "Darwin" ]; then
         select_voxcode
     fi

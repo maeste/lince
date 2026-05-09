@@ -212,6 +212,7 @@ fn synthesize_sandboxed_command(
         // branch ignores it entirely.
         "bash" => (vec!["bash".to_string()], ""),
         "zsh" => (vec!["zsh".to_string()], ""),
+        "fish" => (vec!["fish".to_string()], ""),
         _ => return None,
     };
 

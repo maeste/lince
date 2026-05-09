@@ -293,24 +293,8 @@ AWS_SESSION_TOKEN = "$AWS_SESSION_TOKEN"
 AWS_BEARER_TOKEN_BEDROCK = "$AWS_BEARER_TOKEN_BEDROCK"
 AWS_ENDPOINT_URL_BEDROCK_RUNTIME = "$AWS_ENDPOINT_URL_BEDROCK_RUNTIME"
 
-# ── Bash / Zsh ──────────────────────────────────────────────────────
-#
-# Raw shell sessions inside the sandbox. Useful for quick command execution
-# or file inspection in the project directory without firing up a full coding
-# agent (gh#91).
-#
-# Constraints (intentional):
-#   * sandbox_level supports only "normal" — paranoid/permissive levels and
-#     custom levels are not offered for shells. `sandbox_levels = ["normal"]`
-#     restricts the wizard's SandboxLevel step (which is then auto-skipped
-#     since it has only one option).
-#   * No providers (env-var bundles): a shell doesn't talk to AI APIs.
-#   * Backend selection: any installed backend works, plus the unsandboxed
-#     entry below for "no isolation" sessions.
-#
-# Linux installs ship bash; macOS installs typically use zsh. Both entries are
-# always available — pick the one that matches your default shell.
-
+# Raw shell agents (gh#91). Pinned to sandbox_level=normal, no providers.
+# See docs/documentation/dashboard/agent-examples.md §"Shell Agents".
 [agents.bash]
 command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "bash"]
 pane_title_pattern = "agent-sandbox"
@@ -354,6 +338,30 @@ pane_title_pattern = "zsh"
 status_pipe_name = "lince-status"
 display_name = "Zsh Shell (unsandboxed)"
 short_label = "ZSU"
+color = "red"
+sandboxed = false
+has_native_hooks = false
+providers = []
+
+[agents.fish]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "fish"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "lince-status"
+display_name = "Fish Shell"
+short_label = "FSH"
+color = "blue"
+sandboxed = true
+has_native_hooks = false
+providers = []
+sandbox_level = "normal"
+sandbox_levels = ["normal"]
+
+[agents.fish-unsandboxed]
+command = ["fish"]
+pane_title_pattern = "fish"
+status_pipe_name = "lince-status"
+display_name = "Fish Shell (unsandboxed)"
+short_label = "FSU"
 color = "red"
 sandboxed = false
 has_native_hooks = false

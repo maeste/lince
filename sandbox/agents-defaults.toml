@@ -153,3 +153,12 @@ home_ro_dirs = []
 home_rw_dirs = []
 bwrap_conflict = false
 disable_inner_sandbox_args = []
+
+[agents.fish]
+command = "fish"
+default_args = []
+env = {}
+home_ro_dirs = []
+home_rw_dirs = []
+bwrap_conflict = false
+disable_inner_sandbox_args = []
