@@ -292,3 +292,77 @@ AWS_SECRET_ACCESS_KEY = "$AWS_SECRET_ACCESS_KEY"
 AWS_SESSION_TOKEN = "$AWS_SESSION_TOKEN"
 AWS_BEARER_TOKEN_BEDROCK = "$AWS_BEARER_TOKEN_BEDROCK"
 AWS_ENDPOINT_URL_BEDROCK_RUNTIME = "$AWS_ENDPOINT_URL_BEDROCK_RUNTIME"
+
+# Raw shell agents (gh#91). Pinned to sandbox_level=normal, no providers.
+# See docs/documentation/dashboard/agent-examples.md §"Shell Agents".
+[agents.bash]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "bash"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "lince-status"
+display_name = "Bash Shell"
+short_label = "BSH"
+color = "blue"
+sandboxed = true
+has_native_hooks = false
+providers = []
+sandbox_level = "normal"
+sandbox_levels = ["normal"]
+
+[agents.bash-unsandboxed]
+command = ["bash"]
+pane_title_pattern = "bash"
+status_pipe_name = "lince-status"
+display_name = "Bash Shell (unsandboxed)"
+short_label = "BSU"
+color = "red"
+sandboxed = false
+has_native_hooks = false
+providers = []
+
+[agents.zsh]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "zsh"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "lince-status"
+display_name = "Zsh Shell"
+short_label = "ZSH"
+color = "blue"
+sandboxed = true
+has_native_hooks = false
+providers = []
+sandbox_level = "normal"
+sandbox_levels = ["normal"]
+
+[agents.zsh-unsandboxed]
+command = ["zsh"]
+pane_title_pattern = "zsh"
+status_pipe_name = "lince-status"
+display_name = "Zsh Shell (unsandboxed)"
+short_label = "ZSU"
+color = "red"
+sandboxed = false
+has_native_hooks = false
+providers = []
+
+[agents.fish]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "fish"]
+pane_title_pattern = "agent-sandbox"
+status_pipe_name = "lince-status"
+display_name = "Fish Shell"
+short_label = "FSH"
+color = "blue"
+sandboxed = true
+has_native_hooks = false
+providers = []
+sandbox_level = "normal"
+sandbox_levels = ["normal"]
+
+[agents.fish-unsandboxed]
+command = ["fish"]
+pane_title_pattern = "fish"
+status_pipe_name = "lince-status"
+display_name = "Fish Shell (unsandboxed)"
+short_label = "FSU"
+color = "red"
+sandboxed = false
+has_native_hooks = false
+providers = []

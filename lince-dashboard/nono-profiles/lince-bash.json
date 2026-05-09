@@ -1,0 +1,43 @@
+{
+  "extends": "default",
+  "meta": {
+    "name": "lince-bash",
+    "description": "LINCE sandbox profile for raw bash sessions (gh#91). Workdir-scoped read/write, broad command passthrough so the shell is actually useful, and a developer network profile that lets git/curl/ssh/etc. reach common dev domains."
+  },
+  "filesystem": {
+    "allow": [
+      "$WORKDIR"
+    ],
+    "read": [
+      "$HOME/.local/lib",
+      "$HOME/.bashrc",
+      "$HOME/.bash_profile",
+      "$HOME/.profile",
+      "$HOME/.inputrc",
+      "$HOME/.config/gh",
+      "$HOME/.cache",
+      "$HOME/.ssh/known_hosts"
+    ]
+  },
+  "environment": {
+    "passthrough": [
+      "TERM",
+      "COLORTERM",
+      "TERM_PROGRAM",
+      "LANG",
+      "LC_ALL",
+      "EDITOR",
+      "VISUAL",
+      "PAGER",
+      "ZELLIJ",
+      "ZELLIJ_SESSION_NAME",
+      "LINCE_AGENT_ID"
+    ]
+  },
+  "network": {
+    "network_profile": "developer"
+  },
+  "security": {
+    "signal_mode": "allow_same_sandbox"
+  }
+}

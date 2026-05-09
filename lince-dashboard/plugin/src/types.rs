@@ -204,9 +204,12 @@ impl WizardState {
         self.available_sandbox_backends.get(self.sandbox_backend_index).cloned()
     }
 
-    /// Whether there are sandbox levels to choose from.
+    /// Whether there are sandbox levels to choose from in the wizard.
+    /// A single-option list is treated as "no choice" so the step is skipped —
+    /// the lone level still applies, just without a useless one-row picker
+    /// (see gh#91 shells, which pin `sandbox_levels = ["normal"]`).
     pub fn has_sandbox_levels(&self) -> bool {
-        !self.available_sandbox_levels.is_empty()
+        self.available_sandbox_levels.len() > 1
     }
 
     /// Return the currently selected sandbox level, or None if no levels available.

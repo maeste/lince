@@ -132,8 +132,30 @@ AWS_SESSION_TOKEN = "$AWS_SESSION_TOKEN"
 AWS_BEARER_TOKEN_BEDROCK = "$AWS_BEARER_TOKEN_BEDROCK"
 AWS_ENDPOINT_URL_BEDROCK_RUNTIME = "$AWS_ENDPOINT_URL_BEDROCK_RUNTIME"
 
+# Raw shell sessions inside the sandbox (gh#91). Useful for quick command
+# execution or file inspection in the project dir without firing up a full
+# coding agent. The dashboard restricts shell agents to sandbox_level=normal —
+# paranoid/permissive aren't offered for shells.
 [agents.bash]
 command = "bash"
+default_args = []
+env = {}
+home_ro_dirs = []
+home_rw_dirs = []
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+
+[agents.zsh]
+command = "zsh"
+default_args = []
+env = {}
+home_ro_dirs = []
+home_rw_dirs = []
+bwrap_conflict = false
+disable_inner_sandbox_args = []
+
+[agents.fish]
+command = "fish"
 default_args = []
 env = {}
 home_ro_dirs = []

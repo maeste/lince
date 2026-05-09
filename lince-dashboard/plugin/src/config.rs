@@ -87,6 +87,13 @@ pub struct AgentTypeConfig {
     /// `(agent_type, sandbox_backend, sandbox_level)`.
     #[serde(default)]
     pub sandbox_level: Option<String>,
+    /// Restrict the wizard's SandboxLevel picker to a fixed set instead of the
+    /// shipped default trio (paranoid/normal/permissive). Empty = use defaults.
+    /// Set to `["normal"]` for agents that have only one meaningful level
+    /// (e.g. shells, gh#91); the SandboxLevel step is auto-skipped when only
+    /// one option remains so the user never sees a single-choice picker.
+    #[serde(default)]
+    pub sandbox_levels: Vec<String>,
 }
 
 /// Agent pane layout mode.
@@ -828,6 +835,13 @@ impl DashboardConfig {
         };
         if !cfg.sandboxed || cfg.sandbox_level.is_none() {
             return Vec::new();
+        }
+        // Per-agent override: a non-empty `sandbox_levels` replaces the shipped
+        // trio. Custom-level discovery is intentionally skipped here — agents
+        // that opt in (e.g. shells, gh#91) want a fixed set, not surprise
+        // additions from `~/.agent-sandbox/profiles/`.
+        if !cfg.sandbox_levels.is_empty() {
+            return cfg.sandbox_levels.clone();
         }
         let mut levels: Vec<String> = vec![
             "paranoid".to_string(),
