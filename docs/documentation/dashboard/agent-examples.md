@@ -14,8 +14,23 @@ The following agent types ship in `agents-defaults.toml` and are available in th
 | `gemini` | Google Gemini CLI | GEM | Yes | No | |
 | `opencode` | OpenCode | OPC | Yes | No | |
 | `pi` | Pi (multi-provider) | PI  | Yes | No | Provider env vars passed through (`OPENAI_API_KEY`, etc.). |
+| `bash` | Bash Shell | BSH | Yes | No | Raw shell session in the project dir (gh#91). Pinned to `sandbox_level = "normal"`. |
+| `bash-unsandboxed` | Bash Shell (unsandboxed) | BSU | No | No | Raw bash on the host, no isolation. |
+| `zsh` | Zsh Shell | ZSH | Yes | No | Zsh equivalent of `bash` — typical default on macOS. |
+| `zsh-unsandboxed` | Zsh Shell (unsandboxed) | ZSU | No | No | Raw zsh on the host, no isolation. |
 
 Each sandboxed agent ships at `sandbox_level = "normal"` by default. `paranoid` and `permissive` variants are available as commented blocks in `agents-defaults.toml` — uncomment to add them as separate entries to the N-picker. See [Sandbox Levels](dashboard/sandbox-levels.md) for what each level enforces.
+
+### Shell Agents (bash / zsh)
+
+The `bash` and `zsh` agents open a raw shell pane in the project directory (gh#91). They behave like the AI coding agents in every other respect — backend selection (bwrap / nono / unsandboxed), pane lifecycle, focus/hide, dashboard color cues — except for two intentional restrictions:
+
+- **Sandbox level: only `normal`.** Shell agents declare `sandbox_levels = ["normal"]`, so the wizard's *Sandbox Level* step is auto-skipped (a one-row picker would be useless). `paranoid` and `permissive` aren't offered: a paranoid shell with no agent state dir is pointless, and a permissive one is no different from `normal` for an interactive shell.
+- **No providers.** Shells don't talk to AI APIs, so the wizard's *Provider* step is also skipped.
+
+What you *do* still pick: backend (any installed: `bwrap`, `nono`, or unsandboxed), name, and project directory.
+
+Both `bash` and `zsh` ship on every install regardless of platform — pick whichever matches your default shell (typically `bash` on Linux, `zsh` on macOS).
 
 ## Backend and Level Selection
 

@@ -203,6 +203,15 @@ fn synthesize_sandboxed_command(
             ".config/opencode",
         ),
         "pi" => (vec!["pi".to_string()], ".pi"),
+        // Raw shells (gh#91). No agent state dir — the scratch HOME used by
+        // the paranoid wrapper would be empty, so we never enter the paranoid
+        // branch (shells are pinned to sandbox_level=normal in
+        // agents-defaults.toml). The empty subdir is benign for the other
+        // branches: the bwrap path is built directly from the sandbox config
+        // (it doesn't read agent_home_subdir), and the non-paranoid nono
+        // branch ignores it entirely.
+        "bash" => (vec!["bash".to_string()], ""),
+        "zsh" => (vec!["zsh".to_string()], ""),
         _ => return None,
     };
 
