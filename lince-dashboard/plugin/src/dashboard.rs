@@ -46,19 +46,66 @@ const CYAN: &str = "\x1b[36m";
 const KEY_COLOR: &str = "\x1b[1;36m"; // bold cyan for key hints
 const BLUE_BOLD: &str = "\x1b[1;34m"; // blue bold for swimlane headers
 
-/// Truncate a string to fit within `max_width`, appending "..." if truncated.
+/// Truncate a string to fit within `max_width` *visible* characters, appending
+/// "..." if truncated. ANSI CSI sequences (e.g. `\x1b[1;31m`) are copied verbatim
+/// and never count toward width — without this, a cut landing inside a CSI
+/// sequence leaves the terminal waiting for a final byte and silently consumes
+/// leading bytes from the *next* line of output (gh#95).
 fn truncate(s: &str, max_width: usize) -> String {
-    if max_width <= 3 {
-        return s.chars().take(max_width).collect();
+    let visible = strip_ansi_len(s);
+    if visible <= max_width {
+        return s.to_string();
     }
-    let char_count = s.chars().count();
-    if char_count <= max_width {
-        s.to_string()
+    if max_width == 0 {
+        return String::new();
+    }
+
+    // Two regimes:
+    //   * max_width >= 3 → emit (max_width - 3) visible chars + "..."
+    //   * max_width <  3 → emit max_width visible chars, no ellipsis (room is
+    //     too small for one). Matches the spirit of the previous behaviour.
+    let (budget, append_ellipsis) = if max_width >= 3 {
+        (max_width - 3, true)
     } else {
-        let mut truncated: String = s.chars().take(max_width - 3).collect();
-        truncated.push_str("...");
-        truncated
+        (max_width, false)
+    };
+
+    let mut out = String::with_capacity(s.len());
+    let mut visible_emitted: usize = 0;
+    let mut chars = s.chars();
+    let mut had_escape = false;
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Copy the entire CSI sequence verbatim — `\x1b[` followed by
+            // params/intermediates, terminated by an ASCII letter (the "final
+            // byte" 0x40-0x7E). Match strip_ansi_len's parser exactly so
+            // visible counting and verbatim copying stay in lockstep.
+            had_escape = true;
+            out.push(c);
+            for esc_c in chars.by_ref() {
+                out.push(esc_c);
+                if esc_c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        if visible_emitted >= budget {
+            break;
+        }
+        out.push(c);
+        visible_emitted += 1;
     }
+    if had_escape {
+        // Close any attribute the original string may have left dangling so
+        // the appended ellipsis (and any caller content downstream) renders
+        // cleanly. Cheap insurance — RESET is a 4-byte sequence.
+        out.push_str(RESET);
+    }
+    if append_ellipsis {
+        out.push_str("...");
+    }
+    out
 }
 
 /// Pad or truncate a string to exactly `width` characters, left-aligned.
@@ -424,53 +471,72 @@ fn render_agent_table(
                     format!(" {}??? {}", RESET, RESET)
                 };
 
-                // Build optional sandbox backend column string.
-                // Same override-vs-pin pattern as the level color: prefer the runtime
-                // wizard choice on AgentInfo, fall back to the agent type's TOML pin.
-                let sandbox_col = if show_sandbox {
+                // Build optional sandbox/provider column content. Plain text
+                // (no color attrs) is computed once and reused; the colored
+                // form for non-selected rows is built inline below. The
+                // selected branch deliberately renders these columns without
+                // their per-cell color so the row's REVERSE attribute isn't
+                // broken by an interior \x1b[0m (gh#95).
+                let sandbox_plain = if show_sandbox {
                     if let Some(cfg) = agent_types.get(&agent.agent_type) {
                         if !cfg.sandboxed {
-                            format!("\x1b[1;31m{}{} ", pad_left("NOSB", col_sandbox), RESET)
+                            pad_left("NOSB", col_sandbox)
                         } else {
                             let backend = agent.sandbox_backend.as_ref().unwrap_or(&cfg.sandbox_backend);
-                            format!("\x1b[2m{}{} ", pad_left(backend.display_name(), col_sandbox), RESET)
+                            pad_left(backend.display_name(), col_sandbox)
                         }
                     } else {
-                        format!("{} ", pad_left("-", col_sandbox))
+                        pad_left("-", col_sandbox)
                     }
                 } else {
                     String::new()
                 };
 
-                // Build optional provider column string (the env-var bundle —
-                // gh#81 renamed this from "Profile"). The sandbox isolation
-                // level is shown via the row color, not as a separate column.
-                let provider_col = if show_provider {
-                    let p = agent.provider.as_deref().unwrap_or("-");
-                    format!("{} ", pad_left(p, col_provider))
+                // Provider column has no color attributes today, so the plain
+                // and colored forms coincide.
+                let provider_plain = if show_provider {
+                    pad_left(agent.provider.as_deref().unwrap_or("-"), col_provider)
                 } else {
                     String::new()
                 };
 
                 if is_selected {
+                    // Trailing without color attrs — preserves the REVERSE that
+                    // wraps the whole row. The trailing space-separators match
+                    // the non-selected layout.
+                    let mut trailing = String::new();
+                    if show_sandbox {
+                        trailing.push(' ');
+                        trailing.push_str(&sandbox_plain);
+                    }
+                    if show_provider {
+                        trailing.push(' ');
+                        trailing.push_str(&provider_plain);
+                    }
+
                     let main_part = format!(
                         "{}{}{} {}",
                         prefix, pad_left(&idx_str, col_idx), type_col,
                         pad_left(&agent.name, col_name),
                     );
                     let status_str = pad_left(&status_label, col_status);
-                    let trailing = format!(" {}{}", sandbox_col, provider_col);
                     let main_visible = strip_ansi_len(&main_part);
                     let suffix_visible_len = strip_ansi_len(&subagent_suffix);
                     let trailing_visible = strip_ansi_len(&trailing);
                     let plain_len = main_visible + 1 + status_str.len() + suffix_visible_len + trailing_visible;
                     let fill = cols.saturating_sub(plain_len);
 
+                    // status_color is the only colour we keep inside REVERSE so
+                    // the user still sees the urgency cue (red/yellow text on
+                    // the inverted background). \x1b[39m clears the fg back to
+                    // default while leaving REVERSE on, so the tail of the row
+                    // doesn't render in status_color too.
                     print!(
-                        "{}{} {}{}{}{}{}{}{}",
+                        "{}{} {}{}{}{}\x1b[39;22m{}{}",
                         REVERSE, main_part,
                         status_color, if needs_attention { BOLD } else { "" },
-                        REVERSE, status_str, subagent_suffix, trailing, RESET,
+                        status_str, subagent_suffix,
+                        trailing, RESET,
                     );
                     if fill > 0 {
                         print!("{}{:>fill$}{}", REVERSE, "", RESET, fill = fill);
@@ -487,6 +553,28 @@ fn render_agent_table(
                         }
                     } else {
                         pad_left(&agent.name, col_name)
+                    };
+
+                    // Wrap the plain sandbox content with its color attribute
+                    // for non-selected rows. NOSB is bold-red, sandboxed
+                    // backends are dim, unknown/no-config is plain.
+                    let sandbox_col = if show_sandbox {
+                        if let Some(cfg) = agent_types.get(&agent.agent_type) {
+                            if !cfg.sandboxed {
+                                format!("\x1b[1;31m{}{} ", sandbox_plain, RESET)
+                            } else {
+                                format!("\x1b[2m{}{} ", sandbox_plain, RESET)
+                            }
+                        } else {
+                            format!("{} ", sandbox_plain)
+                        }
+                    } else {
+                        String::new()
+                    };
+                    let provider_col = if show_provider {
+                        format!("{} ", provider_plain)
+                    } else {
+                        String::new()
                     };
 
                     let line = format!(
@@ -977,3 +1065,61 @@ pub fn render_help_overlay(rows: usize, cols: usize) {
     render_centered_box(&lines, rows, cols, box_width);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Plain text fits — return as-is.
+    #[test]
+    fn truncate_plain_no_op() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    /// Plain text too long — visible-width truncation with ellipsis.
+    #[test]
+    fn truncate_plain_long() {
+        assert_eq!(truncate("hello world", 8), "hello...");
+        assert_eq!(strip_ansi_len(&truncate("hello world", 8)), 8);
+    }
+
+    /// Embedded CSI sequences must NOT count as visible chars and must NOT
+    /// be cut mid-sequence. Regression test for gh#95: a half-formed CSI
+    /// leaks into the next println, swallowing leading bytes of the next row.
+    #[test]
+    fn truncate_preserves_csi_and_visible_width() {
+        let red = "\x1b[1;31m";
+        let reset = "\x1b[0m";
+        let input = format!("{red}BSU!{reset} agent name");
+        // Visible: "BSU! agent name" = 15 chars. Pre-fix this would count the
+        // raw bytes (~26) and cut inside the CSI.
+        let out = truncate(&input, 10);
+        assert_eq!(strip_ansi_len(&out), 10, "visible width must be exactly 10");
+        // Original CSI must be present intact (no truncated escape).
+        assert!(out.contains(red), "leading CSI must survive verbatim");
+    }
+
+    /// When truncation actually happens, RESET is emitted after the copied
+    /// content so the ellipsis (and downstream output) can't render with
+    /// whatever attribute the input string left dangling.
+    #[test]
+    fn truncate_closes_dangling_attribute() {
+        let input = "\x1b[1;31mBSU! is a label longer than the budget".to_string();
+        let out = truncate(&input, 10);
+        assert!(out.contains("\x1b[0m"), "must emit RESET before ellipsis");
+    }
+
+    /// Width below 3 uses no ellipsis (matches old behaviour for tiny widths).
+    #[test]
+    fn truncate_tiny_width_no_ellipsis() {
+        assert_eq!(strip_ansi_len(&truncate("hello", 2)), 2);
+        assert!(!truncate("hello", 2).contains("..."));
+    }
+
+    /// strip_ansi_len's parser definition — the truncate copy loop relies on
+    /// this matching exactly (escape-final-byte = ASCII alphabetic), so make
+    /// the contract explicit.
+    #[test]
+    fn strip_ansi_len_matches_truncate_loop_contract() {
+        assert_eq!(strip_ansi_len("\x1b[1;31mhi\x1b[0m"), 2);
+    }
+}
