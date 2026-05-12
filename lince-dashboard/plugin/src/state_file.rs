@@ -1,8 +1,8 @@
 use crate::config::{run_typed_command, shell_escape};
-use crate::types::{SavedAgentInfo, SavedState};
+use crate::types::{SavedAgentInfo, SavedState, SessionDefaults};
 
 const STATE_FILE_NAME: &str = ".lince-dashboard";
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 
 pub const CMD_SAVE_STATE: &str = "save_state";
 pub const CMD_LOAD_STATE: &str = "load_state";
@@ -21,6 +21,7 @@ pub fn save_state_async(
     launch_dir: &str,
     agents: Vec<SavedAgentInfo>,
     next_agent_id: u32,
+    session_defaults: Option<SessionDefaults>,
 ) -> Result<(), String> {
     let path = state_file_path(launch_dir);
 
@@ -28,6 +29,7 @@ pub fn save_state_async(
         version: STATE_VERSION,
         agents,
         next_agent_id,
+        session_defaults,
     };
 
     let json =
@@ -98,6 +100,43 @@ mod tests {
         let state = parse_loaded_state(json).expect("legacy state must load");
         assert_eq!(state.agents.len(), 1);
         assert_eq!(state.agents[0].provider.as_deref(), Some("vertex"));
+    }
+
+    /// gh#62: v2 state files (no `session_defaults`) must load and yield
+    /// `None` for the new field — backward compat for existing projects.
+    #[test]
+    fn v2_state_file_loads_with_none_session_defaults() {
+        let json = br#"{
+            "version": 2,
+            "agents": [],
+            "next_agent_id": 0
+        }"#;
+        let state = parse_loaded_state(json).expect("v2 state must load");
+        assert!(state.session_defaults.is_none());
+    }
+
+    /// gh#62: v3 state file with `session_defaults` round-trips through
+    /// serde so the `n` shortcut can reapply the wizard's last choice.
+    #[test]
+    fn v3_session_defaults_round_trip() {
+        let json = br#"{
+            "version": 3,
+            "agents": [],
+            "next_agent_id": 0,
+            "session_defaults": {
+                "agent_type": "codex",
+                "provider": "zai",
+                "project_dir": "/tmp/proj",
+                "sandbox_level": "permissive",
+                "sandbox_backend": "nono"
+            }
+        }"#;
+        let state = parse_loaded_state(json).expect("v3 state must load");
+        let sd = state.session_defaults.expect("session_defaults must be Some");
+        assert_eq!(sd.agent_type, "codex");
+        assert_eq!(sd.provider.as_deref(), Some("zai"));
+        assert_eq!(sd.project_dir, "/tmp/proj");
+        assert_eq!(sd.sandbox_level.as_deref(), Some("permissive"));
     }
 
     /// New state files use `provider`. Round-trip serialization writes

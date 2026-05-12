@@ -387,10 +387,28 @@ impl From<&AgentInfo> for SavedAgentInfo {
     }
 }
 
+/// Per-project session defaults captured by the `N` wizard's `!` confirm
+/// shortcut (gh#62). Persisted in `.lince-dashboard` alongside open agents
+/// and reapplied to the `n` quick-spawn shortcut. `None` means: fall back to
+/// `[dashboard].default_agent_type` / `default_provider` / `default_project_dir`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionDefaults {
+    /// Effective agent type key (e.g. `"claude"` or `"claude-unsandboxed"`).
+    pub agent_type: String,
+    pub provider: Option<String>,
+    pub project_dir: String,
+    pub sandbox_level: Option<String>,
+    pub sandbox_backend: Option<crate::sandbox_backend::SandboxBackend>,
+}
+
 /// Top-level saved state written to `.lince-dashboard`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SavedState {
     pub version: u32,
     pub agents: Vec<SavedAgentInfo>,
     pub next_agent_id: u32,
+    /// Per-project `n` quick-spawn defaults captured via wizard `!` (gh#62).
+    /// Optional + serde-default so v2 state files load transparently.
+    #[serde(default)]
+    pub session_defaults: Option<SessionDefaults>,
 }
