@@ -42,7 +42,7 @@ The plugin checks `config.toml` for changes every 5 seconds and applies them wit
 **Hot-reloadable** (applied immediately):
 
 - `focus_mode`, `status_method`, `max_agents`, `status_file_dir`
-- `agent_layout`, `default_provider`, `default_project_dir`
+- `agent_layout`, `default_provider`, `default_project_dir`, `default_agent_type`
 
 **Not hot-reloadable** (requires restart, only affects new agents):
 
