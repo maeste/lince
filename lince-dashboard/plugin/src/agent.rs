@@ -317,7 +317,7 @@ fn spawn_inner(
 ) -> Result<AgentInfo, String> {
     if agents.len() >= config.max_agents {
         return Err(format!(
-            "Max agents reached ({}). Kill one first.",
+            "Max agents reached ({}). Kill one or increase max_agents in config.",
             config.max_agents
         ));
     }

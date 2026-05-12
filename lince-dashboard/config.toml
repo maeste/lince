@@ -32,7 +32,7 @@ status_method = "pipe"
 status_file_dir = "/tmp/lince-dashboard"
 
 # Maximum concurrent agents
-max_agents = 8
+max_agents = 9
 
 # Sandbox backend preference: "auto" | "agent-sandbox" | "nono"
 # - "auto" (default): on macOS, uses nono; on Linux, prefers agent-sandbox, falls back to nono

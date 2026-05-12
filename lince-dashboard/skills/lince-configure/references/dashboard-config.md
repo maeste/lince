@@ -14,7 +14,7 @@ Quick reference for `~/.config/lince-dashboard/config.toml`. Loaded by `lince-co
 | `focus_mode` | str | `"floating"` | `"floating"` or `"replace"` |
 | `status_method` | str | `"pipe"` | `"pipe"` (recommended) or `"file"` |
 | `status_file_dir` | str | `"/tmp/lince-dashboard"` | Dir for status files (file mode) |
-| `max_agents` | int | `8` | Max concurrent agents |
+| `max_agents` | int | `9` | Max concurrent agents |
 | `sandbox_backend` | str | `"auto"` | `"auto"`, `"agent-sandbox"`, or `"nono"` |
 | `default_agent_type` | str | `"claude"` | Default agent type for new agents |
 

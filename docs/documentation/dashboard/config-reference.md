@@ -31,7 +31,7 @@ Created by `install.sh`. Holds dashboard-wide settings and optional agent type o
 | `focus_mode` | string | `"floating"` | How focusing an agent works. `"floating"` shows an overlay, `"replace"` switches tabs. |
 | `status_method` | string | `"pipe"` | Status detection method. `"pipe"` for Zellij pipe (recommended), `"file"` for `/tmp` polling. |
 | `status_file_dir` | string | `"/tmp/lince-dashboard"` | Directory for status files when using file mode. |
-| `max_agents` | integer | `8` | Maximum number of concurrent agents. |
+| `max_agents` | integer | `9` | Maximum number of concurrent agents. |
 | `sandbox_backend` | string | `"auto"` | Sandbox backend preference. `"auto"`, `"agent-sandbox"`, or `"nono"`. Auto prefers agent-sandbox on Linux, nono on macOS. |
 | `default_agent_type` | string | `"claude"` | Default agent type for new agents. Must match a key in agents-defaults.toml or an `[agents.*]` section. |
 
