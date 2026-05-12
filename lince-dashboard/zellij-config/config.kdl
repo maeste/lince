@@ -144,6 +144,65 @@ keybinds clear-defaults=true {
         bind "Alt [" { PreviousSwapLayout; }
         bind "Alt ]" { NextSwapLayout; }
         bind "Alt f" { ToggleFloatingPanes; }
+        // Alt+1-9: broadcast focus-agent pipe to all running plugins.
+        // No plugin path specified to avoid launching a duplicate dashboard
+        // instance (the layout-loaded plugin has config_path which differs
+        // from a bare MessagePlugin target, causing a second spawn on first
+        // call). Broadcasting is safe: only lince-dashboard handles this pipe.
+        bind "Alt 1" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "1"
+            }
+        }
+        bind "Alt 2" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "2"
+            }
+        }
+        bind "Alt 3" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "3"
+            }
+        }
+        bind "Alt 4" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "4"
+            }
+        }
+        bind "Alt 5" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "5"
+            }
+        }
+        bind "Alt 6" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "6"
+            }
+        }
+        bind "Alt 7" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "7"
+            }
+        }
+        bind "Alt 8" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "8"
+            }
+        }
+        bind "Alt 9" {
+            MessagePlugin {
+                name "focus-agent"
+                payload "9"
+            }
+        }
         bind "Ctrl l" { SwitchToMode "locked"; }
         bind "Alt h" { MoveFocusOrTab "left"; }
         bind "Alt i" { MoveTab "left"; }

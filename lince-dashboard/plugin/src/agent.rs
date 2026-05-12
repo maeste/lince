@@ -12,6 +12,10 @@ use crate::sandbox_backend::SandboxBackend;
 const AGENT_WRAPPER: &str = "lince-agent-wrapper";
 use crate::types::{AgentInfo, AgentStatus};
 
+/// Close-pane keybinding hint appended to every agent pane title.
+/// Keep in sync with the actual binding in `config.kdl` (`bind "Alt f" { ToggleFloatingPanes; }`).
+const CLOSE_PANE_HINT: &str = " │ Alt+f to close";
+
 /// Variant suffixes stripped by `agent_type_base_name()`.
 /// Add new suffixes here when new sandbox variants are introduced.
 const AGENT_TYPE_SUFFIXES: &[&str] = &[
@@ -62,13 +66,13 @@ pub fn pane_title(
     let cfg = agent_types.get(agent_type);
     let sandboxed = cfg.map_or(true, |c| c.sandboxed);
     if !sandboxed {
-        return format!("[NON-SANDBOXED] {}", name);
+        return format!("[NON-SANDBOXED] {}{}", name, CLOSE_PANE_HINT);
     }
     let level = sandbox_level_override
         .or_else(|| cfg.and_then(|c| c.sandbox_level.as_deref()));
     match level {
-        Some(level) => format!("{} [{}] {}", sandbox_level_glyph(level), level, name),
-        None => name.to_string(),
+        Some(level) => format!("{} [{}] {}{}", sandbox_level_glyph(level), level, name, CLOSE_PANE_HINT),
+        None => format!("{}{}", name, CLOSE_PANE_HINT),
     }
 }
 
