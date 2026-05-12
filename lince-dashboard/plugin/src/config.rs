@@ -249,6 +249,12 @@ pub struct DashboardConfig {
     pub sandbox_config_path: Option<String>,
     #[serde(default)]
     pub default_project_dir: Option<String>,
+    /// Default agent type for the `n` shortcut and the `N` wizard's initial
+    /// selection. Must match a key in `agent_types` (loaded from
+    /// `agents-defaults.toml` + user overrides). Unknown values silently fall
+    /// back to `DEFAULT_AGENT_TYPE` then to the first registered type.
+    #[serde(default)]
+    pub default_agent_type: Option<String>,
     #[serde(default = "default_sandbox_command")]
     pub sandbox_command: String,
     #[serde(default)]
@@ -293,6 +299,7 @@ impl Default for DashboardConfig {
             provider_details_by_agent: HashMap::new(),
             sandbox_config_path: None,
             default_project_dir: None,
+            default_agent_type: None,
             sandbox_command: default_sandbox_command(),
             agent_layout: AgentLayout::default(),
             focus_mode: FocusMode::default(),
@@ -1029,6 +1036,28 @@ mod tests {
             Some("https://canonical.example.com"),
             "namespaced canonical must replace top-level legacy",
         );
+    }
+
+    /// `default_agent_type` (gh#62) round-trips through TOML so the `n`
+    /// shortcut + `N` wizard can pick it up from the user's config.
+    #[test]
+    fn dashboard_config_parses_default_agent_type() {
+        let toml_text = r#"
+            [dashboard]
+            default_agent_type = "codex"
+        "#;
+        let (cfg, err) = DashboardConfig::parse_toml(toml_text);
+        assert!(err.is_none(), "parse error: {err:?}");
+        assert_eq!(cfg.default_agent_type.as_deref(), Some("codex"));
+    }
+
+    /// Absent `default_agent_type` must deserialize to `None`, preserving the
+    /// pre-#62 behaviour for users who never touched the field.
+    #[test]
+    fn dashboard_config_default_agent_type_absent_is_none() {
+        let (cfg, err) = DashboardConfig::parse_toml("[dashboard]\n");
+        assert!(err.is_none(), "parse error: {err:?}");
+        assert!(cfg.default_agent_type.is_none());
     }
 
     /// Both forms in the same file must each contribute their distinct

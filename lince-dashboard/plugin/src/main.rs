@@ -95,9 +95,20 @@ fn wrap_prev(current: usize, len: usize) -> usize {
 
 impl State {
     /// Resolve the effective default agent type.
-    /// Returns `DEFAULT_AGENT_TYPE` if it exists in the loaded agent_types,
-    /// otherwise falls back to the first available key (sorted).
+    ///
+    /// Precedence (gh#62):
+    /// 1. User-configured `[dashboard].default_agent_type`, if it names a
+    ///    registered agent type.
+    /// 2. `DEFAULT_AGENT_TYPE` ("claude") if registered.
+    /// 3. First registered type whose base name matches `DEFAULT_AGENT_TYPE`
+    ///    (e.g. `claude-unsandboxed`).
+    /// 4. First available type (sorted), as a last-resort fallback.
     fn effective_default_agent_type(&self) -> &str {
+        if let Some(configured) = self.config.default_agent_type.as_deref() {
+            if self.config.agent_types.contains_key(configured) {
+                return configured;
+            }
+        }
         if self.config.agent_types.contains_key(DEFAULT_AGENT_TYPE) {
             return DEFAULT_AGENT_TYPE;
         }
@@ -558,8 +569,13 @@ impl State {
                     .unwrap_or_default();
                 // Step 1 list: deduplicated base agents (e.g. "claude", not "claude-unsandboxed").
                 let agent_type_list = self.config.base_agents();
-                let default_at_index = agent_type_list.iter()
-                    .position(|(k, _)| k == DEFAULT_AGENT_TYPE)
+                // Prefer the configured default_agent_type's base (gh#62) when it
+                // appears in the list; fall back to DEFAULT_AGENT_TYPE; fall back to 0.
+                let configured_base = self.config.default_agent_type.as_deref()
+                    .map(agent::agent_type_base_name);
+                let default_at_index = configured_base
+                    .and_then(|base| agent_type_list.iter().position(|(k, _)| k == base))
+                    .or_else(|| agent_type_list.iter().position(|(k, _)| k == DEFAULT_AGENT_TYPE))
                     .unwrap_or(0);
                 let default_base = agent_type_list.get(default_at_index)
                     .map(|(k, _)| k.as_str())
