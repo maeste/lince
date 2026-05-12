@@ -15,6 +15,7 @@ use crate::sandbox_backend::DetectedBackends;
 const PIPE_CLAUDE_STATUS: &str = "claude-status";
 const PIPE_LINCE_STATUS: &str = "lince-status";
 const PIPE_VOXCODE_TEXT: &str = "voxcode-text";
+const PIPE_FOCUS_AGENT: &str = "focus-agent";
 const CMD_GET_CWD: &str = "get_cwd";
 const CMD_LOAD_CONFIG: &str = "load_config";
 
@@ -493,6 +494,17 @@ impl ZellijPlugin for State {
         cli_pipe_output(&pipe_message.name, "");
 
         match pipe_message.name.as_str() {
+            PIPE_FOCUS_AGENT => {
+                if let Some(payload) = &pipe_message.payload {
+                    if let Ok(idx) = payload.parse::<usize>() {
+                        if idx > 0 && idx <= self.agents.len() {
+                            self.focus_agent_by_index(idx - 1);
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
             PIPE_CLAUDE_STATUS | PIPE_LINCE_STATUS => {
                 if let Some(payload) = pipe_message.payload {
                     self.handle_status_message(&payload);
@@ -728,8 +740,7 @@ impl State {
             BareKey::Char(c @ '1'..='9') => {
                 let idx = (*c as u8 - b'1') as usize;
                 if idx < self.agents.len() {
-                    self.selected_index = idx;
-                    self.focus_selected();
+                    self.focus_agent_by_index(idx);
                     true
                 } else {
                     false
@@ -1190,6 +1201,19 @@ impl State {
                 self.status_message = Some(format!("Focused {}", agent.name));
             }
         }
+    }
+
+    /// Focus agent by 0-based index, unfocusing the current one first.
+    /// Used by both the 1-9 key handler (dashboard focus) and the Alt+1-9
+    /// pipe message (global keybinding via Zellij config.kdl MessagePlugin).
+    fn focus_agent_by_index(&mut self, idx: usize) {
+        if idx >= self.agents.len() {
+            return;
+        }
+        // Unfocus current agent if any.
+        self.unfocus_current();
+        self.selected_index = idx;
+        self.focus_selected();
     }
 
     /// Hide all agent floating panes (used after spawn to prevent unwanted pane visibility).
