@@ -35,6 +35,20 @@ Created by `install.sh`. Holds dashboard-wide settings and optional agent type o
 | `sandbox_backend` | string | `"auto"` | Sandbox backend preference. `"auto"`, `"agent-sandbox"`, or `"nono"`. Auto prefers agent-sandbox on Linux, nono on macOS. |
 | `default_agent_type` | string | `"claude"` | Default agent type for new agents. Must match a key in agents-defaults.toml or an `[agents.*]` section. |
 
+### Session defaults (per-project, dynamic)
+
+In addition to the static `default_*` keys above, the `N` wizard's final
+**Confirm** step accepts `!` instead of `Enter` to spawn the agent **and**
+save all wizard choices (type, sandbox backend, sandbox level, provider,
+project dir) as the active `n` quick-spawn defaults for the current
+session. Defaults are persisted in `.lince-dashboard` next to the open
+agents when the user exits with `Q`, and reapplied on the next launch in
+the same directory. Press `!` again from a later wizard to overwrite.
+
+Session defaults take precedence over the static `[dashboard].default_*`
+fields — they cover the case where one project wants codex/permissive and
+another wants claude/paranoid without editing the global config.
+
 ### Hot-Reload
 
 The plugin checks `config.toml` for changes every 5 seconds and applies them without restart. A "Config reloaded" notification appears in the status bar.

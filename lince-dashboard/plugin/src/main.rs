@@ -19,7 +19,7 @@ const CMD_GET_CWD: &str = "get_cwd";
 const CMD_LOAD_CONFIG: &str = "load_config";
 
 use crate::types::{
-    AgentInfo, AgentStatus, NamePromptState, SavedAgentInfo,
+    AgentInfo, AgentStatus, NamePromptState, SavedAgentInfo, SessionDefaults,
     StatusMessage, WizardState, WizardStep,
 };
 
@@ -54,6 +54,10 @@ struct State {
     cwd_retries: u8,
     /// Stop retrying CWD after max attempts.
     cwd_retry_exhausted: bool,
+    /// Per-project `n` quick-spawn defaults captured via wizard `!` (gh#62).
+    /// When `Some`, the `n` shortcut spawns with these values instead of
+    /// resolving from `[dashboard].default_*` config fields.
+    session_defaults: Option<SessionDefaults>,
 }
 
 impl Default for State {
@@ -80,6 +84,7 @@ impl Default for State {
             init_kicked: false,
             cwd_retries: 0,
             cwd_retry_exhausted: false,
+            session_defaults: None,
         }
     }
 }
@@ -284,6 +289,7 @@ impl ZellijPlugin for State {
                             match state_file::parse_loaded_state(&stdout) {
                                 Ok(saved) => {
                                     self.next_agent_id = saved.next_agent_id;
+                                    self.session_defaults = saved.session_defaults;
                                     if self.agent_types_loaded {
                                         // Agent types already available — restore immediately.
                                         self.restore_agents(saved.agents);
@@ -543,8 +549,15 @@ impl State {
 
         match bare {
             BareKey::Char('n') => {
-                let effective_type = self.effective_default_agent_type();
-                let base = agent::agent_type_base_name(effective_type);
+                // gh#62: when session_defaults is set, use the session's agent_type
+                // to seed the default name; otherwise fall back to the static default.
+                let effective_type: String = match self.session_defaults.as_ref() {
+                    Some(sd) if self.config.agent_types.contains_key(&sd.agent_type) => {
+                        sd.agent_type.clone()
+                    }
+                    _ => self.effective_default_agent_type().to_string(),
+                };
+                let base = agent::agent_type_base_name(&effective_type);
                 let default_name = format!("{}-{}", base, self.next_agent_id + 1);
                 self.name_prompt = Some(NamePromptState {
                     input: String::new(),
@@ -766,22 +779,38 @@ impl State {
                     }
                     self.sort_agents_by_dir();
                 } else {
-                    // New agent mode: spawn (no wizard, no sandbox overrides).
-                    let effective_type = self.effective_default_agent_type().to_string();
+                    // New agent mode (gh#62): session_defaults wins over static config.
+                    // Use the saved wizard choices verbatim (agent_type, provider,
+                    // project_dir, sandbox_level, sandbox_backend); fall back to
+                    // the static `[dashboard].default_*` chain otherwise.
+                    let (effective_type, provider, project_dir, sandbox_level, sandbox_backend) =
+                        match self.session_defaults.as_ref() {
+                            Some(sd) if self.config.agent_types.contains_key(&sd.agent_type) => (
+                                sd.agent_type.clone(),
+                                sd.provider.clone(),
+                                sd.project_dir.clone(),
+                                sd.sandbox_level.clone(),
+                                sd.sandbox_backend.clone(),
+                            ),
+                            _ => (
+                                self.effective_default_agent_type().to_string(),
+                                self.config.default_provider.clone(),
+                                self.config.default_project_dir.clone().unwrap_or_default(),
+                                None,
+                                None,
+                            ),
+                        };
                     match agent::spawn_agent_custom(
                         &self.config,
                         &mut self.next_agent_id,
                         &self.agents,
                         name,
                         &effective_type,
-                        self.config.default_provider.clone(),
-                        self.config
-                            .default_project_dir
-                            .clone()
-                            .unwrap_or_default(),
+                        provider,
+                        project_dir,
                         self.launch_dir.as_deref(),
-                        None,
-                        None,
+                        sandbox_level,
+                        sandbox_backend,
                     ) {
                         Ok(info) => {
                             self.status_message = Some(format!("Spawned {}", info.name));
@@ -1058,7 +1087,7 @@ impl State {
                 _ => {}
             },
             WizardStep::Confirm => match bare {
-                BareKey::Enter => {
+                BareKey::Enter | BareKey::Char('!') => {
                     // Clone values out before dropping the borrow.
                     let name = wizard.name.clone();
                     let agent_type = wizard.effective_agent_type();
@@ -1072,6 +1101,19 @@ impl State {
                         wizard.selected_sandbox_level().map(|s| s.to_string())
                     };
                     let sandbox_backend = backend_choice;
+                    // gh#62: `!` makes these choices the active `n` quick-spawn
+                    // defaults for the rest of the session and persists them in
+                    // `.lince-dashboard` on the next `Q`.
+                    let save_defaults = matches!(bare, BareKey::Char('!'));
+                    if save_defaults {
+                        self.session_defaults = Some(SessionDefaults {
+                            agent_type: agent_type.clone(),
+                            provider: provider.clone(),
+                            project_dir: project_dir.clone(),
+                            sandbox_level: sandbox_level.clone(),
+                            sandbox_backend: sandbox_backend.clone(),
+                        });
+                    }
                     self.wizard = None;
                     self.spawn_wizard_agent(
                         name,
@@ -1081,6 +1123,16 @@ impl State {
                         sandbox_level,
                         sandbox_backend,
                     );
+                    if save_defaults {
+                        // Append the defaults-saved note to whatever spawn_wizard_agent
+                        // wrote (typically "Spawned <name>") to keep both signals visible.
+                        let prev = self.status_message.take().unwrap_or_default();
+                        self.status_message = Some(if prev.is_empty() {
+                            "Defaults saved for n".to_string()
+                        } else {
+                            format!("{} · defaults saved for n", prev)
+                        });
+                    }
                     return true;
                 }
                 BareKey::Backspace => {
@@ -1313,7 +1365,7 @@ impl State {
             .map(SavedAgentInfo::from)
             .collect();
 
-        match state_file::save_state_async(dir, saved, self.next_agent_id) {
+        match state_file::save_state_async(dir, saved, self.next_agent_id, self.session_defaults.clone()) {
             Ok(()) => {
                 self.status_message = Some("Saving state...".to_string());
             }

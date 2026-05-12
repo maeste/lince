@@ -923,7 +923,11 @@ pub fn render_wizard(
             push_box_line(&mut lines, &format!("  Provider: {}", provider_display), box_width);
             push_box_line(&mut lines, &format!("  Dir:      {}", dir_display), box_width);
             push_box_line(&mut lines, "", box_width);
-            push_box_line(&mut lines, "  [Enter] Create  [Bksp] Back  [Esc] Cancel", box_width);
+            push_box_line(
+                &mut lines,
+                "  [Enter] Create  [!] Create+save defaults  [Bksp] Back  [Esc] Cancel",
+                box_width,
+            );
         }
         WizardStep::Provider => {
             // Render provider list with selection marker. Providers named
