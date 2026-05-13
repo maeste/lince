@@ -1120,7 +1120,11 @@ impl State {
                 BareKey::Tab => {
                     if wizard.completions.is_empty() {
                         // First Tab press: request completions from the shell.
-                        config::complete_path_async(&wizard.project_dir);
+                        config::complete_path_async(
+                            &wizard.project_dir,
+                            &self.config.project_search_roots,
+                            self.config.project_search_max_depth,
+                        );
                     } else {
                         // Subsequent Tab presses: cycle through suggestions.
                         let len = wizard.completions.len();
