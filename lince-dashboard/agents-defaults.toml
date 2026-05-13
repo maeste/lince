@@ -80,9 +80,13 @@ sandbox_level = "normal"          # paranoid | normal | permissive (or custom; s
 [agents.claude.event_map]
 PreToolUse = "running"
 PostToolUse = "running"
-SessionStart = "running"
+SessionStart = "input"
 UserPromptSubmit = "running"
-Stop = "stopped"
+# Claude's `Stop` hook fires when the assistant finishes a turn and the
+# prompt returns to the user — NOT when the process exits. Map it to
+# `input`. Actual process termination is detected by the dashboard's
+# pane-exit reconciliation (agent.rs), not by a hook event.
+Stop = "input"
 idle_prompt = "input"
 permission_prompt = "permission"
 
@@ -100,9 +104,10 @@ providers = ["__discover__"]
 [agents.claude-unsandboxed.event_map]
 PreToolUse = "running"
 PostToolUse = "running"
-SessionStart = "running"
+SessionStart = "input"
 UserPromptSubmit = "running"
-Stop = "stopped"
+# See [agents.claude.event_map] above for the Stop = "input" rationale.
+Stop = "input"
 idle_prompt = "input"
 permission_prompt = "permission"
 
@@ -116,7 +121,6 @@ short_label = "CDX"
 color = "cyan"
 sandboxed = true
 has_native_hooks = true
-ignore_wrapper_start = true
 # Disables codex's own --sandbox so it doesn't fight ours.
 bwrap_conflict = true
 disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
@@ -147,7 +151,6 @@ short_label = "CDU"
 color = "red"
 sandboxed = false
 has_native_hooks = true
-ignore_wrapper_start = true
 bwrap_conflict = false
 providers = ["__discover__"]
 
