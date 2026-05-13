@@ -1,9 +1,10 @@
 ---
 id: LINCE-120
 title: Initial state Unknown + pane discovery refactor
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-13 20:00'
+updated_date: '2026-05-13 20:40'
 labels: []
 milestone: m-15
 dependencies:
@@ -42,10 +43,28 @@ Risolve l'altra parte di #116: oggi gli agenti senza hook mostrano "Running" dop
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Spawn di un nuovo agente lo crea con status `Unknown`
-- [ ] #2 Pane discovery non promuove più ad AgentStatus::WaitingForInput automaticamente; il comportamento post-discovery dipende dagli hook
-- [ ] #3 Agenti con `has_native_hooks=false` rimangono in `Unknown` fino allo stop
+- [x] #1 Spawn di un nuovo agente lo crea con status `Unknown`
+- [x] #2 Pane discovery non promuove più ad AgentStatus::WaitingForInput automaticamente; il comportamento post-discovery dipende dagli hook
+- [x] #3 Agenti con `has_native_hooks=false` rimangono in `Unknown` fino allo stop
 - [ ] #4 Agenti con `has_native_hooks=true` (Claude) raggiungono `INPUT` dopo la prima interazione effettiva, verificato manualmente
-- [ ] #5 Pane exit transita correttamente a `Stopped` (preservato dal flow esistente in agent.rs:609-622)
-- [ ] #6 Nessun riferimento residuo a AgentStatus::Starting
+- [x] #5 Pane exit transita correttamente a `Stopped` (preservato dal flow esistente in agent.rs:609-622)
+- [x] #6 Nessun riferimento residuo a AgentStatus::Starting
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Wave 2B sequential after LINCE-119. Delegated to subagent. Initial state Unknown (already partially done by LINCE-118 swap); the actual scope is changing the pane discovery predicate from status-based to pane_id-based.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Subagent (refactoring-expert) execution. agentId: aef7104938adc38ee. Build verified by orchestrator post-completion.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Pane discovery refactored. agent.rs:623 predicate changed from `agent.status == AgentStatus::Unknown` to `agent.pane_id.is_none() && !matches!(agent.status, AgentStatus::Stopped)` — decoupling discovery from status. The auto-promotion to WaitingForInput after a pane match is removed (replaced with an explanatory comment): for native-hook agents the hook events drive transitions; for non-hook agents the dashboard stays Unknown for the entire lifetime, which is the intended honest behavior. Initial spawn status is Unknown (LINCE-118 mechanical swap). Pane-exit detection in agent.rs:609-622 preserved (transitions to Stopped). Restarted agents (pane_id=None, status!=Stopped) are picked up correctly by the new predicate. Build clean: 0 warnings, 0 errors. Zero residual AgentStatus::Starting references. AC4 (Claude reaches INPUT after first interaction) requires live verification — deferred to LINCE-123.
+<!-- SECTION:FINAL_SUMMARY:END -->

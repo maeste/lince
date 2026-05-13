@@ -1,10 +1,10 @@
 ---
 id: LINCE-121
 title: 'Simplify lince-agent-wrapper: emit only `stopped`'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-13 20:00'
-updated_date: '2026-05-13 20:26'
+updated_date: '2026-05-13 20:28'
 labels: []
 milestone: m-15
 dependencies: []

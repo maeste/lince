@@ -1,10 +1,10 @@
 ---
 id: LINCE-124
 title: Rename skill lince-setup → lince-add-supported-agent
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-05-13 20:01'
-updated_date: '2026-05-13 20:26'
+updated_date: '2026-05-13 20:28'
 labels: []
 milestone: m-15
 dependencies: []

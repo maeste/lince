@@ -620,7 +620,13 @@ pub fn reconcile_panes(
                     changed = true;
                 }
             }
-        } else if agent.status == AgentStatus::Unknown {
+        } else if agent.pane_id.is_none() && !matches!(agent.status, AgentStatus::Stopped) {
+            // LINCE-120: discovery is driven by "no pane yet AND not given up",
+            // not by status. Post-discovery the agent stays `Unknown`; for
+            // agents with native hooks the runtime emits real events (e.g.
+            // `idle_prompt`) to advance state, and for agents without native
+            // hooks `Unknown` is the honest steady state.
+            //
             // Resolve pane title patterns for this agent's type. For sandboxed
             // agents the actual title varies by backend (agent-sandbox / nono /
             // bash wrapper), so we accept any of: the TOML-configured pattern,
@@ -647,7 +653,11 @@ pub fn reconcile_panes(
                 {
                     agent.pane_id = Some(pane.id);
                     assigned_ids.insert(pane.id);
-                    agent.status = AgentStatus::WaitingForInput;
+                    // LINCE-120: do NOT auto-promote to WaitingForInput here.
+                    // Status stays `Unknown` until a real signal arrives
+                    // (hook events for native-hooks agents; permanently
+                    // `Unknown` for non-hook agents — the dashboard is
+                    // honest about not knowing the state).
                     let title = pane_title(&agent.name, &agent.agent_type, agent_types, agent.sandbox_level.as_deref());
                     rename_pane_with_id(PaneId::Terminal(pane.id), &title);
                     if expect_floating {
