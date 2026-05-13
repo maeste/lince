@@ -508,4 +508,160 @@ mod tests {
         assert_eq!(AgentStatus::Unknown.label(), "-");
         assert_eq!(AgentStatus::Unknown.color(), "\x1b[90m");
     }
+
+    // LINCE-123: extra coverage for rendering, status_display, and round-trip.
+
+    #[test]
+    fn status_labels_match_5_state_contract() {
+        // Lock in the exact label strings the dashboard renders so a rename in
+        // AgentStatus::label() would fail loudly. These strings are part of the
+        // user-visible contract — changing them affects the UI and any docs
+        // referencing them.
+        assert_eq!(AgentStatus::Unknown.label(), "-");
+        assert_eq!(AgentStatus::Running.label(), "Running");
+        assert_eq!(AgentStatus::WaitingForInput.label(), "INPUT");
+        assert_eq!(AgentStatus::PermissionRequired.label(), "PERMISSION");
+        assert_eq!(AgentStatus::Stopped.label(), "Stopped");
+    }
+
+    #[test]
+    fn status_colors_match_visual_contract() {
+        // Lock in the ANSI escape sequences so visual styling stays stable.
+        // Unknown=dim gray, Running=green, INPUT=bold yellow, PERMISSION=bold red, Stopped=dim.
+        assert_eq!(AgentStatus::Unknown.color(), "\x1b[90m");
+        assert_eq!(AgentStatus::Running.color(), "\x1b[32m");
+        assert_eq!(AgentStatus::WaitingForInput.color(), "\x1b[1;33m");
+        assert_eq!(AgentStatus::PermissionRequired.color(), "\x1b[1;31m");
+        assert_eq!(AgentStatus::Stopped.color(), "\x1b[2m");
+    }
+
+    fn make_agent(status: AgentStatus, exit_code: Option<i32>) -> AgentInfo {
+        AgentInfo {
+            id: "agent-1".to_string(),
+            name: "test".to_string(),
+            agent_type: "claude".to_string(),
+            provider: None,
+            project_dir: "/tmp".to_string(),
+            status,
+            pane_id: None,
+            started_at: None,
+            last_error: None,
+            exit_code,
+            group: None,
+            last_polled_event: None,
+            sandbox_level: None,
+            sandbox_backend: None,
+        }
+    }
+
+    #[test]
+    fn status_display_stopped_with_exit_code() {
+        // Stopped with explicit exit code: render "Stopped (N)".
+        let a = make_agent(AgentStatus::Stopped, Some(0));
+        assert_eq!(a.status_display(), "Stopped (0)");
+        let b = make_agent(AgentStatus::Stopped, Some(137));
+        assert_eq!(b.status_display(), "Stopped (137)");
+        // Negative exit codes are valid (signals encoded as -N on some platforms).
+        let c = make_agent(AgentStatus::Stopped, Some(-1));
+        assert_eq!(c.status_display(), "Stopped (-1)");
+    }
+
+    #[test]
+    fn status_display_stopped_without_exit_code() {
+        // Stopped without exit code: bare "Stopped", no parens.
+        let a = make_agent(AgentStatus::Stopped, None);
+        assert_eq!(a.status_display(), "Stopped");
+    }
+
+    #[test]
+    fn status_display_non_stopped_ignores_exit_code() {
+        // Non-Stopped variants must use the plain label even if exit_code is set
+        // (which shouldn't happen normally but mustn't break rendering).
+        for st in [
+            AgentStatus::Unknown,
+            AgentStatus::Running,
+            AgentStatus::WaitingForInput,
+            AgentStatus::PermissionRequired,
+        ] {
+            let a = make_agent(st.clone(), Some(42));
+            assert_eq!(a.status_display(), st.label().to_string());
+        }
+    }
+
+    #[test]
+    fn saved_agent_info_roundtrip_preserves_all_fields() {
+        // Round-trip AgentInfo → SavedAgentInfo → JSON → SavedAgentInfo to
+        // catch accidental field drops in From<&AgentInfo> or serde wiring.
+        // The persistable subset is: name, agent_type, provider, project_dir,
+        // group, sandbox_level, sandbox_backend.
+        let agent = AgentInfo {
+            id: "agent-7".to_string(), // not persisted
+            name: "my-claude".to_string(),
+            agent_type: "claude".to_string(),
+            provider: Some("anthropic".to_string()),
+            project_dir: "/home/me/project".to_string(),
+            status: AgentStatus::Running, // not persisted (regenerated on restore)
+            pane_id: Some(42),            // not persisted
+            started_at: Some(123),        // not persisted
+            last_error: None,
+            exit_code: None,
+            group: Some("eng".to_string()),
+            last_polled_event: None,
+            sandbox_level: Some("paranoid".to_string()),
+            sandbox_backend: Some(crate::sandbox_backend::SandboxBackend::Nono),
+        };
+
+        let saved: SavedAgentInfo = (&agent).into();
+        assert_eq!(saved.name, "my-claude");
+        assert_eq!(saved.agent_type, "claude");
+        assert_eq!(saved.provider.as_deref(), Some("anthropic"));
+        assert_eq!(saved.project_dir, "/home/me/project");
+        assert_eq!(saved.group.as_deref(), Some("eng"));
+        assert_eq!(saved.sandbox_level.as_deref(), Some("paranoid"));
+        assert_eq!(saved.sandbox_backend, Some(crate::sandbox_backend::SandboxBackend::Nono));
+
+        // Verify JSON round-trip is lossless for the persisted subset.
+        let json = serde_json::to_string(&saved).expect("serialize");
+        let back: SavedAgentInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.name, saved.name);
+        assert_eq!(back.agent_type, saved.agent_type);
+        assert_eq!(back.provider, saved.provider);
+        assert_eq!(back.project_dir, saved.project_dir);
+        assert_eq!(back.group, saved.group);
+        assert_eq!(back.sandbox_level, saved.sandbox_level);
+        assert_eq!(back.sandbox_backend, saved.sandbox_backend);
+    }
+
+    #[test]
+    fn saved_agent_info_accepts_legacy_profile_alias() {
+        // Pre-#81 state files used `profile` instead of `provider`. The
+        // serde(alias = "profile") on `provider` must keep them loadable.
+        let legacy = r#"{
+            "name": "old-claude",
+            "agent_type": "claude",
+            "profile": "anthropic",
+            "project_dir": "/x"
+        }"#;
+        let saved: SavedAgentInfo = serde_json::from_str(legacy).expect("legacy load");
+        assert_eq!(saved.provider.as_deref(), Some("anthropic"));
+        assert_eq!(saved.name, "old-claude");
+    }
+
+    #[test]
+    fn saved_agent_info_tolerates_legacy_rich_fields() {
+        // LINCE-119 dropped tokens_in/tokens_out from the schema. Old state
+        // files that still carry those keys must load cleanly — serde silently
+        // drops unknown fields by default, so this test pins that behaviour.
+        let legacy_rich = r#"{
+            "name": "rich-claude",
+            "agent_type": "claude",
+            "project_dir": "/x",
+            "tokens_in": 1234,
+            "tokens_out": 5678,
+            "tool_name": "Edit"
+        }"#;
+        let saved: SavedAgentInfo = serde_json::from_str(legacy_rich).expect("rich load");
+        assert_eq!(saved.name, "rich-claude");
+        assert_eq!(saved.agent_type, "claude");
+    }
 }
