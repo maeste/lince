@@ -735,7 +735,7 @@ fn status_bar_hints(empty: bool, focused: bool, detail: bool) -> Vec<KeyHint> {
     if empty {
         vec![("n", "New-defaults"), ("N", "New-wizard"), ("Q", "Save+Quit"), ("?", "Help")]
     } else if focused {
-        vec![("Alt-f", "Unfocus"), ("Alt+1-9", "Switch-agent"), ("[]", "Cycle"), ("r", "Rename"), ("x", "Kill"), ("i", "Info"), ("n", "New"), ("Q", "Save+Quit"), ("?", "Help")]
+        vec![("Alt-f", "Unfocus"), ("Alt+1-9", "Switch-agent"), ("Alt+PgDn/Up", "Cycle"), ("r", "Rename"), ("x", "Kill"), ("i", "Info"), ("n", "New"), ("Q", "Save+Quit"), ("?", "Help")]
     } else if detail {
         vec![("i", "Hide info"), ("f/Enter", "Focus"), ("1-9", "Focus-N"), ("j/k", "Nav"), ("r", "Rename"), ("x", "Kill"), ("n", "New"), ("Q", "Save+Quit"), ("?", "Help")]
     } else {
@@ -1042,7 +1042,7 @@ pub fn render_help_overlay(rows: usize, cols: usize) {
     push_box_line(&mut lines, &format!("  {}k / Up{}     Move selection up", KEY_COLOR, RESET), box_width);
     push_box_line(&mut lines, &format!("  {}1-9{}        Select & focus agent #", KEY_COLOR, RESET), box_width);
     push_box_line(&mut lines, &format!("  {}Alt+1-9{}    Global: switch to agent #", KEY_COLOR, RESET), box_width);
-    push_box_line(&mut lines, &format!("  {}[ ]{}        Cycle focused agent", KEY_COLOR, RESET), box_width);
+    push_box_line(&mut lines, &format!("  {}Alt+PgDn/Up{} Cycle to next/prev agent", KEY_COLOR, RESET), box_width);
     push_box_line(&mut lines, "", box_width);
 
     push_box_line(&mut lines, &format!("  {}Actions{}", BOLD, RESET), box_width);

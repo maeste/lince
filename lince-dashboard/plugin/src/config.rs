@@ -210,7 +210,7 @@ fn default_status_file_dir() -> String {
 }
 
 fn default_max_agents() -> usize {
-    8
+    9
 }
 
 /// Parsed provider details from sandbox config (env vars to set/unset).

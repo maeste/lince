@@ -141,8 +141,18 @@ keybinds clear-defaults=true {
         bind "Alt +" { Resize "Increase"; }
         bind "Alt -" { Resize "Decrease"; }
         bind "Alt =" { Resize "Increase"; }
-        bind "Alt [" { PreviousSwapLayout; }
-        bind "Alt ]" { NextSwapLayout; }
+        bind "Alt PageDown" {
+            MessagePlugin {
+                name "cycle-agent"
+                payload "next"
+            }
+        }
+        bind "Alt PageUp" {
+            MessagePlugin {
+                name "cycle-agent"
+                payload "prev"
+            }
+        }
         bind "Alt f" { ToggleFloatingPanes; }
         // Alt+1-9: broadcast focus-agent pipe to all running plugins.
         // No plugin path specified to avoid launching a duplicate dashboard

@@ -16,6 +16,7 @@ const PIPE_CLAUDE_STATUS: &str = "claude-status";
 const PIPE_LINCE_STATUS: &str = "lince-status";
 const PIPE_VOXCODE_TEXT: &str = "voxcode-text";
 const PIPE_FOCUS_AGENT: &str = "focus-agent";
+const PIPE_CYCLE_AGENT: &str = "cycle-agent";
 const CMD_GET_CWD: &str = "get_cwd";
 const CMD_LOAD_CONFIG: &str = "load_config";
 
@@ -505,6 +506,30 @@ impl ZellijPlugin for State {
                 }
                 false
             }
+            PIPE_CYCLE_AGENT => {
+                if let Some(payload) = &pipe_message.payload {
+                    let next = match payload.as_str() {
+                        "next" => true,
+                        "prev" => false,
+                        _ => return false,
+                    };
+                    if self.agents.is_empty() {
+                        return false;
+                    }
+                    let new_idx = if next {
+                        (self.selected_index + 1) % self.agents.len()
+                    } else {
+                        if self.selected_index == 0 {
+                            self.agents.len() - 1
+                        } else {
+                            self.selected_index - 1
+                        }
+                    };
+                    self.focus_agent_by_index(new_idx);
+                    return true;
+                }
+                false
+            }
             PIPE_CLAUDE_STATUS | PIPE_LINCE_STATUS => {
                 if let Some(payload) = pipe_message.payload {
                     self.handle_status_message(&payload);
@@ -699,28 +724,6 @@ impl State {
                     self.unfocus_current();
                 }
                 self.status_message = None;
-                true
-            }
-            BareKey::Char(']') => {
-                self.unfocus_current();
-                if let Some(new_idx) = pane_manager::focus_next(
-                    &self.agents, self.selected_index, &self.config.focus_mode,
-                    &self.config.agent_layout,
-                ) {
-                    self.selected_index = new_idx;
-                    self.focused_agent = Some(self.agents[new_idx].id.clone());
-                }
-                true
-            }
-            BareKey::Char('[') => {
-                self.unfocus_current();
-                if let Some(new_idx) = pane_manager::focus_prev(
-                    &self.agents, self.selected_index, &self.config.focus_mode,
-                    &self.config.agent_layout,
-                ) {
-                    self.selected_index = new_idx;
-                    self.focused_agent = Some(self.agents[new_idx].id.clone());
-                }
                 true
             }
             BareKey::Char('i') => {
