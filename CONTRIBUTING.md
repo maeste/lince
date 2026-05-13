@@ -96,6 +96,84 @@ Every module must have `install.sh`, `update.sh`, and `uninstall.sh`:
 - All file copies and system modifications go through these scripts — never manual
 - The system must be installable by third parties from a clean clone
 
+## Adding a new supported agent
+
+LINCE supports any CLI-based AI coding agent (or shell-like CLI such as
+`gh`). To add support for a new one, use the **`lince-add-supported-agent`**
+skill installed with the dashboard.
+
+### Quick start
+
+In a Claude Code session inside this repo:
+
+```
+/lince-add-supported-agent
+```
+
+The skill walks you through a decision tree, generates the right TOML
+configuration, and (if applicable) a hook script template you can
+customize.
+
+### Tier model
+
+LINCE recognizes three tiers of agent support:
+
+| Tier | Examples | What you get | Maintenance |
+|------|----------|--------------|-------------|
+| **A — Native hooks** | Claude, Codex, Pi | Full status: Running / INPUT / PERMISSION / Stopped | High (track upstream hook changes) |
+| **B — Wrapper-only** | bash, Gemini, OpenCode | Always `-` (Unknown) until exit, then Stopped | Low (TOML only) |
+| **C — User-contributed** | Anything else | Same as A or B, but user-side configs only | User maintains it |
+
+When uncertain, **pick Tier B**. You can always promote later by writing
+a hook.
+
+Tier A and Tier B agents ship in:
+- `lince-dashboard/agents-defaults.toml`
+- `sandbox/agents-defaults.toml`
+- Hook scripts in `lince-dashboard/hooks/` (Tier A only)
+
+Tier C agents live in user-side configs only:
+- `~/.agent-sandbox/config.toml`
+- `~/.config/lince-dashboard/config.toml`
+
+### Hook contract
+
+Native hooks (Tier A) emit JSON to a Zellij pipe (default `lince-status`,
+configurable via `status_pipe_name`):
+
+```json
+{"agent_id": "<id>", "event": "<native_event_name>"}
+```
+
+The dashboard's `[agents.<key>.event_map]` translates the native event
+name to one of these five canonical states:
+
+- `running` — agent actively working
+- `input` — agent waiting for user input
+- `permission` — agent asking for approval
+- `stopped` — agent process ended
+- (`unknown` — never emitted; reserved for "not heard from yet")
+
+Unknown native events (not in `event_map`) → Unknown status with a log
+warning (no silent fallback to Running).
+
+For event semantics, hook templates (bash + TS + JS), and the full
+contract reference, see
+[`lince-dashboard/skills/lince-add-supported-agent/SKILL.md`](lince-dashboard/skills/lince-add-supported-agent/SKILL.md).
+
+### Promoting a Tier C agent to Tier A/B in-tree
+
+We add an agent in-tree (Tier A or B) when:
+- It's a widely-used CLI agent benefiting multiple users
+- We're willing to take on ongoing maintenance (tracking upstream
+  changes)
+- It has stable hook semantics (Tier A) or its absence of state is
+  acceptable (Tier B)
+
+**Open an issue with the proposal before sending a PR.** The maintainers
+will confirm whether the agent is a good fit for in-tree support and
+which tier suits it best.
+
 ## Code style
 
 - **Python**: ruff defaults, line length 119, absolute imports, type hints where practical

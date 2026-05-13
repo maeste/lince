@@ -1,9 +1,10 @@
 ---
 id: LINCE-126
 title: Create/update CONTRIBUTING.md with "Adding a new supported agent" section
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-13 20:02'
+updated_date: '2026-05-13 20:46'
 labels: []
 milestone: m-15
 dependencies:
@@ -100,10 +101,28 @@ Open an issue with the proposal before sending a PR.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 CONTRIBUTING.md esiste alla root del repo
-- [ ] #2 Sezione 'Adding a new supported agent' presente con Tier model spiegato
-- [ ] #3 Cita la skill `lince-add-supported-agent` come entry point
-- [ ] #4 Documenta brevemente l'hook contract e linka allo SKILL.md per dettagli
-- [ ] #5 Spiega policy 'in-tree vs user-side' (Tier C → issue prima del PR)
-- [ ] #6 Coerente con SKILL.md, no duplicazione di contenuti tecnici
+- [x] #1 CONTRIBUTING.md esiste alla root del repo
+- [x] #2 Sezione 'Adding a new supported agent' presente con Tier model spiegato
+- [x] #3 Cita la skill `lince-add-supported-agent` come entry point
+- [x] #4 Documenta brevemente l'hook contract e linka allo SKILL.md per dettagli
+- [x] #5 Spiega policy 'in-tree vs user-side' (Tier C → issue prima del PR)
+- [x] #6 Coerente con SKILL.md, no duplicazione di contenuti tecnici
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Wave 3 parallel. Delegated to subagent. Create CONTRIBUTING.md (or update if exists) with Adding-a-new-supported-agent section. 3-tier model, references to the skill, hook contract summary.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Subagent (technical-writer) execution. agentId: a70a0a1040759ea7c. No markdownlint installed; manual inspection confirms valid markdown.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CONTRIBUTING.md updated (was pre-existing, 157 lines). Added "Adding a new supported agent" section (78 lines) between "Development setup" and "Code style" — logical placement after install-scripts discipline, before general code-style rules. New section content: tier model table (A/B/C with examples + maintenance), quick start with /lince-add-supported-agent invocation, hook contract summary (minimal JSON, 5 canonical states), "what goes in repo vs user-side" policy, "when to promote Tier C → Tier A/B" governance with "issue before PR" rule. Links resolved: SKILL.md, agents-defaults.toml (dashboard + sandbox modules). No duplication of technical content — points to SKILL.md for hook templates and full decision tree. File total: 234 lines.
+<!-- SECTION:FINAL_SUMMARY:END -->
