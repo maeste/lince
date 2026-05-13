@@ -1,9 +1,10 @@
 ---
 id: LINCE-119
 title: 'Drop rich fields from AgentInfo, dashboard UI, and save state'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-13 20:00'
+updated_date: '2026-05-13 20:37'
 labels: []
 milestone: m-15
 dependencies:
@@ -59,11 +60,29 @@ Semplifica drasticamente il modello dati. Riduce manutenzione degli hook nativi 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 AgentInfo non ha più i campi tokens_in/out, current_tool, model, running_subagents
-- [ ] #2 Detail panel non mostra più righe Tokens/Tool/Subagents/Model
-- [ ] #3 Tabella agenti non mostra più il suffix 'ₙ⚙' dei subagents
-- [ ] #4 SavedAgentInfo non ha più i campi tokens, e il restore funziona (caricando file vecchi senza panic)
-- [ ] #5 state_file.rs JSON non emette più tokens_in/tokens_out
-- [ ] #6 apply_status_side_effects rimosso o ridotto a no-op
-- [ ] #7 Compila senza warning su funzioni unused (es. format_tokens)
+- [x] #1 AgentInfo non ha più i campi tokens_in/out, current_tool, model, running_subagents
+- [x] #2 Detail panel non mostra più righe Tokens/Tool/Subagents/Model
+- [x] #3 Tabella agenti non mostra più il suffix 'ₙ⚙' dei subagents
+- [x] #4 SavedAgentInfo non ha più i campi tokens, e il restore funziona (caricando file vecchi senza panic)
+- [x] #5 state_file.rs JSON non emette più tokens_in/tokens_out
+- [x] #6 apply_status_side_effects rimosso o ridotto a no-op
+- [x] #7 Compila senza warning su funzioni unused (es. format_tokens)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Wave 2A parallel. Delegated to subagent. Drop rich fields from AgentInfo struct, dashboard UI rows, save state. LINCE-118 has already commented out call sites with TODO markers — this task does the actual structural removal.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Subagent (refactoring-expert) execution. agentId: a2d15eb2d4e8e87e3. Build verified clean post-completion (0 warnings, 0 errors). The earlier LINCE-118 'model' warning is gone because the field itself was removed.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Rich fields dropped from AgentInfo, dashboard UI, save state. AgentInfo no longer has tokens_in/out, current_tool, model, running_subagents. SavedAgentInfo stripped of tokens_in/out; existing #[serde(default)] annotations cover backward-compat for old save files. apply_status_side_effects() method removed entirely (was housekeeping for current_tool and running_subagents). dashboard.rs detail panel cleaned: no Tokens/Tool/Subagents/Model rows; subagent_suffix and format_tokens removed. state_file.rs JSON fixtures no longer emit tokens_in/tokens_out. agent.rs AgentInfo literal init has only the surviving fields. main.rs: apply_status_side_effects calls removed; restore-from-save tokens lines gone; LINCE-119 TODO markers removed. Build clean: 0 warnings, 0 errors.
+<!-- SECTION:FINAL_SUMMARY:END -->

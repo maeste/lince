@@ -292,15 +292,10 @@ pub struct AgentInfo {
     pub project_dir: String,
     pub status: AgentStatus,
     pub pane_id: Option<u32>,
-    pub tokens_in: u64,
-    pub tokens_out: u64,
-    pub current_tool: Option<String>,
     pub started_at: Option<u64>,
     pub last_error: Option<String>,
     pub exit_code: Option<i32>,
     pub group: Option<String>,
-    pub running_subagents: u32,
-    pub model: Option<String>,
     /// Last event string read by poll_status_files(), used for change detection.
     pub last_polled_event: Option<String>,
     /// Runtime-selected sandbox isolation level (wizard choice or saved state).
@@ -312,25 +307,6 @@ pub struct AgentInfo {
 }
 
 impl AgentInfo {
-    /// Clear transient fields based on current status.
-    /// Call after any status change to keep derived state consistent.
-    ///
-    /// LINCE-119 TODO: this whole method (and its `current_tool` /
-    /// `running_subagents` fields) is going away once `AgentInfo` is
-    /// trimmed to match the simplified `StatusMessage`. Kept temporarily
-    /// so call sites compile while LINCE-118 lands the type collapse.
-    pub fn apply_status_side_effects(&mut self) {
-        if matches!(
-            self.status,
-            AgentStatus::WaitingForInput | AgentStatus::Stopped
-        ) {
-            self.current_tool = None;
-        }
-        if matches!(self.status, AgentStatus::Stopped) {
-            self.running_subagents = 0;
-        }
-    }
-
     /// Status label with exit code annotation for stopped agents.
     pub fn status_display(&self) -> String {
         if self.status == AgentStatus::Stopped {
@@ -347,8 +323,14 @@ impl AgentInfo {
 // ── Save/Restore Types ───────────────────────────────────────────────
 
 /// Persistable subset of AgentInfo for save-and-quit.
+///
+/// LINCE-119: `tokens_in`/`tokens_out` removed alongside the rich telemetry
+/// fields in `AgentInfo`. Old `.lince-dashboard` files that still emit those
+/// keys load fine — serde silently ignores unknown fields by default — and
+/// every remaining field is `#[serde(default)]` so missing keys never panic.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SavedAgentInfo {
+    #[serde(default)]
     pub name: String,
     /// Agent type key referencing AgentTypeConfig in config. Defaults to DEFAULT_AGENT_TYPE for v1 compat.
     #[serde(default = "default_agent_type")]
@@ -357,10 +339,10 @@ pub struct SavedAgentInfo {
     /// pre-#81 `.lince-dashboard` files loadable.
     #[serde(default, alias = "profile")]
     pub provider: Option<String>,
+    #[serde(default)]
     pub project_dir: String,
+    #[serde(default)]
     pub group: Option<String>,
-    pub tokens_in: u64,
-    pub tokens_out: u64,
     /// Runtime sandbox level selected at spawn time. None for older state files (backward compat).
     #[serde(default)]
     pub sandbox_level: Option<String>,
@@ -381,8 +363,6 @@ impl From<&AgentInfo> for SavedAgentInfo {
             provider: a.provider.clone(),
             project_dir: a.project_dir.clone(),
             group: a.group.clone(),
-            tokens_in: a.tokens_in,
-            tokens_out: a.tokens_out,
             sandbox_level: a.sandbox_level.clone(),
             sandbox_backend: a.sandbox_backend.clone(),
         }

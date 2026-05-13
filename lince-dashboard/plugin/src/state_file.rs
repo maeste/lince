@@ -90,9 +90,7 @@ mod tests {
                     "name": "agent-1",
                     "agent_type": "claude",
                     "profile": "vertex",
-                    "project_dir": "/tmp/proj",
-                    "tokens_in": 0,
-                    "tokens_out": 0
+                    "project_dir": "/tmp/proj"
                 }
             ],
             "next_agent_id": 1
@@ -150,9 +148,7 @@ mod tests {
                     "name": "agent-1",
                     "agent_type": "claude",
                     "provider": "zai",
-                    "project_dir": "/tmp/proj",
-                    "tokens_in": 0,
-                    "tokens_out": 0
+                    "project_dir": "/tmp/proj"
                 }
             ],
             "next_agent_id": 1

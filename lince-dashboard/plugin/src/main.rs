@@ -1247,12 +1247,13 @@ impl State {
             None => return, // unknown agent, ignore
         };
 
-        // LINCE-118: drop legacy event handling.
+        // LINCE-118 + LINCE-119: legacy event handling removed.
         // - `ignore_wrapper_start` / `start` aliases: gone, alongside the
         //   `Starting` state and the wrapper-start suppression hack.
-        // - `subagent_start` / `subagent_stop`: rich subagent counter dropped
-        //   along with the AgentInfo.running_subagents field (LINCE-119).
-        // - tokens_in/out, tool_name, model: dropped from StatusMessage.
+        // - `subagent_start` / `subagent_stop`: rich subagent counter gone
+        //   together with `AgentInfo.running_subagents`.
+        // - `tokens_in`/`tokens_out`, `tool_name`, `model`: dropped from
+        //   both `StatusMessage` and `AgentInfo`.
         // Everything funnels through the canonical 5-state mapping now.
         let new_status = msg.to_agent_status(self.config.event_map_for(&agent.agent_type));
         agent.status = new_status;
@@ -1260,10 +1261,6 @@ impl State {
         if let Some(e) = msg.error {
             agent.last_error = Some(e);
         }
-        // LINCE-119 TODO: apply_status_side_effects clears legacy fields
-        // (current_tool, running_subagents) that will disappear with the
-        // AgentInfo cleanup. Keep the call until then so behaviour is stable.
-        agent.apply_status_side_effects();
     }
 
     /// Handle a "voxcode-text" pipe message — relay text to active agent (LINCE-43).
@@ -1333,7 +1330,6 @@ impl State {
                         agent.status = new_status;
                         changed = true;
                     }
-                    agent.apply_status_side_effects();
                 }
             }
         }
@@ -1387,8 +1383,6 @@ impl State {
             ) {
                 Ok(mut info) => {
                     info.group = saved.group;
-                    info.tokens_in = saved.tokens_in;
-                    info.tokens_out = saved.tokens_out;
                     self.agents.push(info);
                     spawned += 1;
                 }
