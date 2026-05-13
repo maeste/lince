@@ -75,6 +75,17 @@ sandbox_level = "normal"          # paranoid | normal | permissive (or custom; s
 # Uncomment to force a specific backend (overrides the OS default):
 # sandbox_backend = "nono"
 
+# Native hook events emitted by claude-status-hook.sh → canonical AgentStatus.
+# See LINCE-118 / LINCE-122. Canonical values: running | input | permission | stopped.
+[agents.claude.event_map]
+PreToolUse = "running"
+PostToolUse = "running"
+SessionStart = "running"
+UserPromptSubmit = "running"
+Stop = "stopped"
+idle_prompt = "input"
+permission_prompt = "permission"
+
 [agents.claude-unsandboxed]
 command = ["claude"]
 pane_title_pattern = "claude"
@@ -86,6 +97,15 @@ sandboxed = false
 has_native_hooks = true
 providers = ["__discover__"]
 
+[agents.claude-unsandboxed.event_map]
+PreToolUse = "running"
+PostToolUse = "running"
+SessionStart = "running"
+UserPromptSubmit = "running"
+Stop = "stopped"
+idle_prompt = "input"
+permission_prompt = "permission"
+
 [agents.codex]
 # Legacy fallback command — ignored when sandbox_level is set.
 command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "codex"]
@@ -95,7 +115,7 @@ display_name = "OpenAI Codex"
 short_label = "CDX"
 color = "cyan"
 sandboxed = true
-has_native_hooks = false
+has_native_hooks = true
 ignore_wrapper_start = true
 # Disables codex's own --sandbox so it doesn't fight ours.
 bwrap_conflict = true
@@ -109,6 +129,15 @@ sandbox_level = "normal"          # paranoid | normal | permissive (or custom; s
 [agents.codex.env_vars]
 OPENAI_API_KEY = "$OPENAI_API_KEY"
 
+# Native hook events emitted by codex-status-hook.sh → canonical AgentStatus.
+# Codex notify currently fires on turn completion; the hook forwards the
+# payload's `type` field (typically "agent-turn-complete") as the native event,
+# falling back to "turn_complete" if missing. Both map to "input" (waiting
+# for the user's next prompt). See LINCE-118 / LINCE-122.
+[agents.codex.event_map]
+"agent-turn-complete" = "input"
+turn_complete = "input"
+
 [agents.codex-unsandboxed]
 command = ["codex", "--full-auto"]
 pane_title_pattern = "codex"
@@ -117,13 +146,17 @@ display_name = "OpenAI Codex (unsandboxed)"
 short_label = "CDU"
 color = "red"
 sandboxed = false
-has_native_hooks = false
+has_native_hooks = true
 ignore_wrapper_start = true
 bwrap_conflict = false
 providers = ["__discover__"]
 
 [agents.codex-unsandboxed.env_vars]
 OPENAI_API_KEY = "$OPENAI_API_KEY"
+
+[agents.codex-unsandboxed.event_map]
+"agent-turn-complete" = "input"
+turn_complete = "input"
 
 [agents.gemini]
 # Legacy fallback command — ignored when sandbox_level is set.
@@ -170,7 +203,7 @@ display_name = "OpenCode"
 short_label = "OPC"
 color = "blue"
 sandboxed = true
-has_native_hooks = false
+has_native_hooks = true
 bwrap_conflict = false
 disable_inner_sandbox_args = []
 home_ro_dirs = ["~/.config/opencode/"]
@@ -178,6 +211,16 @@ providers = ["__discover__"]
 sandbox_level = "normal"          # paranoid | normal | permissive (or custom; see docs)
 # sandbox_backend defaults to bwrap on Linux, nono on macOS. Uncomment to override:
 # sandbox_backend = "nono"
+
+# Native hook events emitted by opencode-status-hook.js → canonical AgentStatus.
+# The plugin reports the raw OpenCode event.type, plus a busy/idle sub-state
+# for session.status. See LINCE-118 / LINCE-122.
+[agents.opencode.event_map]
+"session.created" = "input"
+"session.status.busy" = "running"
+"session.status.idle" = "input"
+"session.idle" = "input"
+"session.deleted" = "stopped"
 
 [agents.opencode-unsandboxed]
 command = ["opencode"]
@@ -187,9 +230,16 @@ display_name = "OpenCode (unsandboxed)"
 short_label = "OPU"
 color = "red"
 sandboxed = false
-has_native_hooks = false
+has_native_hooks = true
 home_ro_dirs = ["~/.config/opencode/"]
 providers = ["__discover__"]
+
+[agents.opencode-unsandboxed.event_map]
+"session.created" = "input"
+"session.status.busy" = "running"
+"session.status.idle" = "input"
+"session.idle" = "input"
+"session.deleted" = "stopped"
 
 [agents.pi]
 # Legacy fallback command — ignored when sandbox_level is set.
@@ -215,6 +265,15 @@ sandbox_level = "normal"          # paranoid | normal | permissive (or custom; s
 # level: copy the JSON to ~/.config/nono/profiles/lince-pi-<custom>.json,
 # extend `network.allow_domain` + `environment.passthrough`, then set
 # `sandbox_level = "<custom>"` here. See sandbox-levels.md.
+
+# Native hook events emitted by lince-pi-hook.ts → canonical AgentStatus.
+# See LINCE-118 / LINCE-122.
+[agents.pi.event_map]
+session_start = "input"
+turn_start = "running"
+tool_call = "running"
+turn_end = "input"
+session_shutdown = "stopped"
 
 [agents.pi.env_vars]
 ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
@@ -292,6 +351,13 @@ AWS_SECRET_ACCESS_KEY = "$AWS_SECRET_ACCESS_KEY"
 AWS_SESSION_TOKEN = "$AWS_SESSION_TOKEN"
 AWS_BEARER_TOKEN_BEDROCK = "$AWS_BEARER_TOKEN_BEDROCK"
 AWS_ENDPOINT_URL_BEDROCK_RUNTIME = "$AWS_ENDPOINT_URL_BEDROCK_RUNTIME"
+
+[agents.pi-unsandboxed.event_map]
+session_start = "input"
+turn_start = "running"
+tool_call = "running"
+turn_end = "input"
+session_shutdown = "stopped"
 
 # Raw shell agents (gh#91). Pinned to sandbox_level=normal, no providers.
 # See docs/documentation/dashboard/agent-examples.md §"Shell Agents".

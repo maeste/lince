@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 /**
  * opencode-status-hook.js — OpenCode plugin that reports session lifecycle
- * status to the lince-dashboard Zellij plugin via pipe (primary) and file (fallback).
+ * status to the lince-dashboard Zellij plugin via pipe (primary) and file
+ * (fallback).
  *
- * Handles events:
- *   - session.created  → status: idle (waiting for input)
- *   - session.status   → status: running (when busy) or idle (when ready)
- *   - session.idle     → status: idle
- *   - session.deleted  → status: stopped
+ * Emits a minimal JSON contract: {agent_id, event}. Native event names
+ * (event.type, plus the busy/idle sub-state of session.status) are forwarded
+ * verbatim — the dashboard's per-agent event_map (in agents-defaults.toml)
+ * maps them to canonical status values. See LINCE-118 / LINCE-122.
+ *
+ * Forwarded native event names:
+ *   - session.created
+ *   - session.status.busy   (session.status with properties.status.type=busy)
+ *   - session.status.idle   (session.status with properties.status.type=idle)
+ *   - session.idle
+ *   - session.deleted
  *
  * Environment:
  *   LINCE_AGENT_ID   — set by the dashboard when spawning the agent
@@ -22,28 +29,12 @@ import { join } from "path";
 const AGENT_ID = process.env.LINCE_AGENT_ID || "";
 const STATUS_DIR = process.env.LINCE_STATUS_DIR || "/tmp/lince-dashboard";
 
-function getTimestamp() {
-    try {
-        return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-    } catch {
-        return "";
-    }
-}
-
-function buildPayload(event, extra = {}) {
-    const base = {
-        agent_id: AGENT_ID,
-        event,
-        timestamp: getTimestamp(),
-        ...extra,
-    };
-    return JSON.stringify(base);
+function buildPayload(event) {
+    return JSON.stringify({ agent_id: AGENT_ID, event });
 }
 
 function sendViaZellijPipe(payload) {
-    if (!process.env.ZELLIJ) {
-        return false;
-    }
+    if (!process.env.ZELLIJ) return false;
     try {
         execSync(
             `echo '${payload.replace(/'/g, "'\\''")}' | timeout 2 zellij pipe --name "lince-status"`,
@@ -55,58 +46,46 @@ function sendViaZellijPipe(payload) {
     }
 }
 
-function writeStatusFile(status) {
+function writeStatusFile(event) {
     try {
         mkdirSync(STATUS_DIR, { recursive: true });
-        writeFileSync(join(STATUS_DIR, `${AGENT_ID}.state`), status);
+        writeFileSync(join(STATUS_DIR, `${AGENT_ID}.state`), event);
     } catch {
         // ignore
     }
 }
 
-function reportStatus(status, extra = {}) {
+function reportEvent(event) {
     if (!AGENT_ID) return;
-    sendViaZellijPipe(buildPayload(status, extra));
-    writeStatusFile(status);
-}
-
-function getModelFromEvent(event) {
-    return event.properties?.model || event.properties?.provider || null;
-}
-
-function getToolFromEvent(event) {
-    return event.properties?.toolName || event.properties?.tool || null;
+    sendViaZellijPipe(buildPayload(event));
+    writeStatusFile(event);
 }
 
 export default async ({ directory }) => {
     return {
         event: async ({ event }) => {
-            const extra = {};
-            const model = getModelFromEvent(event);
-            const tool = getToolFromEvent(event);
-            if (model) extra.model = model;
-            if (tool) extra.tool_name = tool;
-
             switch (event.type) {
                 case "session.created":
-                    reportStatus("idle", extra);
+                    reportEvent("session.created");
                     break;
 
-                case "session.status":
+                case "session.status": {
+                    let sub = "idle";
                     try {
-                        const statusType = event.properties?.status?.type;
-                        reportStatus(statusType === "busy" ? "running" : "idle", extra);
+                        sub = event.properties?.status?.type === "busy" ? "busy" : "idle";
                     } catch {
-                        reportStatus("idle", extra);
+                        sub = "idle";
                     }
+                    reportEvent(`session.status.${sub}`);
                     break;
+                }
 
                 case "session.idle":
-                    reportStatus("idle", extra);
+                    reportEvent("session.idle");
                     break;
 
                 case "session.deleted":
-                    reportStatus("stopped", extra);
+                    reportEvent("session.deleted");
                     break;
             }
         },
