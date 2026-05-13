@@ -2,11 +2,52 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use zellij_tile::prelude::*;
+use zellij_tile::shim::get_session_environment_variables;
 
 use crate::config::{
     shell_escape, AgentLayout, AgentTypeConfig, DashboardConfig, DEFAULT_SANDBOX_COMMAND,
 };
 use crate::sandbox_backend::SandboxBackend;
+
+/// Expand `$VAR` and `${VAR}` references in a string against the Zellij session
+/// environment.  Mirrors `_expand_env_value()` in `agent-sandbox` so unsandboxed
+/// agents get the same variable resolution.  Unknown variables expand to empty
+/// string (shell semantics).  Literal values without `$` pass through unchanged.
+fn expand_env_value(val: &str) -> String {
+    if !val.contains('$') {
+        return val.to_string();
+    }
+    let env = get_session_environment_variables();
+    let mut result = String::with_capacity(val.len());
+    let mut chars = val.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            let braced = chars.peek() == Some(&'{');
+            if braced {
+                chars.next(); // consume '{'
+            }
+            let mut name = String::new();
+            while let Some(&nc) = chars.peek() {
+                if nc == '_' || nc.is_ascii_alphanumeric() {
+                    name.push(chars.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+            if braced {
+                chars.next(); // consume '}'
+            }
+            if !name.is_empty() {
+                result.push_str(env.get(&name).map(|s| s.as_str()).unwrap_or(""));
+            } else {
+                result.push('$'); // lone '$' or '${}'
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
 
 /// Name of the lifecycle wrapper script for agents without native hooks.
 const AGENT_WRAPPER: &str = "lince-agent-wrapper";
@@ -350,13 +391,13 @@ fn spawn_inner(
                         expanded.push(var.clone());
                     }
                     for (k, v) in &details.env {
-                        expanded.push(format!("{}={}", k, v));
+                        expanded.push(format!("{}={}", k, expand_env_value(v)));
                     }
                 }
             }
             // Agent-type env vars (e.g. API keys)
             for (k, v) in &type_config.env_vars {
-                expanded.push(format!("{}={}", k, v));
+                expanded.push(format!("{}={}", k, expand_env_value(v)));
             }
         }
 
