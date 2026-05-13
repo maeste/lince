@@ -5,217 +5,290 @@ license: MIT
 compatibility: Requires lince-dashboard and agent-sandbox installed. Works with any agent supporting agentskills.io.
 metadata:
   author: lince
-  version: "1.0"
+  version: "2.0"
 ---
 
-# lince-add-supported-agent: Agent Self-Registration Skill
+# lince-add-supported-agent
 
-Register a new AI coding agent with the lince ecosystem (agent-sandbox + lince-dashboard).
+You are an AI assistant guiding the **user** through registering a new agent
+with the LINCE ecosystem (agent-sandbox + lince-dashboard). The output of this
+skill is user-side TOML config (plus an optional hook script), written to the
+user's `$HOME`. Nothing goes into the repo — shipped agents (claude, codex,
+gemini, opencode, pi, bash/zsh/fish) live in
+`lince-dashboard/agents-defaults.toml` and are out of scope.
 
-This skill walks you through self-identifying your capabilities, then generates and writes
-the correct TOML configuration so the dashboard can manage you and the sandbox can run you.
+References (consult as needed):
 
-## References
-
-- `references/config-schema.md` -- Full field reference for all config options
-- `references/examples.md` -- Real agent configuration examples
-- `scripts/validate-agent.sh` -- Post-registration validation script
-
----
-
-## Step 1: Self-Identify
-
-You are the agent being registered. Answer the following questions about YOURSELF.
-These are introspection questions -- describe your own binary, config, and runtime needs.
-
-Provide the following information:
-
-1. **Binary / command name**: What is the executable command to run you?
-   - Example: `codex`, `gemini`, `opencode`, `kiro`, `aider`
-
-2. **Config directory**: Where is your configuration stored on disk?
-   - Example: `~/.codex/`, `~/.config/opencode/`, `~/.gemini/`
-   - This directory will be bind-mounted read-only into the sandbox.
-
-3. **API key environment variables**: What env vars do you need for authentication?
-   - Example: `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`
-   - These will be passed through to the sandbox from the host environment.
-
-4. **Default CLI arguments**: What args should be used for autonomous/headless mode?
-   - Example: `["--full-auto"]`, `["--yes"]`, `[]`
-   - These are appended to every invocation by the sandbox.
-
-5. **Internal sandbox conflict**: Do you use bwrap, Docker, or any internal sandbox?
-   - If yes: what CLI flag disables your internal sandbox?
-   - Example: Codex uses bwrap internally, disabled with `--no-sandbox`
-   - Example: Gemini uses Docker sandbox, disabled with `--sandbox none`
-   - If no internal sandbox: `bwrap_conflict = false`
-
-Report all five answers before proceeding.
+- `references/config-schema.md` — Field reference (sandbox + dashboard)
+- `references/examples.md` — Shipped-agent configurations to model from
+- `references/hook-templates.md` — Hook script skeletons (bash / TS / JS)
+- `scripts/validate-agent.sh` — Post-registration validation, run as last step
 
 ---
 
-## Step 2: Derive Config Key
+## 1. Overview & Tier Model
 
-Convert your binary name into a config key:
-- Lowercase the name
-- Replace spaces and underscores with hyphens
-- Remove any special characters
+Pick the tier **first**, before writing anything. Ask the user explicitly.
 
-Examples: `codex` -> `codex`, `open_code` -> `open-code`, `My Agent` -> `my-agent`
+### Tier A — Native hooks (rich status)
 
-Present the derived key to the user and ask for confirmation before continuing.
+The agent runs an external program on lifecycle events (e.g. Claude Code's
+`PreToolUse` / `Stop`, Codex's `notify`, OpenCode events). Output:
+
+- `[agents.<key>]` in `~/.agent-sandbox/config.toml`
+- `[agents.<key>]` in `~/.config/lince-dashboard/agents-defaults.toml` with
+  `has_native_hooks = true` and a populated `[agents.<key>.event_map]`
+- Hook script in `~/.local/share/lince/hooks/<key>-status-hook.<ext>`
+
+Dashboard shows **Running / INPUT / PERMISSION / Stopped** for the agent's
+whole lifetime.
+
+### Tier B — Wrapper-only (Unknown)
+
+The agent has no native hook system (raw shells, simple CLIs, or any binary
+you don't yet know how to instrument). Output: only the two TOML sections,
+`has_native_hooks = false`, **no** hook script, **no** event_map. The
+dashboard displays `-` (Unknown) for the agent's lifetime. This is honest,
+not broken.
+
+### Tier C — User contribution
+
+Everything this skill produces is Tier C: it lives in the user's `$HOME`,
+never in the repo. Repo defaults are managed by `update.sh`.
+
+**State explicitly to the user**: *"If you are uncertain whether the agent
+has native hooks, pick Tier B. You can promote to Tier A later by writing a
+hook script and adding an event_map."*
 
 ---
 
-## Step 3: Check Existing Config
+## 2. Hook Contract (Tier A only)
 
-Before writing anything, check whether `[agents.<key>]` already exists in the sandbox config.
+The dashboard accepts a single minimal JSON message per Zellij pipe write:
 
-Read `~/.agent-sandbox/config.toml` and search for a section matching your derived key.
+```json
+{"agent_id": "<id>", "event": "<native_event_name>"}
+```
 
-- If the section **already exists**: inform the user and offer to **update** it rather than
-  creating a duplicate. Show the existing config block.
-- If the section **does not exist**: proceed to generation.
+- `agent_id` — value of `$LINCE_AGENT_ID`, set by the dashboard when spawning
+  the agent. The hook MUST exit 0 silently if this is empty.
+- `event` — the **native** event name from the agent (e.g. `PreToolUse`,
+  `idle_prompt`, `agent-turn-complete`). Do NOT translate inside the hook.
 
-Also check the dashboard config. The dashboard agents-defaults file is at
-`~/.agent-sandbox/agents-defaults.toml` (for the dashboard). Check for an existing
-`[<key>]` section there as well.
+The dashboard resolves it in this order:
+
+1. Look up `event` in `[agents.<key>.event_map]` → map to canonical
+2. If unmapped, check whether `event` is itself a canonical name
+3. Otherwise → `Unknown` + warning log line (no silent fallback)
+
+### Canonical events (the 5 m-15 states)
+
+| Canonical    | Meaning                                            |
+|--------------|----------------------------------------------------|
+| `running`    | Agent is actively working                          |
+| `input`      | Agent is waiting on the user (user's turn)         |
+| `permission` | Agent is asking approval for a tool / action       |
+| `stopped`    | Agent process ended (voluntary or error)           |
+| `unknown`    | Internal fallback only — do NOT emit from hooks    |
+
+Pipe name defaults to `lince-status`; override per-agent with
+`status_pipe_name = "..."` (e.g. Claude uses `"claude-status"`).
+
+After generation, verify wiring with:
+
+```bash
+echo '{"agent_id":"test","event":"running"}' | zellij pipe --name lince-status
+```
 
 ---
 
-## Step 4: Generate Sandbox TOML
+## 3. Decision Tree (walk the user through in order)
 
-Using the information from Step 1, generate an `[agents.<key>]` block for
-`~/.agent-sandbox/config.toml`:
+1. **Binary** — Command name and install path (e.g. `cursor-agent` at
+   `~/.local/bin/cursor-agent`). Verify with `command -v <binary>`.
+2. **Config directory** — Does the agent persist config / credentials on
+   disk? (e.g. `~/.cursor/`). This becomes `home_ro_dirs`. Empty list if none.
+3. **API key environment variables** — Which env vars must reach the agent?
+   (e.g. `CURSOR_API_KEY`). These populate `[agents.<key>.env_vars]`.
+4. **Internal sandbox conflict** — Does the agent itself use bwrap, Docker,
+   or seccomp internally? If yes, find the CLI flag that disables it and set
+   `bwrap_conflict = true` plus `disable_inner_sandbox_args`.
+5. **Has native lifecycle hooks?** This is the **Tier A vs B** decision.
+   - "Does the agent run an external program on tool use, idle, permission
+     prompts, or exit?" → Tier A.
+   - "No, it just runs and prints to stdout / takes stdin." → Tier B.
+6. **Hook language** (Tier A only) — bash / TypeScript / JavaScript. Default
+   to bash unless the agent's docs explicitly require a different runtime.
+
+Confirm all answers back to the user before writing anything.
+
+### Derive the config key
+
+Lowercase the binary name; replace spaces / underscores with hyphens; strip
+special characters (`cursor-agent` → `cursor-agent`, `Bob_CLI` → `bob-cli`).
+Show the derived key and ask for confirmation; allow override.
+
+---
+
+## 4. Generation Steps
+
+Pre-flight: check the target files for an existing `[agents.<key>]` section
+and ask **replace / keep / abort** before overwriting. The skill is
+idempotent — re-running must update in place, never duplicate.
+
+### 4.1 Sandbox TOML (always, both tiers)
+
+Target file: `~/.agent-sandbox/config.toml`.
 
 ```toml
 [agents.<key>]
 command = "<binary>"
-default_args = [<args as quoted strings>]
+default_args = [<headless args>]
 env = { <API_KEY> = "$<API_KEY>" }
-home_ro_dirs = ["<config_dir_relative_to_home>"]
+home_ro_dirs = ["<dir relative to ~>"]  # e.g. ".cursor" — no leading ~ or /
 home_rw_dirs = []
 bwrap_conflict = <true|false>
-disable_inner_sandbox_args = [<args if bwrap_conflict is true>]
+disable_inner_sandbox_args = [<args>]   # only when bwrap_conflict = true
 ```
 
-Notes on field values:
-- `home_ro_dirs` paths are relative to `~` (e.g. `.codex` not `~/.codex/`)
-- `env` uses `$VAR` syntax for environment variable expansion at runtime
-- `disable_inner_sandbox_args` is only needed when `bwrap_conflict = true`
-- See `references/config-schema.md` for the full field reference
+### 4.2 Dashboard TOML (always, both tiers)
 
----
-
-## Step 5: Generate Dashboard TOML
-
-Generate a dashboard agent type block. This goes in `~/.agent-sandbox/agents-defaults.toml`
-as a top-level `[<key>]` section (not under `[agents.]`):
+Target file: `~/.config/lince-dashboard/agents-defaults.toml` (user
+overrides — merged on top of the repo defaults at load time).
 
 ```toml
-[<key>]
-command = ["agent-sandbox", "run", "-a", "<key>", "-p", "{project_dir}"]
-display_name = "<Agent Display Name>"
-short_label = "<3CH>"
+[agents.<key>]
+command = ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}", "--agent", "<key>"]
+display_name = "<Human Name>"
+short_label = "<3 chars uppercase>"
 color = "<color>"
 sandboxed = true
-has_native_hooks = false
-pane_title_pattern = "<binary>"
+has_native_hooks = <true|false>
+pane_title_pattern = "agent-sandbox"
 status_pipe_name = "lince-status"
-```
+providers = ["__discover__"]
+sandbox_level = "normal"
+home_ro_dirs = ["~/<dir>/"]   # with ~/ prefix here, unlike sandbox config
 
-Apply these defaults (the skill knows the lince conventions):
-
-| Field | Default Value | Rationale |
-|-------|---------------|-----------|
-| `has_native_hooks` | `false` | Only Claude Code has native status hooks |
-| `status_pipe_name` | `"lince-status"` | Standard pipe for non-Claude agents via lince-agent-wrapper |
-| `sandboxed` | `true` | Lince convention: all agents run sandboxed |
-| `pane_title_pattern` | binary name | Used by dashboard to detect agent panes |
-| `color` | suggest based on name | Pick from: red, green, yellow, blue, magenta, cyan, white |
-| `short_label` | first 3 chars, uppercase | 3-character label for table column |
-
-If the agent needs API key env vars, add an `[<key>.env_vars]` sub-table:
-
-```toml
-[<key>.env_vars]
+[agents.<key>.env_vars]
 <API_KEY> = "$<API_KEY>"
 ```
 
-If there is a bwrap conflict, include:
+LINCE defaults to apply without asking the user:
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `has_native_hooks` | from Tier A/B | `true` only for Tier A |
+| `status_pipe_name` | `"lince-status"` | Reserved: `"claude-status"` for Claude |
+| `sandboxed` | `true` | Add `<key>-unsandboxed` variant only if asked |
+| `pane_title_pattern` | `"agent-sandbox"` (sandboxed) or `<binary>` (unsandboxed) | |
+| `color` | propose by name | red, green, yellow, blue, magenta, cyan, white |
+| `short_label` | first 3 chars uppercase | Pad with space if needed |
+| `sandbox_level` | `"normal"` | Omit for shells / no-provider agents |
+
+### 4.3 Tier A only: event_map + hook script
+
+Append an `event_map` sub-table mapping the agent's **native** event names to
+canonical events. Propose entries from the agent's docs; prompt the user if
+unknown. Example:
 
 ```toml
-bwrap_conflict = true
-disable_inner_sandbox_args = [<args>]
+[agents.<key>.event_map]
+"PreToolUse"     = "running"
+"idle_prompt"    = "input"
+"permission_prompt" = "permission"
+"Stop"           = "stopped"
 ```
 
-If the agent needs config dirs mounted read-only:
+For Tier B: **omit** `event_map` entirely.
 
-```toml
-home_ro_dirs = ["~/.config_dir/"]
+Write the hook script to `~/.local/share/lince/hooks/<key>-status-hook.<ext>`
+using a template from `references/hook-templates.md`. The bash skeleton:
+
+```bash
+#!/usr/bin/env bash
+set -uo pipefail
+AGENT_ID="${1:-unknown}"
+PIPE_NAME="${LINCE_PIPE:-lince-status}"
+
+send() {
+    local event="$1"
+    local payload
+    payload=$(printf '{"agent_id":"%s","event":"%s"}' "$AGENT_ID" "$event")
+    if command -v zellij >/dev/null 2>&1 && [[ -n "${ZELLIJ:-}" ]]; then
+        echo "$payload" | zellij pipe --name "$PIPE_NAME" 2>/dev/null || true
+    fi
+    mkdir -p /tmp/lince-dashboard
+    echo "$payload" > "/tmp/lince-dashboard/${AGENT_ID}.state"
+}
+
+# TODO: customise the trigger logic for your agent.
+# Example: parse stdin JSON, watch a file, etc., then call:
+#   send "running"   |   send "input"   |   send "permission"   |   send "stopped"
 ```
+
+Then `chmod +x` the file. Show the user the pipe test command from §2 and
+tell them what they still need to fill in (the event-detection logic).
+
+### 4.4 Tier B only
+
+Skip hooks. State explicitly to the user: *"The dashboard will show `-` for
+this agent. That is expected — there is no signal to read."*
 
 ---
 
-## Step 6: Write Config
+## 5. Examples (reference implementations)
 
-Present BOTH generated TOML blocks to the user in a single summary:
+Point the user at these in-repo examples (read-only, ship with LINCE):
 
-```
-=== Sandbox Config (appended to ~/.agent-sandbox/config.toml) ===
-<sandbox TOML block>
+| Tier | Agent | Reference files |
+|------|-------|-----------------|
+| A (rich) | Claude Code | `lince-dashboard/hooks/claude-status-hook.sh`, `[agents.claude]` + `[agents.claude.event_map]` in `lince-dashboard/agents-defaults.toml` |
+| A (lean) | Codex | `lince-dashboard/hooks/codex-status-hook.sh`, `[agents.codex]` + `[agents.codex.event_map]` in `lince-dashboard/agents-defaults.toml` |
+| B | Gemini | `[agents.gemini]` with `has_native_hooks = false` (no event_map, no hook script) in `lince-dashboard/agents-defaults.toml` |
+| B | Bash / Zsh / Fish | `[agents.bash]` etc. — `has_native_hooks = false`, no providers, no event_map |
+| C | User-side | Anything generated by this skill, in `~/.config/lince-dashboard/agents-defaults.toml` (same schema, $HOME instead of repo) |
 
-=== Dashboard Config (appended to ~/.agent-sandbox/agents-defaults.toml) ===
-<dashboard TOML block>
-```
-
-Ask the user to confirm before writing. Upon confirmation:
-
-1. **Sandbox config**: Append the sandbox TOML block to `~/.agent-sandbox/config.toml`
-   - Use `cat >> ~/.agent-sandbox/config.toml` or equivalent append operation
-   - Add a blank line before the new block for readability
-   - Do NOT overwrite the existing file
-
-2. **Dashboard config**: Append the dashboard TOML block to `~/.agent-sandbox/agents-defaults.toml`
-   - Use `cat >> ~/.agent-sandbox/agents-defaults.toml` or equivalent append operation
-   - Add a blank line before the new block for readability
-   - Do NOT overwrite the existing file
-
-This skill must be **idempotent**: if a section already exists (detected in Step 3),
-update it in place rather than appending a duplicate.
+See `references/examples.md` for full TOML snippets.
 
 ---
 
-## Step 7: Validate
+## 6. Validate
 
-After writing, run the validation script to verify correctness:
+After writing, run:
 
 ```bash
 bash <skill_dir>/scripts/validate-agent.sh <key>
 ```
 
-Or run the dry-run command directly:
+The script:
 
-```bash
-agent-sandbox run -a <key> -p /tmp/test --dry-run
-```
+- Parses both TOML files with `python3 -c "import tomllib; ..."` (FAIL on
+  syntax error)
+- Confirms `[agents.<key>]` exists in both files
+- Verifies the binary is in `PATH`
+- Tier A: syntax-checks the hook script (`bash -n`) and verifies every
+  `event_map` value is a canonical event (`running|input|permission|stopped`)
+- Tier B: confirms `has_native_hooks = false` and that no hook script and no
+  `event_map` were written
+- Prints **PASS / FAIL** summary
 
-Check the output for errors. If the dry run succeeds, registration is complete.
-If it fails, review the error message, fix the config, and re-run validation.
+Report the output verbatim to the user. On failure, surface the message and
+offer to re-edit.
 
 ---
 
 ## Important Notes
 
-- This skill is idempotent. Running it again for the same agent detects existing
-  config and offers to update rather than duplicate.
-- The `has_native_hooks` field should be `false` for all agents except Claude Code.
-  Agents without native hooks use lince-agent-wrapper for status reporting.
-- The `status_pipe_name` for non-Claude agents is always `lince-status`.
-  Claude Code uses `claude-status` (reserved).
-- Colors must be valid ANSI color names: red, green, yellow, blue, magenta, cyan, white.
-- The `{project_dir}` placeholder in the dashboard command template is replaced at
-  runtime with the actual project directory path.
-- See `references/config-schema.md` for complete field documentation.
-- See `references/examples.md` for real-world agent configuration examples.
+- The skill is **idempotent** — re-running for the same key updates in place.
+- Never write into the repo's `lince-dashboard/agents-defaults.toml`. That
+  file ships with LINCE and is managed by `update.sh`.
+- All file writes go through this skill — never by hand instructions
+  (project CLAUDE.md, no-manual-edits rule).
+- The dashboard config file uses the same `[agents.<key>]` nested table form
+  as the sandbox config. Field semantics differ (see `references/config-schema.md`)
+  but the section header pattern is identical.
+- `event_map` values are validated against the closed set
+  `{running, input, permission, stopped}`. Typos cause silent dev-only warnings
+  to stderr — the validate script catches them.
+- Unknown / unmapped events resolve to `Unknown` with a warning, not a fallback.

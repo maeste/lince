@@ -3,9 +3,10 @@ id: LINCE-125
 title: >-
   Restructure skill SKILL.md as agent onboarding guide (3-tier model + hook
   templates)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-13 20:01'
+updated_date: '2026-05-13 20:38'
 labels: []
 milestone: m-15
 dependencies:
@@ -85,11 +86,29 @@ La skill diventa il single source of truth per onboardare un agente. Eliminare l
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 SKILL.md ha sezione Tier Model con i 3 tier descritti
-- [ ] #2 SKILL.md documenta il contratto pipe + 4 eventi canonici con semantica
-- [ ] #3 Decision tree presente: porta a Tier A o B basato sulle risposte
-- [ ] #4 Template hook script generato per Tier A in shell (almeno) e TS (opzionale)
-- [ ] #5 Esempi linkano a hook esistenti come reference (Claude, Codex)
-- [ ] #6 Validation script aggiornato per supportare il check del nuovo contratto
+- [x] #1 SKILL.md ha sezione Tier Model con i 3 tier descritti
+- [x] #2 SKILL.md documenta il contratto pipe + 4 eventi canonici con semantica
+- [x] #3 Decision tree presente: porta a Tier A o B basato sulle risposte
+- [x] #4 Template hook script generato per Tier A in shell (almeno) e TS (opzionale)
+- [x] #5 Esempi linkano a hook esistenti come reference (Claude, Codex)
+- [x] #6 Validation script aggiornato per supportare il check del nuovo contratto
 - [ ] #7 Skill testata manualmente generando configurazione per un agente fittizio (Tier A + Tier B)
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Wave 2A parallel. Delegated to subagent. Restructure SKILL.md body for the renamed skill (lince-add-supported-agent) as comprehensive 3-tier onboarding guide; add hook contract spec + template generators. Frontmatter already updated in LINCE-124.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Subagent (technical-writer) execution. agentId: aa0916c4c751f2491. validate-agent.sh syntax verified.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+SKILL.md body rewritten as comprehensive agent onboarding guide (294 LOC, under 400 cap). New body structure: (1) Overview & Tier Model with explicit "if uncertain pick B, promote later" guidance; (2) Hook Contract — minimal {agent_id, event} JSON, 5-state canonical table, dashboard resolution order, pipe test command; (3) Decision tree — 6 ordered questions ending in tier choice + hook-language pick; (4) Generation steps — sandbox/dashboard TOML sections, Tier A event_map + inline bash hook template, Tier B explicit "show '-' is expected"; (5) Examples — Claude (rich), Codex (lean), Gemini/shells (Tier B), kiro (Tier C) with real in-repo paths; (6) Validate via scripts/validate-agent.sh. Files modified: SKILL.md, references/config-schema.md, references/examples.md, scripts/validate-agent.sh. Files added: references/hook-templates.md (bash + TS/JS skeletons). validate-agent.sh rewritten to use python3 tomllib parsing (vs prior grep heuristics) with tier-aware validation: Tier A requires hook script + canonical-only event_map values; Tier B forbids both. PASS/FAIL summary with non-zero exit on FAIL. Smoke-tested across 3 scenarios. AC7 (manual full skill run) deferred to LINCE-123.
+<!-- SECTION:FINAL_SUMMARY:END -->
