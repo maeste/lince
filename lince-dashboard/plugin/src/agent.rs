@@ -512,7 +512,11 @@ fn spawn_inner(
         agent_type: agent_type.to_string(),
         provider,
         project_dir,
-        status: AgentStatus::Starting,
+        // LINCE-118: `Starting` collapsed away — use `Unknown` until the
+        // first real hook event arrives. Pane reconciliation still keys off
+        // `pane_id.is_none()` (not on status) to claim the freshly spawned
+        // pane, so this preserves the existing matching flow.
+        status: AgentStatus::Unknown,
         pane_id: None,
         tokens_in: 0,
         tokens_out: 0,
@@ -621,7 +625,7 @@ pub fn reconcile_panes(
                     changed = true;
                 }
             }
-        } else if agent.status == AgentStatus::Starting {
+        } else if agent.status == AgentStatus::Unknown {
             // Resolve pane title patterns for this agent's type. For sandboxed
             // agents the actual title varies by backend (agent-sandbox / nono /
             // bash wrapper), so we accept any of: the TOML-configured pattern,

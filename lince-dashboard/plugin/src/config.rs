@@ -51,11 +51,6 @@ pub struct AgentTypeConfig {
     /// Arguments to disable agent's own sandbox (e.g. ["--sandbox", "none"]).
     #[serde(default)]
     pub disable_inner_sandbox_args: Vec<String>,
-    /// If true, ignore the generic wrapper's initial "start" event when the
-    /// agent is still in Starting/WaitingForInput state. Useful for agents
-    /// that launch into an interactive prompt (e.g. Codex).
-    #[serde(default)]
-    pub ignore_wrapper_start: bool,
     /// Custom mapping from agent event names to lince status strings.
     #[serde(default)]
     pub event_map: HashMap<String, String>,
