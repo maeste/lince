@@ -285,6 +285,31 @@ fn synthesize_sandboxed_command(
     })
 }
 
+/// Detect a `$VAR` / `${VAR}` self-reference where the referenced name
+/// matches the key. These are passthrough declarations in
+/// `agents-defaults.toml` (e.g. `ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"`)
+/// documenting which host env vars an unsandboxed agent expects.
+///
+/// We can't shell-expand them here: the spawn path execs `/usr/bin/env`
+/// directly, and the WASI plugin sandbox doesn't reliably expose host env
+/// to `std::env::var`. Emitting `K=$K` literally would override the value
+/// inherited from the parent (Zellij) process with the string `$K`, which
+/// is exactly the pi-unsandboxed auth bug. Skipping these entries lets the
+/// inherited value flow through untouched.
+///
+/// Non-self-references (literal values like `"true"`, or hypothetical
+/// cross-refs `KEY=$OTHER`) return false and continue to be emitted —
+/// cross-refs aren't used in any shipped config and would need a separate
+/// fix if introduced.
+fn is_env_passthrough_self_ref(key: &str, value: &str) -> bool {
+    let inner = if let Some(stripped) = value.strip_prefix("${") {
+        stripped.strip_suffix('}')
+    } else {
+        value.strip_prefix('$')
+    };
+    matches!(inner, Some(name) if name == key)
+}
+
 /// POSIX shell quoting for embedding strings inside `bash -c '...'`
 /// wrappers. Strings containing only alphanumerics and a few obviously
 /// safe punctuation chars pass through unchanged for readability;
@@ -340,7 +365,15 @@ fn spawn_inner(
         let mut expanded: Vec<String> = Vec::new();
 
         // For non-sandboxed agents, apply provider env vars via `env` command.
-        // Sandboxed agents go through agent-sandbox which handles env internally.
+        // Sandboxed agents go through agent-sandbox which handles env internally
+        // (see sandbox/agent-sandbox `_expand_env_value`, which resolves $VAR
+        // against os.environ before handing off to bwrap).
+        //
+        // `$VARNAME` self-references are passthrough declarations — see
+        // `is_env_passthrough_self_ref`. We skip them so the value inherited
+        // from Zellij's parent process flows through; emitting them literally
+        // would override the inherited value with the string "$VARNAME"
+        // (this is the pi-unsandboxed auth bug).
         if !type_config.sandboxed {
             // Unset conflicting env vars from provider
             if let Some(ref prov_name) = provider {
@@ -350,12 +383,18 @@ fn spawn_inner(
                         expanded.push(var.clone());
                     }
                     for (k, v) in &details.env {
+                        if is_env_passthrough_self_ref(k, v) {
+                            continue;
+                        }
                         expanded.push(format!("{}={}", k, v));
                     }
                 }
             }
             // Agent-type env vars (e.g. API keys)
             for (k, v) in &type_config.env_vars {
+                if is_env_passthrough_self_ref(k, v) {
+                    continue;
+                }
                 expanded.push(format!("{}={}", k, v));
             }
         }
@@ -629,4 +668,53 @@ pub fn reconcile_panes(
     // with a "Stopped" status until the user manually removes them with [x].
 
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passthrough_self_ref_dollar_form() {
+        assert!(is_env_passthrough_self_ref(
+            "ANTHROPIC_API_KEY",
+            "$ANTHROPIC_API_KEY"
+        ));
+    }
+
+    #[test]
+    fn passthrough_self_ref_brace_form() {
+        assert!(is_env_passthrough_self_ref(
+            "OPENAI_API_KEY",
+            "${OPENAI_API_KEY}"
+        ));
+    }
+
+    #[test]
+    fn literal_values_are_not_passthrough() {
+        assert!(!is_env_passthrough_self_ref(
+            "GEMINI_FORCE_FILE_STORAGE",
+            "true"
+        ));
+        assert!(!is_env_passthrough_self_ref("AWS_REGION", "us-east-1"));
+    }
+
+    #[test]
+    fn cross_reference_is_not_passthrough() {
+        // $OTHER is a different name — keep emitting it (the user explicitly
+        // asked for a remap; today no shipped config does this, but we don't
+        // want to silently drop it).
+        assert!(!is_env_passthrough_self_ref(
+            "ANTHROPIC_BASE_URL",
+            "$OPENAI_BASE_URL"
+        ));
+    }
+
+    #[test]
+    fn empty_or_partial_dollar_is_not_passthrough() {
+        assert!(!is_env_passthrough_self_ref("FOO", "$"));
+        assert!(!is_env_passthrough_self_ref("FOO", "${FOO"));
+        assert!(!is_env_passthrough_self_ref("FOO", "$FOO_EXTRA"));
+        assert!(!is_env_passthrough_self_ref("FOO", ""));
+    }
 }
