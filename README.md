@@ -120,7 +120,7 @@ Dashboard:       Status updates in real-time (Running → INPUT → Idle)
 
 ### [lince-dashboard/](lince-dashboard/)
 
-The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that manages multiple AI coding agents (Claude Code, Codex, Gemini, OpenCode, and any custom agent). Spawn agents, monitor status, show/hide panes, relay voice input, persist sessions. Agent types are fully config-driven — add new agents via TOML or use the `/lince-setup` skill. See [lince-dashboard/README.md](lince-dashboard/README.md).
+The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that manages multiple AI coding agents (Claude Code, Codex, Gemini, OpenCode, and any custom agent). Spawn agents, monitor status, show/hide panes, relay voice input, persist sessions. Agent types are fully config-driven — add new agents via TOML or use the `/lince-add-supported-agent` skill. See [lince-dashboard/README.md](lince-dashboard/README.md).
 
 Documentation: [Usage Guide](https://lince.sh/documentation/#/dashboard/usage-guide) | [Configuration](https://lince.sh/documentation/#/dashboard/config-reference) | [Agent Examples](https://lince.sh/documentation/#/dashboard/agent-examples)
 
@@ -136,7 +136,7 @@ Bubblewrap-based sandbox for running AI coding agents safely. Restricts filesyst
 
 Documentation: [CLI Reference](https://lince.sh/documentation/#/sandbox/cli-reference) | [Configuration](https://lince.sh/documentation/#/sandbox/config-reference) | [Security Model](https://lince.sh/documentation/#/sandbox/security-model)
 
-### `/lince-setup` skill (bundled with lince-dashboard)
+### `/lince-add-supported-agent` skill (bundled with lince-dashboard)
 
 An [agentskills.io](https://agentskills.io)-compliant skill that lets any AI coding agent register itself with the lince ecosystem. Generates correct TOML configuration for both agent-sandbox and lince-dashboard. Installed automatically by `lince-dashboard/install.sh`.
 

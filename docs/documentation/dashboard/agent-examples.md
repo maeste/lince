@@ -63,9 +63,9 @@ Use unsandboxed mode only in trusted environments where sandbox restrictions are
 
 ## Adding a Custom Agent
 
-### Automatic: /lince-setup Skill
+### Automatic: /lince-add-supported-agent Skill
 
-The easiest way to add a new agent is the `/lince-setup` skill. Run the target agent outside the dashboard, invoke `/lince-setup`, and the agent describes its own requirements. The skill generates correct TOML for both sandbox and dashboard configs.
+The easiest way to add a new agent is the `/lince-add-supported-agent` skill. Run the target agent outside the dashboard, invoke `/lince-add-supported-agent`, and the agent describes its own requirements. The skill generates correct TOML for both sandbox and dashboard configs.
 
 For ongoing configuration changes (providers, sandbox levels, API keys, diagnostics), use the **`/lince-configure` skill** — a natural-language interface backed by the `lince-config` CLI that supports both conversational and guided-menu interaction.
 

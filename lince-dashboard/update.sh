@@ -86,15 +86,22 @@ if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
 fi
 echo ""
 
-# ── Lince-setup skill ────────────────────────────────────────────────
-echo -e "${GREEN}[8/8] Updating lince-setup skill...${NC}"
-SKILL_SRC="$SCRIPT_DIR/skills/lince-setup"
-SKILL_DST="$HOME/.claude/skills/lince-setup"
+# ── Lince-add-supported-agent skill ──────────────────────────────────
+echo -e "${GREEN}[8/8] Updating lince-add-supported-agent skill...${NC}"
+SKILL_SRC="$SCRIPT_DIR/skills/lince-add-supported-agent"
+SKILL_DST="$HOME/.claude/skills/lince-add-supported-agent"
 
 if [ -d "$SKILL_SRC" ]; then
     mkdir -p "$SKILL_DST"
     cp -r "$SKILL_SRC/." "$SKILL_DST/"
     echo -e "${GREEN}  ✓ Skill updated${NC}"
+fi
+
+# Cleanup: remove the old skill dir from the previous skill name.
+OLD_SKILL_DST="$HOME/.claude/skills/lince-setup"
+if [ -d "$OLD_SKILL_DST" ]; then
+    rm -rf "$OLD_SKILL_DST"
+    echo -e "${GREEN}  ✓ Removed legacy ~/.claude/skills/lince-setup/${NC}"
 fi
 echo ""
 

@@ -1,6 +1,6 @@
 ---
-name: lince-setup
-description: Register a new AI coding agent with the lince-dashboard and agent-sandbox. The agent provides its own requirements (binary, config dirs, API keys, sandbox behavior) and this skill generates correct TOML configuration. Use when adding a new agent type, setting up multi-agent support, or when asked to add agent, register agent, setup agent, configure agent for dashboard.
+name: lince-add-supported-agent
+description: Add support for a new AI coding agent (or CLI tool) to lince-dashboard and agent-sandbox. The agent provides its own requirements (binary, config dirs, API keys, sandbox behavior) and this skill generates correct TOML configuration. Use when adding a new agent type, setting up multi-agent support, or when asked to add agent, new agent type, support cursor, support bob, support cli, register agent, setup agent, configure agent for dashboard.
 license: MIT
 compatibility: Requires lince-dashboard and agent-sandbox installed. Works with any agent supporting agentskills.io.
 metadata:
@@ -8,7 +8,7 @@ metadata:
   version: "1.0"
 ---
 
-# lince-setup: Agent Self-Registration Skill
+# lince-add-supported-agent: Agent Self-Registration Skill
 
 Register a new AI coding agent with the lince ecosystem (agent-sandbox + lince-dashboard).
 

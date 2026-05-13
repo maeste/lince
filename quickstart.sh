@@ -401,7 +401,7 @@ select_agents() {
     if [ ${#SELECTED_AGENTS[@]} -eq 0 ]; then
         echo -e "  ${YELLOW}No agents selected. The dashboard will be installed${NC}"
         echo -e "  ${YELLOW}but no agent types will be pre-configured.${NC}"
-        echo -e "  ${DIM}You can add agents later via /lince-setup or config.toml.${NC}"
+        echo -e "  ${DIM}You can add agents later via /lince-add-supported-agent or config.toml.${NC}"
     else
         echo -e "  ${GREEN}✓${NC} Selected: ${BOLD}${SELECTED_AGENTS[*]}${NC}"
     fi
@@ -734,7 +734,7 @@ generate_agent_defaults() {
 
     if [ ! -f "$src" ]; then
         echo -e "  ${YELLOW}⚠ agents-defaults.toml not found — using empty config${NC}"
-        echo "# No agent types configured. Add agents via /lince-setup or edit this file." > "$dst"
+        echo "# No agent types configured. Add agents via /lince-add-supported-agent or edit this file." > "$dst"
         return
     fi
 
