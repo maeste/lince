@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# lince-agent-wrapper — Generic wrapper that reports Started/Stopped lifecycle
-# status for any agent that lacks native hooks (Codex, Gemini, OpenCode, etc.).
+# lince-agent-wrapper — Generic wrapper that reports Stopped lifecycle status
+# for any agent that lacks native hooks (Codex, Gemini, OpenCode, etc.).
 #
 # Usage:
 #   lince-agent-wrapper <AGENT_ID> <PIPE_NAME> <command> [args...]
@@ -8,8 +8,7 @@
 # Example:
 #   lince-agent-wrapper agent-5 lince-status codex --full-auto
 #
-# On startup:  sends {"agent_id":"<AGENT_ID>","event":"start"} via zellij pipe
-# On exit:     sends {"agent_id":"<AGENT_ID>","event":"stopped"} via zellij pipe
+# On exit: sends {"agent_id":"<AGENT_ID>","event":"stopped"} via zellij pipe
 #
 # If zellij is not available, the agent command still runs normally.
 # Status is also written to /tmp/lince-dashboard/ as a file-based fallback.
@@ -67,8 +66,6 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Main -------------------------------------------------------------------
-
-send_event "start"
 
 # Run the agent command, preserving stdin/stdout/stderr
 "$@"

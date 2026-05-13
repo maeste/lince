@@ -1,45 +1,42 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentStatus {
-    Starting,
+    /// Initial / unobserved state (no hook event received yet, or unknown event).
+    Unknown,
     Running,
-    #[allow(dead_code)] // mapped from hook events, not all paths trigger currently
-    Idle,
     WaitingForInput,
     PermissionRequired,
     Stopped,
-    #[allow(dead_code)] // reserved for error reporting from hooks
-    Error(String),
 }
 
 impl AgentStatus {
     /// Returns ANSI color code for this status
     pub fn color(&self) -> &str {
         match self {
-            AgentStatus::Starting => "\x1b[36m",            // cyan
-            AgentStatus::Running => "\x1b[32m",             // green
-            AgentStatus::Idle => "\x1b[33m",                // yellow
-            AgentStatus::WaitingForInput => "\x1b[1;33m",   // bold yellow
+            AgentStatus::Unknown => "\x1b[90m",              // dim gray
+            AgentStatus::Running => "\x1b[32m",              // green
+            AgentStatus::WaitingForInput => "\x1b[1;33m",    // bold yellow
             AgentStatus::PermissionRequired => "\x1b[1;31m", // bold red
-            AgentStatus::Stopped => "\x1b[2m",              // dim
-            AgentStatus::Error(_) => "\x1b[31m",            // red
+            AgentStatus::Stopped => "\x1b[2m",               // dim
         }
     }
 
     /// Human-readable label
     pub fn label(&self) -> &str {
         match self {
-            AgentStatus::Starting => "Starting",
+            AgentStatus::Unknown => "-",
             AgentStatus::Running => "Running",
-            AgentStatus::Idle => "Idle",
             AgentStatus::WaitingForInput => "INPUT",
             AgentStatus::PermissionRequired => "PERMISSION",
             AgentStatus::Stopped => "Stopped",
-            AgentStatus::Error(_) => "Error",
         }
     }
 }
 
-/// Status message received from Claude Code hooks via zellij pipe or file.
+/// Status message received from agent hooks via zellij pipe or file.
+///
+/// Trimmed in LINCE-118: hooks now only carry the bare minimum needed to drive
+/// the 5-state status machine. Rich telemetry (tokens, tool name, model, etc.)
+/// was removed along with the dashboard fields that consumed it.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct StatusMessage {
     pub agent_id: String,
@@ -48,54 +45,54 @@ pub struct StatusMessage {
     #[allow(dead_code)] // deserialized from hook JSON, reserved for elapsed time display
     pub timestamp: Option<String>,
     #[serde(default)]
-    pub tool_name: Option<String>,
-    #[serde(default)]
-    pub tokens_in: Option<u64>,
-    #[serde(default)]
-    pub tokens_out: Option<u64>,
-    #[serde(default)]
     pub error: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)] // deserialized from hook JSON, reserved for subagent type display
-    pub subagent_type: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
 }
 
 /// Map a canonical status string to AgentStatus.
+///
 /// Used for event_map values and as the first pass for raw event matching.
-fn canonical_status(s: &str) -> Option<AgentStatus> {
+/// LINCE-118: closed set of exactly 5 lowercase strings; all legacy aliases
+/// (`start`, `idle`, `waiting_for_input`, `permission_required`) are gone.
+/// Agent-specific event names (e.g. Claude's `PreToolUse`) must be translated
+/// via per-agent `event_map` config entries instead.
+pub(crate) fn canonical_status(s: &str) -> Option<AgentStatus> {
     match s {
+        "unknown" => Some(AgentStatus::Unknown),
+        "running" => Some(AgentStatus::Running),
+        "input" => Some(AgentStatus::WaitingForInput),
+        "permission" => Some(AgentStatus::PermissionRequired),
         "stopped" => Some(AgentStatus::Stopped),
-        "running" | "start" => Some(AgentStatus::Running),
-        "idle" | "waiting_for_input" => Some(AgentStatus::WaitingForInput),
-        "permission" | "permission_required" => Some(AgentStatus::PermissionRequired),
         _ => None,
     }
 }
 
 impl StatusMessage {
     /// Map the event string to an AgentStatus.
-    /// Priority: custom event_map → canonical names → Claude-specific aliases → Running.
+    ///
+    /// Resolution order (LINCE-118):
+    /// 1. Per-agent `event_map` translates the raw event to a canonical string.
+    /// 2. The raw event is itself a canonical string.
+    /// 3. Fallback: `AgentStatus::Unknown` (a warning is emitted to stderr so
+    ///    misconfigured event maps are visible during development).
     pub fn to_agent_status(&self, event_map: Option<&std::collections::HashMap<String, String>>) -> AgentStatus {
-        // 1. Custom event_map lookup
+        // 1. Custom event_map lookup — translate raw event → canonical → status.
         if let Some(map) = event_map {
             if let Some(mapped) = map.get(&self.event) {
-                return canonical_status(mapped).unwrap_or(AgentStatus::Running);
+                if let Some(status) = canonical_status(mapped) {
+                    return status;
+                }
             }
         }
-        // 2. Canonical status names
+        // 2. Raw event already matches a canonical name.
         if let Some(status) = canonical_status(&self.event) {
             return status;
         }
-        // 3. Claude Code-specific aliases
-        match self.event.as_str() {
-            "Stop" => AgentStatus::Stopped,
-            "PreToolUse" => AgentStatus::Running,
-            "idle_prompt" => AgentStatus::WaitingForInput,
-            "permission_prompt" => AgentStatus::PermissionRequired,
-            _ => AgentStatus::Running,
-        }
+        // 3. Unknown event → log and fall back to Unknown.
+        eprintln!(
+            "warning: unknown agent event '{}' from {}, mapping to Unknown",
+            self.event, self.agent_id
+        );
+        AgentStatus::Unknown
     }
 }
 
@@ -295,15 +292,10 @@ pub struct AgentInfo {
     pub project_dir: String,
     pub status: AgentStatus,
     pub pane_id: Option<u32>,
-    pub tokens_in: u64,
-    pub tokens_out: u64,
-    pub current_tool: Option<String>,
     pub started_at: Option<u64>,
     pub last_error: Option<String>,
     pub exit_code: Option<i32>,
     pub group: Option<String>,
-    pub running_subagents: u32,
-    pub model: Option<String>,
     /// Last event string read by poll_status_files(), used for change detection.
     pub last_polled_event: Option<String>,
     /// Runtime-selected sandbox isolation level (wizard choice or saved state).
@@ -315,20 +307,6 @@ pub struct AgentInfo {
 }
 
 impl AgentInfo {
-    /// Clear transient fields based on current status.
-    /// Call after any status change to keep derived state consistent.
-    pub fn apply_status_side_effects(&mut self) {
-        if matches!(
-            self.status,
-            AgentStatus::WaitingForInput | AgentStatus::Idle | AgentStatus::Stopped
-        ) {
-            self.current_tool = None;
-        }
-        if matches!(self.status, AgentStatus::Stopped) {
-            self.running_subagents = 0;
-        }
-    }
-
     /// Status label with exit code annotation for stopped agents.
     pub fn status_display(&self) -> String {
         if self.status == AgentStatus::Stopped {
@@ -345,8 +323,14 @@ impl AgentInfo {
 // ── Save/Restore Types ───────────────────────────────────────────────
 
 /// Persistable subset of AgentInfo for save-and-quit.
+///
+/// LINCE-119: `tokens_in`/`tokens_out` removed alongside the rich telemetry
+/// fields in `AgentInfo`. Old `.lince-dashboard` files that still emit those
+/// keys load fine — serde silently ignores unknown fields by default — and
+/// every remaining field is `#[serde(default)]` so missing keys never panic.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SavedAgentInfo {
+    #[serde(default)]
     pub name: String,
     /// Agent type key referencing AgentTypeConfig in config. Defaults to DEFAULT_AGENT_TYPE for v1 compat.
     #[serde(default = "default_agent_type")]
@@ -355,10 +339,10 @@ pub struct SavedAgentInfo {
     /// pre-#81 `.lince-dashboard` files loadable.
     #[serde(default, alias = "profile")]
     pub provider: Option<String>,
+    #[serde(default)]
     pub project_dir: String,
+    #[serde(default)]
     pub group: Option<String>,
-    pub tokens_in: u64,
-    pub tokens_out: u64,
     /// Runtime sandbox level selected at spawn time. None for older state files (backward compat).
     #[serde(default)]
     pub sandbox_level: Option<String>,
@@ -379,8 +363,6 @@ impl From<&AgentInfo> for SavedAgentInfo {
             provider: a.provider.clone(),
             project_dir: a.project_dir.clone(),
             group: a.group.clone(),
-            tokens_in: a.tokens_in,
-            tokens_out: a.tokens_out,
             sandbox_level: a.sandbox_level.clone(),
             sandbox_backend: a.sandbox_backend.clone(),
         }
@@ -411,4 +393,275 @@ pub struct SavedState {
     /// Optional + serde-default so v2 state files load transparently.
     #[serde(default)]
     pub session_defaults: Option<SessionDefaults>,
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+//
+// LINCE-118: cover the simplified status machine. These tests exercise the
+// pure functions in this module (no zellij host needed), so they run under
+// the native target — `cargo test --target wasm32-wasip1` can't link the
+// test harness inside the plugin sandbox.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn msg(event: &str) -> StatusMessage {
+        StatusMessage {
+            agent_id: "agent-1".to_string(),
+            event: event.to_string(),
+            timestamp: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn canonical_status_accepts_all_five_canonical_strings() {
+        assert_eq!(canonical_status("unknown"), Some(AgentStatus::Unknown));
+        assert_eq!(canonical_status("running"), Some(AgentStatus::Running));
+        assert_eq!(canonical_status("input"), Some(AgentStatus::WaitingForInput));
+        assert_eq!(canonical_status("permission"), Some(AgentStatus::PermissionRequired));
+        assert_eq!(canonical_status("stopped"), Some(AgentStatus::Stopped));
+    }
+
+    #[test]
+    fn canonical_status_rejects_legacy_aliases_and_garbage() {
+        // Aliases dropped in LINCE-118 — must NOT resolve any more.
+        assert_eq!(canonical_status("start"), None);
+        assert_eq!(canonical_status("idle"), None);
+        assert_eq!(canonical_status("waiting_for_input"), None);
+        assert_eq!(canonical_status("permission_required"), None);
+        // Unrelated junk.
+        assert_eq!(canonical_status(""), None);
+        assert_eq!(canonical_status("Running"), None); // case-sensitive
+        assert_eq!(canonical_status("nonsense"), None);
+    }
+
+    #[test]
+    fn to_agent_status_unknown_event_with_no_map_falls_back_to_unknown() {
+        let m = msg("PreToolUse");
+        assert_eq!(m.to_agent_status(None), AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn to_agent_status_empty_event_map_still_falls_back_to_unknown() {
+        let m = msg("PreToolUse");
+        let empty: HashMap<String, String> = HashMap::new();
+        assert_eq!(m.to_agent_status(Some(&empty)), AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn to_agent_status_event_map_translates_to_canonical() {
+        let mut map = HashMap::new();
+        map.insert("PreToolUse".to_string(), "running".to_string());
+        map.insert("Stop".to_string(), "stopped".to_string());
+        map.insert("idle_prompt".to_string(), "input".to_string());
+        map.insert("permission_prompt".to_string(), "permission".to_string());
+
+        assert_eq!(msg("PreToolUse").to_agent_status(Some(&map)), AgentStatus::Running);
+        assert_eq!(msg("Stop").to_agent_status(Some(&map)), AgentStatus::Stopped);
+        assert_eq!(msg("idle_prompt").to_agent_status(Some(&map)), AgentStatus::WaitingForInput);
+        assert_eq!(
+            msg("permission_prompt").to_agent_status(Some(&map)),
+            AgentStatus::PermissionRequired
+        );
+    }
+
+    #[test]
+    fn to_agent_status_event_map_with_bogus_canonical_falls_back_to_unknown() {
+        // A misconfigured event_map pointing at a non-canonical value must NOT
+        // silently coerce to Running (the old behaviour) — it has to surface
+        // as Unknown so the operator sees the misconfig.
+        let mut map = HashMap::new();
+        map.insert("PreToolUse".to_string(), "kinda_running".to_string());
+        assert_eq!(msg("PreToolUse").to_agent_status(Some(&map)), AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn to_agent_status_raw_canonical_event_resolves_without_map() {
+        // If a hook already emits a canonical string verbatim (e.g. wrapper
+        // writing "stopped" into the .state file), no event_map is required.
+        assert_eq!(msg("running").to_agent_status(None), AgentStatus::Running);
+        assert_eq!(msg("stopped").to_agent_status(None), AgentStatus::Stopped);
+        assert_eq!(msg("input").to_agent_status(None), AgentStatus::WaitingForInput);
+        assert_eq!(
+            msg("permission").to_agent_status(None),
+            AgentStatus::PermissionRequired
+        );
+        assert_eq!(msg("unknown").to_agent_status(None), AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn label_and_color_cover_all_five_variants() {
+        // Smoke test: every variant has non-empty label + color, and Unknown
+        // uses the spec'd "-" label / dim-gray color.
+        for st in [
+            AgentStatus::Unknown,
+            AgentStatus::Running,
+            AgentStatus::WaitingForInput,
+            AgentStatus::PermissionRequired,
+            AgentStatus::Stopped,
+        ] {
+            assert!(!st.label().is_empty());
+            assert!(st.color().starts_with("\x1b["));
+        }
+        assert_eq!(AgentStatus::Unknown.label(), "-");
+        assert_eq!(AgentStatus::Unknown.color(), "\x1b[90m");
+    }
+
+    // LINCE-123: extra coverage for rendering, status_display, and round-trip.
+
+    #[test]
+    fn status_labels_match_5_state_contract() {
+        // Lock in the exact label strings the dashboard renders so a rename in
+        // AgentStatus::label() would fail loudly. These strings are part of the
+        // user-visible contract — changing them affects the UI and any docs
+        // referencing them.
+        assert_eq!(AgentStatus::Unknown.label(), "-");
+        assert_eq!(AgentStatus::Running.label(), "Running");
+        assert_eq!(AgentStatus::WaitingForInput.label(), "INPUT");
+        assert_eq!(AgentStatus::PermissionRequired.label(), "PERMISSION");
+        assert_eq!(AgentStatus::Stopped.label(), "Stopped");
+    }
+
+    #[test]
+    fn status_colors_match_visual_contract() {
+        // Lock in the ANSI escape sequences so visual styling stays stable.
+        // Unknown=dim gray, Running=green, INPUT=bold yellow, PERMISSION=bold red, Stopped=dim.
+        assert_eq!(AgentStatus::Unknown.color(), "\x1b[90m");
+        assert_eq!(AgentStatus::Running.color(), "\x1b[32m");
+        assert_eq!(AgentStatus::WaitingForInput.color(), "\x1b[1;33m");
+        assert_eq!(AgentStatus::PermissionRequired.color(), "\x1b[1;31m");
+        assert_eq!(AgentStatus::Stopped.color(), "\x1b[2m");
+    }
+
+    fn make_agent(status: AgentStatus, exit_code: Option<i32>) -> AgentInfo {
+        AgentInfo {
+            id: "agent-1".to_string(),
+            name: "test".to_string(),
+            agent_type: "claude".to_string(),
+            provider: None,
+            project_dir: "/tmp".to_string(),
+            status,
+            pane_id: None,
+            started_at: None,
+            last_error: None,
+            exit_code,
+            group: None,
+            last_polled_event: None,
+            sandbox_level: None,
+            sandbox_backend: None,
+        }
+    }
+
+    #[test]
+    fn status_display_stopped_with_exit_code() {
+        // Stopped with explicit exit code: render "Stopped (N)".
+        let a = make_agent(AgentStatus::Stopped, Some(0));
+        assert_eq!(a.status_display(), "Stopped (0)");
+        let b = make_agent(AgentStatus::Stopped, Some(137));
+        assert_eq!(b.status_display(), "Stopped (137)");
+        // Negative exit codes are valid (signals encoded as -N on some platforms).
+        let c = make_agent(AgentStatus::Stopped, Some(-1));
+        assert_eq!(c.status_display(), "Stopped (-1)");
+    }
+
+    #[test]
+    fn status_display_stopped_without_exit_code() {
+        // Stopped without exit code: bare "Stopped", no parens.
+        let a = make_agent(AgentStatus::Stopped, None);
+        assert_eq!(a.status_display(), "Stopped");
+    }
+
+    #[test]
+    fn status_display_non_stopped_ignores_exit_code() {
+        // Non-Stopped variants must use the plain label even if exit_code is set
+        // (which shouldn't happen normally but mustn't break rendering).
+        for st in [
+            AgentStatus::Unknown,
+            AgentStatus::Running,
+            AgentStatus::WaitingForInput,
+            AgentStatus::PermissionRequired,
+        ] {
+            let a = make_agent(st.clone(), Some(42));
+            assert_eq!(a.status_display(), st.label().to_string());
+        }
+    }
+
+    #[test]
+    fn saved_agent_info_roundtrip_preserves_all_fields() {
+        // Round-trip AgentInfo → SavedAgentInfo → JSON → SavedAgentInfo to
+        // catch accidental field drops in From<&AgentInfo> or serde wiring.
+        // The persistable subset is: name, agent_type, provider, project_dir,
+        // group, sandbox_level, sandbox_backend.
+        let agent = AgentInfo {
+            id: "agent-7".to_string(), // not persisted
+            name: "my-claude".to_string(),
+            agent_type: "claude".to_string(),
+            provider: Some("anthropic".to_string()),
+            project_dir: "/home/me/project".to_string(),
+            status: AgentStatus::Running, // not persisted (regenerated on restore)
+            pane_id: Some(42),            // not persisted
+            started_at: Some(123),        // not persisted
+            last_error: None,
+            exit_code: None,
+            group: Some("eng".to_string()),
+            last_polled_event: None,
+            sandbox_level: Some("paranoid".to_string()),
+            sandbox_backend: Some(crate::sandbox_backend::SandboxBackend::Nono),
+        };
+
+        let saved: SavedAgentInfo = (&agent).into();
+        assert_eq!(saved.name, "my-claude");
+        assert_eq!(saved.agent_type, "claude");
+        assert_eq!(saved.provider.as_deref(), Some("anthropic"));
+        assert_eq!(saved.project_dir, "/home/me/project");
+        assert_eq!(saved.group.as_deref(), Some("eng"));
+        assert_eq!(saved.sandbox_level.as_deref(), Some("paranoid"));
+        assert_eq!(saved.sandbox_backend, Some(crate::sandbox_backend::SandboxBackend::Nono));
+
+        // Verify JSON round-trip is lossless for the persisted subset.
+        let json = serde_json::to_string(&saved).expect("serialize");
+        let back: SavedAgentInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.name, saved.name);
+        assert_eq!(back.agent_type, saved.agent_type);
+        assert_eq!(back.provider, saved.provider);
+        assert_eq!(back.project_dir, saved.project_dir);
+        assert_eq!(back.group, saved.group);
+        assert_eq!(back.sandbox_level, saved.sandbox_level);
+        assert_eq!(back.sandbox_backend, saved.sandbox_backend);
+    }
+
+    #[test]
+    fn saved_agent_info_accepts_legacy_profile_alias() {
+        // Pre-#81 state files used `profile` instead of `provider`. The
+        // serde(alias = "profile") on `provider` must keep them loadable.
+        let legacy = r#"{
+            "name": "old-claude",
+            "agent_type": "claude",
+            "profile": "anthropic",
+            "project_dir": "/x"
+        }"#;
+        let saved: SavedAgentInfo = serde_json::from_str(legacy).expect("legacy load");
+        assert_eq!(saved.provider.as_deref(), Some("anthropic"));
+        assert_eq!(saved.name, "old-claude");
+    }
+
+    #[test]
+    fn saved_agent_info_tolerates_legacy_rich_fields() {
+        // LINCE-119 dropped tokens_in/tokens_out from the schema. Old state
+        // files that still carry those keys must load cleanly — serde silently
+        // drops unknown fields by default, so this test pins that behaviour.
+        let legacy_rich = r#"{
+            "name": "rich-claude",
+            "agent_type": "claude",
+            "project_dir": "/x",
+            "tokens_in": 1234,
+            "tokens_out": 5678,
+            "tool_name": "Edit"
+        }"#;
+        let saved: SavedAgentInfo = serde_json::from_str(legacy_rich).expect("rich load");
+        assert_eq!(saved.name, "rich-claude");
+        assert_eq!(saved.agent_type, "claude");
+    }
 }

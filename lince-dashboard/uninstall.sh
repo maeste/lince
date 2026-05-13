@@ -115,16 +115,26 @@ else
 fi
 echo ""
 
-# ── Lince-setup skill ────────────────────────────────────────────────
-SKILL_DIR="$HOME/.claude/skills/lince-setup"
-if [ -d "$SKILL_DIR" ]; then
-    echo -e "${YELLOW}Found: $SKILL_DIR${NC}"
-    if confirm "  Remove lince-setup skill?"; then
-        rm -rf "$SKILL_DIR"
+# ── Lince-add-supported-agent skill (+ legacy lince-setup cleanup) ───
+SKILL_DIR="$HOME/.claude/skills/lince-add-supported-agent"
+OLD_SKILL_DIR="$HOME/.claude/skills/lince-setup"
+FOUND_SKILL_DIRS=()
+[ -d "$SKILL_DIR" ] && FOUND_SKILL_DIRS+=("$SKILL_DIR")
+[ -d "$OLD_SKILL_DIR" ] && FOUND_SKILL_DIRS+=("$OLD_SKILL_DIR")
+
+if [ ${#FOUND_SKILL_DIRS[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Found skill directories:${NC}"
+    for d in "${FOUND_SKILL_DIRS[@]}"; do
+        echo "  $d"
+    done
+    if confirm "  Remove lince-add-supported-agent skill (and any legacy lince-setup)?"; then
+        for d in "${FOUND_SKILL_DIRS[@]}"; do
+            rm -rf "$d"
+        done
         echo -e "${GREEN}  ✓ Removed${NC}"
     fi
 else
-    echo "  Lince-setup skill not found — skipping"
+    echo "  lince-add-supported-agent skill not found — skipping"
 fi
 echo ""
 

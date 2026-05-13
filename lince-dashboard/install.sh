@@ -369,18 +369,18 @@ else
 fi
 echo ""
 
-# ── Step 11: Install lince-setup skill ────────────────────────────────
-echo -e "${GREEN}[11/14] Installing lince-setup skill...${NC}"
+# ── Step 11: Install lince-add-supported-agent skill ──────────────────
+echo -e "${GREEN}[11/14] Installing lince-add-supported-agent skill...${NC}"
 
-SKILL_SRC="$SCRIPT_DIR/skills/lince-setup"
-SKILL_DST="$HOME/.claude/skills/lince-setup"
+SKILL_SRC="$SCRIPT_DIR/skills/lince-add-supported-agent"
+SKILL_DST="$HOME/.claude/skills/lince-add-supported-agent"
 
 if [ -d "$SKILL_SRC" ]; then
     mkdir -p "$SKILL_DST"
     cp -r "$SKILL_SRC/." "$SKILL_DST/"
     echo -e "${GREEN}  ✓ Installed: $SKILL_DST${NC}"
 else
-    echo -e "${YELLOW}  ⚠ skills/lince-setup/ not found — skipping${NC}"
+    echo -e "${YELLOW}  ⚠ skills/lince-add-supported-agent/ not found — skipping${NC}"
 fi
 echo ""
 
@@ -505,7 +505,7 @@ if [ -n "$SELECTED_LEVELS" ]; then
     echo "  Levels:   $SELECTED_LEVELS (added to ~/.config/lince-dashboard/config.toml)"
 fi
 echo "  Nono:     ~/.config/nono/profiles/lince-*.json"
-echo "  Skills:   ~/.claude/skills/lince-setup/"
+echo "  Skills:   ~/.claude/skills/lince-add-supported-agent/"
 echo "            ~/.claude/skills/lince-configure/"
 echo ""
 echo -e "${GREEN}Sandbox backend:${NC}"

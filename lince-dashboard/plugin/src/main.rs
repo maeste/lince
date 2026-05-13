@@ -1247,52 +1247,20 @@ impl State {
             None => return, // unknown agent, ignore
         };
 
-        // Some agents (e.g. Codex) launch into an interactive prompt, so the
-        // generic wrapper's initial "start" event can arrive before pane
-        // reconciliation. Suppress only that premature start. Once the pane has
-        // been matched and moved to INPUT, allow a later wrapper start to
-        // transition the agent into Running.
-        if msg.event == "start"
-            && self.config.agent_types.get(&agent.agent_type)
-                .map_or(false, |c| c.ignore_wrapper_start)
-            && matches!(agent.status, AgentStatus::Starting)
-        {
-            return;
-        }
-
-        // LINCE-53: handle subagent start/stop events
-        match msg.event.as_str() {
-            "subagent_start" => {
-                agent.running_subagents = agent.running_subagents.saturating_add(1);
-                return;
-            }
-            "subagent_stop" => {
-                agent.running_subagents = agent.running_subagents.saturating_sub(1);
-                return;
-            }
-            _ => {}
-        }
-
+        // LINCE-118 + LINCE-119: legacy event handling removed.
+        // - `ignore_wrapper_start` / `start` aliases: gone, alongside the
+        //   `Starting` state and the wrapper-start suppression hack.
+        // - `subagent_start` / `subagent_stop`: rich subagent counter gone
+        //   together with `AgentInfo.running_subagents`.
+        // - `tokens_in`/`tokens_out`, `tool_name`, `model`: dropped from
+        //   both `StatusMessage` and `AgentInfo`.
+        // Everything funnels through the canonical 5-state mapping now.
         let new_status = msg.to_agent_status(self.config.event_map_for(&agent.agent_type));
         agent.status = new_status;
 
-        // LINCE-48: update detailed fields
-        if let Some(tool) = msg.tool_name {
-            agent.current_tool = Some(tool);
-        }
-        if let Some(t) = msg.tokens_in {
-            agent.tokens_in = t;
-        }
-        if let Some(t) = msg.tokens_out {
-            agent.tokens_out = t;
-        }
         if let Some(e) = msg.error {
             agent.last_error = Some(e);
         }
-        if let Some(m) = msg.model {
-            agent.model = Some(m);
-        }
-        agent.apply_status_side_effects();
     }
 
     /// Handle a "voxcode-text" pipe message — relay text to active agent (LINCE-43).
@@ -1355,19 +1323,13 @@ impl State {
                         agent_id: agent.id.clone(),
                         event,
                         timestamp: None,
-                        tool_name: None,
-                        tokens_in: None,
-                        tokens_out: None,
                         error: None,
-                        subagent_type: None,
-                        model: None,
                     };
                     let new_status = msg.to_agent_status(self.config.event_map_for(&agent.agent_type));
                     if agent.status != new_status {
                         agent.status = new_status;
                         changed = true;
                     }
-                    agent.apply_status_side_effects();
                 }
             }
         }
@@ -1421,8 +1383,6 @@ impl State {
             ) {
                 Ok(mut info) => {
                     info.group = saved.group;
-                    info.tokens_in = saved.tokens_in;
-                    info.tokens_out = saved.tokens_out;
                     self.agents.push(info);
                     spawned += 1;
                 }

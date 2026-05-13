@@ -17,13 +17,13 @@ The primary way to use LINCE is the **TUI Dashboard** — a Zellij WASM plugin t
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  LINCE Dashboard                                        │
-│ ┌───┬────────────┬──────────┬────────┬────────┬───────┐ │
-│ │ # │ Name       │ Status   │ Tokens │Profile │Project│ │
-│ ├───┼────────────┼──────────┼────────┼────────┼───────┤ │
-│ │ 1 │ backend    │ Running  │ 1.2k/5k│ vertex │ api/  │ │
-│ │>2 │ frontend   │ INPUT    │    -   │        │ web/  │ │
-│ │ 3 │ tester     │ Idle     │ 3k/12k │ zai    │ tests/│ │
-│ └───┴────────────┴──────────┴────────┴────────┴───────┘ │
+│ ┌───┬────────────┬──────────┬────────┬───────┐          │
+│ │ # │ Name       │ Status   │Profile │Project│          │
+│ ├───┼────────────┼──────────┼────────┼───────┤          │
+│ │ 1 │ backend    │ Running  │ vertex │ api/  │          │
+│ │>2 │ frontend   │ INPUT    │        │ web/  │          │
+│ │ 3 │ tester     │   -      │ zai    │ tests/│          │
+│ └───┴────────────┴──────────┴────────┴───────┘          │
 ├───────────────────────┬─────────────────────────────────┤
 │                       │                                 │
 │   VoxCode             │   Shell                         │
@@ -36,7 +36,7 @@ The primary way to use LINCE is the **TUI Dashboard** — a Zellij WASM plugin t
 What the dashboard gives you:
 
 - **Multi-agent**: Spawn up to 8 AI coding agents in parallel (Claude Code, Codex, Gemini, OpenCode, Aider, and any custom agent), each in its own sandboxed pane
-- **Real-time status**: See at a glance which agents are running, waiting for input, or idle — color-coded with token usage
+- **Real-time status**: See at a glance which agents are running, waiting for input, asking for permission, or stopped — five canonical states, color-coded
 - **Pane control**: Show/hide agent panes with a keystroke (`f` to focus, `h` to hide)
 - **Voice relay**: VoxCode transcriptions are piped directly to the focused agent
 - **Session persistence**: Save/restore your agent constellation across sessions (`Q` to save & quit)
@@ -112,15 +112,15 @@ Claude Code:     Reads the backlog via MCP → picks a task →
                  marks it in-progress → writes code → runs tests
                         │
                         ▼
-Dashboard:       Status updates in real-time (Running → INPUT → Idle)
-                 Token usage tracked, tool names shown in detail panel
+Dashboard:       Status updates in real-time (Running → INPUT → Stopped)
+                 Five canonical states: - / Running / INPUT / PERMISSION / Stopped
 ```
 
 ## Modules
 
 ### [lince-dashboard/](lince-dashboard/)
 
-The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that manages multiple AI coding agents (Claude Code, Codex, Gemini, OpenCode, and any custom agent). Spawn agents, monitor status, show/hide panes, relay voice input, persist sessions. Agent types are fully config-driven — add new agents via TOML or use the `/lince-setup` skill. See [lince-dashboard/README.md](lince-dashboard/README.md).
+The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that manages multiple AI coding agents (Claude Code, Codex, Gemini, OpenCode, and any custom agent). Spawn agents, monitor status, show/hide panes, relay voice input, persist sessions. Agent types are fully config-driven — add new agents via TOML or use the `/lince-add-supported-agent` skill. See [lince-dashboard/README.md](lince-dashboard/README.md).
 
 Documentation: [Usage Guide](https://lince.sh/documentation/#/dashboard/usage-guide) | [Configuration](https://lince.sh/documentation/#/dashboard/config-reference) | [Agent Examples](https://lince.sh/documentation/#/dashboard/agent-examples)
 
@@ -136,7 +136,7 @@ Bubblewrap-based sandbox for running AI coding agents safely. Restricts filesyst
 
 Documentation: [CLI Reference](https://lince.sh/documentation/#/sandbox/cli-reference) | [Configuration](https://lince.sh/documentation/#/sandbox/config-reference) | [Security Model](https://lince.sh/documentation/#/sandbox/security-model)
 
-### `/lince-setup` skill (bundled with lince-dashboard)
+### `/lince-add-supported-agent` skill (bundled with lince-dashboard)
 
 An [agentskills.io](https://agentskills.io)-compliant skill that lets any AI coding agent register itself with the lince ecosystem. Generates correct TOML configuration for both agent-sandbox and lince-dashboard. Installed automatically by `lince-dashboard/install.sh`.
 

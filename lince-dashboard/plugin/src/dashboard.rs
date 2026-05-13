@@ -114,17 +114,6 @@ fn pad_left(s: &str, width: usize) -> String {
     format!("{:<width$}", truncated, width = width)
 }
 
-/// Format a token count with k/M suffixes for compact display.
-fn format_tokens(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        format!("{}", n)
-    }
-}
-
 /// Compute the visible length of a string (ignoring ANSI escape sequences).
 fn strip_ansi_len(s: &str) -> usize {
     let mut len = 0;
@@ -443,11 +432,6 @@ fn render_agent_table(
                 let idx_str = format!("{}", agent_idx + 1);
                 let status_label = agent.status_display();
                 let status_color = agent.status.color();
-                let subagent_suffix = if agent.running_subagents > 0 {
-                    format!(" \x1b[36m{}⚙", agent.running_subagents)
-                } else {
-                    String::new()
-                };
                 let needs_attention = matches!(
                     agent.status,
                     AgentStatus::WaitingForInput | AgentStatus::PermissionRequired
@@ -521,9 +505,8 @@ fn render_agent_table(
                     );
                     let status_str = pad_left(&status_label, col_status);
                     let main_visible = strip_ansi_len(&main_part);
-                    let suffix_visible_len = strip_ansi_len(&subagent_suffix);
                     let trailing_visible = strip_ansi_len(&trailing);
-                    let plain_len = main_visible + 1 + status_str.len() + suffix_visible_len + trailing_visible;
+                    let plain_len = main_visible + 1 + status_str.len() + trailing_visible;
                     let fill = cols.saturating_sub(plain_len);
 
                     // status_color is the only colour we keep inside REVERSE so
@@ -532,10 +515,10 @@ fn render_agent_table(
                     // default while leaving REVERSE on, so the tail of the row
                     // doesn't render in status_color too.
                     print!(
-                        "{}{} {}{}{}{}\x1b[39;22m{}{}",
+                        "{}{} {}{}{}\x1b[39;22m{}{}",
                         REVERSE, main_part,
                         status_color, if needs_attention { BOLD } else { "" },
-                        status_str, subagent_suffix,
+                        status_str,
                         trailing, RESET,
                     );
                     if fill > 0 {
@@ -578,10 +561,10 @@ fn render_agent_table(
                     };
 
                     let line = format!(
-                        "{}{}{} {} {}{}{}{}{} {}{}",
+                        "{}{}{} {} {}{}{}{} {}{}",
                         prefix, pad_left(&idx_str, col_idx), type_col, name_field,
                         status_color, if needs_attention { BOLD } else { "" },
-                        pad_left(&status_label, col_status), subagent_suffix, RESET,
+                        pad_left(&status_label, col_status), RESET,
                         sandbox_col, provider_col,
                     );
                     println!("{}", truncate(&line, cols));
@@ -647,23 +630,6 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
     }
     if row < max_rows {
         println!(" {}Dir:{} {}", CYAN, RESET, agent.project_dir);
-        row += 1;
-    }
-    if row < max_rows {
-        println!(
-            " {}Tokens:{} {} in / {} out",
-            CYAN, RESET, format_tokens(agent.tokens_in), format_tokens(agent.tokens_out),
-        );
-        row += 1;
-    }
-    if row < max_rows {
-        let tool = agent.current_tool.as_deref().unwrap_or("-");
-        let subagent_info = if agent.running_subagents > 0 {
-            format!("  {}Subagents:{} {}", CYAN, RESET, agent.running_subagents)
-        } else {
-            String::new()
-        };
-        println!(" {}Tool:{} {}{}", CYAN, RESET, tool, subagent_info);
         row += 1;
     }
     if row < max_rows {

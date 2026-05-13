@@ -153,14 +153,14 @@ That's it. The defaults file already has presets for all supported agents.
 
 #### Option A: Let the agent register itself (recommended)
 
-The `/lince-setup` skill lets any AI agent self-configure its own integration. The agent knows what it needs (binary, config dirs, API keys, sandbox behavior); the skill knows the lince config format. Together they generate correct TOML for both sandbox and dashboard.
+The `/lince-add-supported-agent` skill lets any AI agent self-configure its own integration. The agent knows what it needs (binary, config dirs, API keys, sandbox behavior); the skill knows the lince config format. Together they generate correct TOML for both sandbox and dashboard.
 
 **How it works**: run the target agent outside the dashboard, invoke the skill, and the agent introspects itself to provide the answers:
 
 ```bash
 # Example: you're running Kiro and want to add it to the dashboard
 # Inside Kiro's CLI, invoke the skill:
-/lince-setup
+/lince-add-supported-agent
 
 # The skill asks Kiro about itself:
 #   - Binary name? → "kiro"
@@ -173,7 +173,7 @@ The `/lince-setup` skill lets any AI agent self-configure its own integration. T
 # both sandbox and dashboard TOML and writes them to config.
 ```
 
-The skill is installed automatically by `install.sh` to `~/.claude/skills/lince-setup/`. It follows the [agentskills.io](https://agentskills.io) specification, so any agent supporting that standard can use it. For agents without skill support, you can paste the content of `SKILL.md` as a prompt.
+The skill is installed automatically by `install.sh` to `~/.claude/skills/lince-add-supported-agent/`. It follows the [agentskills.io](https://agentskills.io) specification, so any agent supporting that standard can use it. For agents without skill support, you can paste the content of `SKILL.md` as a prompt.
 
 The skill is **idempotent** — running it again for the same agent detects the existing config and offers to update rather than duplicate.
 

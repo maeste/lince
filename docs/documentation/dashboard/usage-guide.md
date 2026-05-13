@@ -97,40 +97,36 @@ when only one is installed, `Sandbox Level` for unsandboxed agents,
 
 1. Press `n` (name prompt) or `N` (wizard) to spawn an agent.
 2. The dashboard creates panes using the configured command for the selected agent type. Panes are hidden by default.
-3. The agent appears in the table as **Starting** (cyan).
-4. Status hooks report via Zellij pipe. The status updates to **Running** (green).
+3. The agent appears in the table as `-` (Unknown, dim gray) until a hook reports otherwise.
+4. Status hooks report via Zellij pipe. The status updates to **Running** (green) when the agent starts working.
 5. When the agent needs user input, the status shows **INPUT** (bold yellow).
-6. When sub-agents are active, the status shows the count (e.g. `Running 2`).
+6. When the agent asks for permission/approval, the status shows **PERMISSION** (bold red).
 7. Press `f` to show the agent's pane. Interact with the agent, then press `h` to hide it.
-8. Press `Enter` to view detailed status (tokens, active tool, elapsed time).
+8. Press `Enter` to view the detail panel (project dir, profile, provider, elapsed time).
 9. Press `x` to kill the agent and close its pane. Status becomes **Stopped** (dim).
 
-### Status Colors
+### Agent Statuses
 
 | Status | Color | Meaning |
 |--------|-------|---------|
-| Starting | Cyan | Agent process is launching |
+| `-` (Unknown) | Dim gray | Agent has no native hooks, or hasn't reported yet |
 | Running | Green | Agent is actively working |
-| Idle | Yellow | Agent finished a task cycle |
 | INPUT | Bold yellow | Agent is waiting for user input |
-| PERMISSION | Bold red | Agent needs permission approval |
-| Stopped | Dim | Agent process has exited |
-| Error | Red | An error occurred |
+| PERMISSION | Bold red | Agent is asking for approval |
+| Stopped | Dim | Agent process has exited (optional exit code shown) |
+
+These are the only five canonical states. Tier B (wrapper-only) agents stay at `-` until they exit; Tier A agents (Claude, Codex, OpenCode, Pi) transition through the rich states via their hook scripts.
 
 ## Agent Detail Panel
 
 Press `i` to toggle a detail panel below the table. It displays:
 
 - **Agent type** -- display name with color. Red `[UNSANDBOXED]` warning if applicable.
-- **Status** -- current status with color coding.
+- **Status** -- current status with color coding (`-`, Running, INPUT, PERMISSION, Stopped).
 - **Profile** -- the sandbox isolation level in use (paranoid / normal / permissive / custom). `(default)` for unsandboxed agents.
 - **Provider** -- the provider env-var bundle in use (e.g. `anthropic`, `vertex`, `zai`). `(default)` if none was selected. **Distinct from Profile (gh#81).**
 - **Project directory** -- the working directory path.
-- **Token usage** -- input and output token counts with `k`/`M` suffixes.
-- **Active tool** -- the tool name currently in use (reported during `PreToolUse` events).
-- **Subagent count** -- number of running sub-agents, shown as `N` with a gear icon.
 - **Started at** -- timestamp when the agent was spawned.
-- **Last error** -- the most recent error message, if any.
 
 Press `Enter` again to close the panel. `f` still focuses the agent pane.
 
@@ -158,7 +154,7 @@ When agents span multiple project directories, the dashboard automatically group
 
 ## Session Save and Restore
 
-Press `Q` to save the current agent configuration and quit Zellij. On next launch from the same directory, agents are automatically re-spawned with their saved names, providers, project directories, and token counts. (Pre-#81 saved-state files use `profile` as the field name; they continue to load thanks to a serde alias on `provider`.)
+Press `Q` to save the current agent configuration and quit Zellij. On next launch from the same directory, agents are automatically re-spawned with their saved names, providers, and project directories. (Pre-#81 saved-state files use `profile` as the field name; they continue to load thanks to a serde alias on `provider`. Pre-m-15 state files may also include legacy fields like `tokens_in` / `tokens_out` — they are now ignored.)
 
 - State is saved to `.lince-dashboard` in the directory where `lince` was launched.
 - Different directories maintain independent state. Launch from `~/project-a` and `~/project-b` for separate sessions.
@@ -212,26 +208,28 @@ When `use_pipe = false` (default), VoxCode uses the legacy focus-switch method, 
 
 ### Pipe Mode (default)
 
-Agents report status via `zellij pipe` using their configured `status_pipe_name`. This is the recommended method.
+Agents report status via `zellij pipe` using their configured `status_pipe_name`. This is the recommended method. Every payload is the minimal contract:
 
-- **Claude Code** (`claude-status` pipe): Native hooks send rich status events -- idle, running, permission, tool usage, subagent start/stop, and token counts.
-- **Codex** (`lince-status` pipe): Uses `lince-agent-wrapper` for lifecycle events. An optional Codex `notify` hook sends `idle` on turn completion.
-- **Other agents** (`lince-status` pipe): Use `lince-agent-wrapper` which sends `start` and `stopped` lifecycle events.
-
-```bash
-# Claude Code native hook example:
-zellij pipe --name "claude-status" --payload '{"agent_id":"agent-1","event":"idle"}'
-
-# lince-agent-wrapper example:
-zellij pipe --name "lince-status" --payload '{"agent_id":"agent-5","event":"start"}'
+```json
+{"agent_id": "<id>", "event": "<native_event_name>"}
 ```
 
-**Claude Code events**: `idle`, `running`, `permission`, `subagent_start`, `subagent_stop`.
-Additional fields: `tool_name` (on `PreToolUse`), `subagent_type` (on subagent events).
+The dashboard maps the native event name to a canonical status (`running` / `input` / `permission` / `stopped`) via the agent's `[agents.<key>.event_map]` block in `agents-defaults.toml` (or the user's override in `config.toml`).
 
-**Codex events**: `start`, `idle`, `stopped`.
+- **Claude Code** (`claude-status` pipe): Hook script forwards Claude's native events (`PreToolUse`, `Stop`, `idle_prompt`, `permission_prompt`, …) without translating them.
+- **Codex** (`lince-status` pipe): The Codex `notify` hook forwards `agent-turn-complete` (mapped to `input`).
+- **OpenCode / Pi** (`lince-status` pipe): Per-agent hook scripts forward each agent's native events.
+- **Tier B agents** (`lince-status` pipe): `lince-agent-wrapper` only emits a `stopped` event on process exit.
 
-**Wrapper events**: `start`, `stopped`.
+```bash
+# Claude Code native hook example (the dashboard does the translation):
+zellij pipe --name "claude-status" --payload '{"agent_id":"agent-1","event":"PreToolUse"}'
+
+# lince-agent-wrapper example (stop only):
+zellij pipe --name "lince-status" --payload '{"agent_id":"agent-5","event":"stopped"}'
+```
+
+Hook scripts and their installers live in `lince-dashboard/hooks/`: `install-claude-hooks.sh`, `install-codex-hooks.sh`, `install-opencode-hooks.sh`, `install-pi-hooks.sh`.
 
 ### File Mode (fallback)
 
