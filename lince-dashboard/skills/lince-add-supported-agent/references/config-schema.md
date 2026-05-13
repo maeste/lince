@@ -59,7 +59,6 @@ entries win on key conflicts.
 | `bwrap_conflict` | bool | no | `false` | Agent uses bwrap internally |
 | `disable_inner_sandbox_args` | list[string] | no | `[]` | Args to disable the agent's inner sandbox |
 | `event_map` | dict | no | `{}` | Native event → canonical event (Tier A only) |
-| `ignore_wrapper_start` | bool | no | `false` | Suppress the wrapper's synthetic `start` event when the agent provides its own |
 
 ### Example (Tier A)
 
@@ -73,7 +72,6 @@ short_label = "CDX"
 color = "cyan"
 sandboxed = true
 has_native_hooks = true
-ignore_wrapper_start = true
 bwrap_conflict = true
 disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
 home_ro_dirs = ["~/.codex/"]

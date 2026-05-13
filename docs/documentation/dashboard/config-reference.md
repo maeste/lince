@@ -124,12 +124,11 @@ Each agent type is defined as a `[agents.<name>]` TOML table.
 | `has_native_hooks` | boolean | No | `false` | If `true`, agent sends its own status events. If `false`, `lince-agent-wrapper` is injected automatically. |
 | `bwrap_conflict` | boolean | No | `false` | Set `true` when the agent uses bwrap internally. Triggers injection of `disable_inner_sandbox_args`. |
 | `disable_inner_sandbox_args` | array of strings | No | `[]` | Arguments appended to the agent command to disable its internal sandbox when `bwrap_conflict` is `true`. |
-| `ignore_wrapper_start` | boolean | No | `false` | If `true`, ignores the wrapper's initial `start` event. Useful for agents that launch into an interactive prompt. |
 | `providers` | array of strings | No | `[]` | Providers (env-var bundles) for this agent type. `["__discover__"]` means auto-discover from the sandbox config. `[]` skips the wizard's Provider step. An explicit list restricts choices to those names. The legacy key name `profiles` is still accepted (gh#81). |
 | `home_ro_dirs` | array of strings | No | `[]` | Home subdirectories to bind read-only in the sandbox (e.g. `["~/.claude/"]`). |
 | `home_rw_dirs` | array of strings | No | `[]` | Home subdirectories to bind read-write in the sandbox. |
 | `env_vars` | table | No | `{}` | Environment variables to set for the agent. Applied for both sandboxed and non-sandboxed agents. See [Environment Variable Resolution](#environment-variable-resolution). |
-| `event_map` | table | No | `{}` | Custom mapping from agent-specific event strings to LINCE status strings. See [Agent Examples](dashboard/agent-examples.md#custom-event-map). |
+| `event_map` | table | No | `{}` | Mapping from agent-specific event names to canonical LINCE statuses (`running`, `input`, `permission`, `stopped`). Required when `has_native_hooks = true`. See [Agent Examples](dashboard/agent-examples.md#custom-event-map). |
 | `sandbox_backend` | string | No | (global default) | Per-agent sandbox backend override. `"bwrap"` (a.k.a. `"agent-sandbox"`) or `"nono"`. Overrides the global `[dashboard].sandbox_backend`. |
 | `sandbox_level` | string | No | `"normal"` | Sandbox isolation level: `"paranoid"`, `"normal"`, `"permissive"`, or any custom name backed by a `<name>.toml` policy fragment. The plugin synthesizes the launch command from `(agent_type, sandbox_backend, sandbox_level)`; when set, the entry's legacy `command` field is ignored. See [Sandbox Levels](dashboard/sandbox-levels.md). |
 

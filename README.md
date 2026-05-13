@@ -17,13 +17,13 @@ The primary way to use LINCE is the **TUI Dashboard** — a Zellij WASM plugin t
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  LINCE Dashboard                                        │
-│ ┌───┬────────────┬──────────┬────────┬────────┬───────┐ │
-│ │ # │ Name       │ Status   │ Tokens │Profile │Project│ │
-│ ├───┼────────────┼──────────┼────────┼────────┼───────┤ │
-│ │ 1 │ backend    │ Running  │ 1.2k/5k│ vertex │ api/  │ │
-│ │>2 │ frontend   │ INPUT    │    -   │        │ web/  │ │
-│ │ 3 │ tester     │ Idle     │ 3k/12k │ zai    │ tests/│ │
-│ └───┴────────────┴──────────┴────────┴────────┴───────┘ │
+│ ┌───┬────────────┬──────────┬────────┬───────┐          │
+│ │ # │ Name       │ Status   │Profile │Project│          │
+│ ├───┼────────────┼──────────┼────────┼───────┤          │
+│ │ 1 │ backend    │ Running  │ vertex │ api/  │          │
+│ │>2 │ frontend   │ INPUT    │        │ web/  │          │
+│ │ 3 │ tester     │   -      │ zai    │ tests/│          │
+│ └───┴────────────┴──────────┴────────┴───────┘          │
 ├───────────────────────┬─────────────────────────────────┤
 │                       │                                 │
 │   VoxCode             │   Shell                         │
@@ -36,7 +36,7 @@ The primary way to use LINCE is the **TUI Dashboard** — a Zellij WASM plugin t
 What the dashboard gives you:
 
 - **Multi-agent**: Spawn up to 8 AI coding agents in parallel (Claude Code, Codex, Gemini, OpenCode, Aider, and any custom agent), each in its own sandboxed pane
-- **Real-time status**: See at a glance which agents are running, waiting for input, or idle — color-coded with token usage
+- **Real-time status**: See at a glance which agents are running, waiting for input, asking for permission, or stopped — five canonical states, color-coded
 - **Pane control**: Show/hide agent panes with a keystroke (`f` to focus, `h` to hide)
 - **Voice relay**: VoxCode transcriptions are piped directly to the focused agent
 - **Session persistence**: Save/restore your agent constellation across sessions (`Q` to save & quit)
@@ -112,8 +112,8 @@ Claude Code:     Reads the backlog via MCP → picks a task →
                  marks it in-progress → writes code → runs tests
                         │
                         ▼
-Dashboard:       Status updates in real-time (Running → INPUT → Idle)
-                 Token usage tracked, tool names shown in detail panel
+Dashboard:       Status updates in real-time (Running → INPUT → Stopped)
+                 Five canonical states: - / Running / INPUT / PERMISSION / Stopped
 ```
 
 ## Modules

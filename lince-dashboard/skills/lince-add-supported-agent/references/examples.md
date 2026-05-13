@@ -93,7 +93,6 @@ short_label = "CDX"
 color = "cyan"
 sandboxed = true
 has_native_hooks = true
-ignore_wrapper_start = true
 bwrap_conflict = true
 disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
 home_ro_dirs = ["~/.codex/"]
