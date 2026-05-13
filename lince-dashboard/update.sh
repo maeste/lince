@@ -52,13 +52,12 @@ CONFIG_DIR="$HOME/.config/lince-dashboard"
 CONFIG_DST="$CONFIG_DIR/config.toml"
 mkdir -p "$CONFIG_DIR"
 
-if [ -f "$CONFIG_DST" ]; then
-    BACKUP="${CONFIG_DST}.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "$CONFIG_DST" "$BACKUP"
-    echo -e "${YELLOW}  Existing config backed up → $(basename "$BACKUP")${NC}"
+if [ ! -f "$CONFIG_DST" ]; then
+    cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
+    echo -e "${GREEN}  ✓ Config installed${NC}"
+else
+    echo -e "${GREEN}  ✓ Existing config preserved (delete it manually to receive new defaults)${NC}"
 fi
-cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
-echo -e "${GREEN}  ✓ Config updated${NC}"
 echo ""
 
 # ── Hooks ──────────────────────────────────────────────────────────────
@@ -80,9 +79,11 @@ echo -e "${GREEN}[7/8] Updating agent defaults...${NC}"
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
 
-if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
+if [ -f "$AGENTS_DEFAULTS_SRC" ] && [ ! -f "$AGENTS_DEFAULTS_DST" ]; then
     cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
-    echo -e "${GREEN}  ✓ Agent defaults updated${NC}"
+    echo -e "${GREEN}  ✓ Agent defaults installed${NC}"
+elif [ -f "$AGENTS_DEFAULTS_DST" ]; then
+    echo -e "${GREEN}  ✓ Existing agent defaults preserved (delete it manually to receive new upstream defaults)${NC}"
 fi
 echo ""
 
