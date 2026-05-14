@@ -420,9 +420,18 @@ impl ZellijPlugin for State {
                             let mut matches: Vec<String> = output
                                 .lines()
                                 .filter(|l| !l.is_empty())
-                                .map(|l| config::collapse_tilde(l))
+                                // Normalize the trailing-slash inconsistency
+                                // between the legacy glob path completer (which
+                                // returns `path/`) and the multi-root `find`
+                                // (which returns `path`). Otherwise two agents
+                                // pointed at the same project but spawned from
+                                // different code paths end up in distinct
+                                // swimlanes — see also `sort_agents_by_dir`.
+                                .map(|l| l.trim_end_matches('/').to_string())
+                                .map(|l| config::collapse_tilde(&l))
                                 .collect();
                             matches.sort();
+                            matches.dedup();
 
                             if matches.len() == 1 {
                                 // Single match: auto-fill directly.
@@ -595,6 +604,14 @@ impl ZellijPlugin for State {
     }
 }
 
+/// Group/sort key for agent workdirs. Strips a trailing `/` so paths that
+/// differ only by that (e.g. `synoptic/` from the legacy glob completer vs
+/// `synoptic` from the multi-root `find`) land in the same swimlane in the
+/// dashboard. Doesn't mutate `agent.project_dir` — only the comparison.
+fn workdir_key(s: &str) -> &str {
+    s.trim_end_matches('/')
+}
+
 impl State {
     /// Sort agents by project_dir, then by name within each group.
     /// Preserves the selected agent across the sort.
@@ -602,7 +619,8 @@ impl State {
         let selected_id = self.agents.get(self.selected_index).map(|a| a.id.clone());
 
         self.agents.sort_by(|a, b| {
-            a.project_dir.cmp(&b.project_dir).then(a.name.cmp(&b.name))
+            workdir_key(&a.project_dir).cmp(workdir_key(&b.project_dir))
+                .then(a.name.cmp(&b.name))
         });
 
         if let Some(id) = selected_id {

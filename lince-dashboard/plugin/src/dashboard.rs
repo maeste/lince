@@ -376,10 +376,12 @@ fn render_agent_table(
     let mut header_dirs: Vec<String> = Vec::new();
     let mut last_dir: Option<&str> = None;
     for (i, agent) in agents.iter().enumerate() {
-        if last_dir != Some(&agent.project_dir) {
+        // Compare/display normalized so legacy `path/` and new `path` group together.
+        let key = agent.project_dir.trim_end_matches('/');
+        if last_dir != Some(key) {
             virtual_rows.push(None);
-            header_dirs.push(agent.project_dir.clone());
-            last_dir = Some(&agent.project_dir);
+            header_dirs.push(key.to_string());
+            last_dir = Some(key);
         }
         virtual_rows.push(Some(i));
         header_dirs.push(String::new());
