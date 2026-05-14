@@ -159,6 +159,12 @@ pub struct WizardState {
     pub completions: Vec<String>,
     /// Currently highlighted completion index (if any).
     pub completion_index: Option<usize>,
+    /// Validation error for the Project dir step. Set when Enter is
+    /// pressed on ProjectDir with an invalid value (empty, tilde-prefixed,
+    /// or not absolute); rendered as a red line below the input by
+    /// `render_wizard`. Cleared as soon as the user edits the field or
+    /// the value becomes valid.
+    pub project_dir_error: Option<String>,
 }
 
 impl WizardState {

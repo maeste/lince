@@ -964,6 +964,17 @@ pub fn render_wizard(
                 push_box_line(&mut lines, "  (default: current directory)", box_width);
                 push_box_line(&mut lines, "  [Tab] autocomplete path", box_width);
             }
+            // Validation error line (set by the ProjectDir Enter handler when
+            // the path is empty/relative/tilde-prefixed). Bold red, cleared as
+            // soon as the user edits the field.
+            if let Some(ref err) = wizard.project_dir_error {
+                push_box_line(&mut lines, "", box_width);
+                push_box_line(
+                    &mut lines,
+                    &format!("  \x1b[1;31m✗ {}\x1b[0m", err),
+                    box_width,
+                );
+            }
             push_box_line(&mut lines, "", box_width);
             push_box_line(&mut lines, "  [Enter] Next  [Esc] Cancel", box_width);
         }
