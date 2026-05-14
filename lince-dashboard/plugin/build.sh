@@ -10,38 +10,26 @@ export PATH="$HOME/.cargo/bin:$PATH"
 TARGET="wasm32-wasip1"
 OUTPUT="$SCRIPT_DIR/lince-dashboard.wasm"
 
-# Resolve the actual cargo binary via rustup — on macOS, bare `cargo` may
-# resolve to Homebrew's standalone cargo which cannot see rustup-installed
-# targets.  Using the explicit path guarantees the rustup-managed toolchain.
+# Resolve the actual cargo and rustc binaries via rustup — on macOS, bare
+# `cargo`/`rustc` may resolve to Homebrew's standalone binaries which cannot
+# see rustup-installed targets.  Using explicit paths + RUSTC env var
+# guarantees the rustup-managed toolchain is used for both.
 CARGO_BIN=""
+RUSTC_BIN=""
 if command -v rustup >/dev/null 2>&1; then
     CARGO_BIN="$(rustup which cargo 2>/dev/null || true)"
+    RUSTC_BIN="$(rustup which rustc 2>/dev/null || true)"
 fi
 if [ -z "$CARGO_BIN" ] || [ ! -x "$CARGO_BIN" ]; then
-    # Fallback: try PATH resolution
     CARGO_BIN="$(command -v cargo 2>/dev/null || true)"
 fi
 if [ -z "$CARGO_BIN" ]; then
     echo "ERROR: cargo not found." >&2
     exit 1
 fi
-
-# Verify the resolved cargo is rustup-managed by checking its path.
-if [ "$(uname -s)" = "Darwin" ]; then
-    case "$CARGO_BIN" in
-        */.rustup/*|*/rustup/*) ;;  # rustup-managed, OK
-        *)
-            echo "ERROR: resolved cargo ($CARGO_BIN) is not rustup-managed." >&2
-            echo "  Homebrew's standalone cargo cannot build wasm32-wasip1 targets." >&2
-            echo "" >&2
-            echo "  Fix: ensure the rustup toolchain is active:" >&2
-            echo "    rustup default stable" >&2
-            echo "    source ~/.cargo/env" >&2
-            echo "" >&2
-            echo "  Then verify: rustup which cargo" >&2
-            exit 1
-            ;;
-    esac
+# Force cargo to use the rustup-managed rustc, not whatever is in PATH.
+if [ -n "$RUSTC_BIN" ] && [ -x "$RUSTC_BIN" ]; then
+    export RUSTC="$RUSTC_BIN"
 fi
 
 # Check target
@@ -56,6 +44,7 @@ fi
 
 echo "Building lince-dashboard plugin..."
 echo "  Using cargo: $CARGO_BIN"
+echo "  Using rustc: ${RUSTC:-$(command -v rustc)}"
 "$CARGO_BIN" build --release --target "$TARGET"
 
 # Binary target: output uses hyphens (lince-dashboard), not underscores
