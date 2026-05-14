@@ -171,10 +171,33 @@ fn synthesize_sandboxed_command(
     project_dir: &str,
 ) -> Option<Vec<String>> {
     let base = agent_type_base_name(agent_type);
-    // Per-agent dispatch: (inner argv, $HOME subdir for the paranoid scratch).
+
+    // AgentSandbox (bwrap) doesn't need per-agent inner-command knowledge —
+    // agent-sandbox resolves the inner binary and args itself via --agent.
+    // Handle it generically so any agent type (including future ones) gets
+    // --sandbox-level passed through correctly.
+    if matches!(backend, SandboxBackend::AgentSandbox) {
+        let mut cmd = vec![
+            "agent-sandbox".to_string(),
+            "run".to_string(),
+            "-p".to_string(),
+            project_dir.to_string(),
+            "--id".to_string(),
+            agent_id.to_string(),
+            "--agent".to_string(),
+            base.to_string(),
+        ];
+        if level != "normal" {
+            cmd.push("--sandbox-level".to_string());
+            cmd.push(level.to_string());
+        }
+        return Some(cmd);
+    }
+
+    // Remaining backends (Nono, None) need per-agent knowledge:
+    // (inner argv, $HOME subdir for the paranoid scratch).
     // codex's `--sandbox danger-full-access` disables its own filesystem
-    // sandbox so it doesn't fight ours; the bwrap path also reads
-    // disable_inner_sandbox_args from agents-defaults.toml.
+    // sandbox so it doesn't fight ours.
     let (inner_command, agent_home_subdir): (Vec<String>, &str) = match base {
         "claude" => (
             vec![
@@ -223,23 +246,6 @@ fn synthesize_sandboxed_command(
     let nono_profile = resolve_nono_profile(base, level);
 
     Some(match backend {
-        SandboxBackend::AgentSandbox => {
-            let mut cmd = vec![
-                "agent-sandbox".to_string(),
-                "run".to_string(),
-                "-p".to_string(),
-                project_dir.to_string(),
-                "--id".to_string(),
-                agent_id.to_string(),
-                "--agent".to_string(),
-                base.to_string(),
-            ];
-            if level != "normal" {
-                cmd.push("--sandbox-level".to_string());
-                cmd.push(level.to_string());
-            }
-            cmd
-        }
         SandboxBackend::Nono => {
             let inner_str = inner_command
                 .iter()
@@ -282,6 +288,8 @@ fn synthesize_sandboxed_command(
             }
         }
         SandboxBackend::None => inner_command,
+        // AgentSandbox handled by the early return above.
+        SandboxBackend::AgentSandbox => unreachable!(),
     })
 }
 
