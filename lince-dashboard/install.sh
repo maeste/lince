@@ -134,8 +134,19 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fi
     if [ -n "$BREW_CARGO" ] && ! command -v rustup >/dev/null 2>&1; then
         MISSING+=("rustup (Homebrew Rust detected at $BREW_CARGO but rustup is missing)")
-    elif [ -n "$BREW_CARGO" ] && ! rustup which cargo >/dev/null 2>&1; then
-        MISSING+=("rustup toolchain (run: rustup default stable)")
+    elif [ -n "$BREW_CARGO" ]; then
+        # rustup exists — verify the resolved cargo is actually rustup-managed,
+        # not Homebrew's standalone one.  `rustup which cargo` may succeed even
+        # when bare `cargo` still resolves to Homebrew's binary.
+        RUSTUP_CARGO="$(rustup which cargo 2>/dev/null || true)"
+        ACTIVE_CARGO="$(command -v cargo 2>/dev/null || true)"
+        if [ -z "$RUSTUP_CARGO" ]; then
+            MISSING+=("rustup toolchain (run: rustup default stable)")
+        elif [ "$RUSTUP_CARGO" != "$ACTIVE_CARGO" ] && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+            # rustup has a toolchain but the proxy in ~/.cargo/bin/ is missing —
+            # bare `cargo` will hit Homebrew's, and the build will fail.
+            MISSING+=("rustup cargo proxy (run: source ~/.cargo/env or restart your shell)")
+        fi
     fi
 fi
 

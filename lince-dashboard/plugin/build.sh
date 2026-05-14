@@ -10,18 +10,34 @@ export PATH="$HOME/.cargo/bin:$PATH"
 TARGET="wasm32-wasip1"
 OUTPUT="$SCRIPT_DIR/lince-dashboard.wasm"
 
-# On macOS, verify cargo is rustup-managed — Homebrew's standalone cargo
-# cannot see rustup-installed targets (dual Rust installation conflict).
+# Resolve the actual cargo binary via rustup — on macOS, bare `cargo` may
+# resolve to Homebrew's standalone cargo which cannot see rustup-installed
+# targets.  Using the explicit path guarantees the rustup-managed toolchain.
+CARGO_BIN=""
+if command -v rustup >/dev/null 2>&1; then
+    CARGO_BIN="$(rustup which cargo 2>/dev/null || true)"
+fi
+if [ -z "$CARGO_BIN" ] || [ ! -x "$CARGO_BIN" ]; then
+    # Fallback: try PATH resolution
+    CARGO_BIN="$(command -v cargo 2>/dev/null || true)"
+fi
+if [ -z "$CARGO_BIN" ]; then
+    echo "ERROR: cargo not found." >&2
+    exit 1
+fi
+
+# Verify the resolved cargo is rustup-managed (has the wasm32-wasip1 sysroot).
 if [ "$(uname -s)" = "Darwin" ]; then
-    if ! rustup which cargo >/dev/null 2>&1; then
-        echo "ERROR: active cargo is not managed by rustup." >&2
+    SYSROOT="$("$CARGO_BIN" rustc -- --print sysroot 2>/dev/null || true)"
+    if [ -n "$SYSROOT" ] && ! echo "$SYSROOT" | grep -q "rustup"; then
+        echo "ERROR: resolved cargo ($CARGO_BIN) is not rustup-managed." >&2
         echo "  Homebrew's standalone cargo cannot build wasm32-wasip1 targets." >&2
         echo "" >&2
-        echo "  Fix: ensure the rustup toolchain is set up:" >&2
+        echo "  Fix: ensure the rustup toolchain is active:" >&2
         echo "    rustup default stable" >&2
         echo "    source ~/.cargo/env" >&2
         echo "" >&2
-        echo "  Then verify: rustup which cargo  (should print ~/.cargo/bin/cargo)" >&2
+        echo "  Then verify: rustup which cargo" >&2
         exit 1
     fi
 fi
@@ -37,7 +53,8 @@ if ! rustup target list --installed 2>/dev/null | grep -q "$TARGET"; then
 fi
 
 echo "Building lince-dashboard plugin..."
-cargo build --release --target "$TARGET"
+echo "  Using cargo: $CARGO_BIN"
+"$CARGO_BIN" build --release --target "$TARGET"
 
 # Binary target: output uses hyphens (lince-dashboard), not underscores
 ARTIFACT="$SCRIPT_DIR/target/$TARGET/release/lince-dashboard.wasm"
