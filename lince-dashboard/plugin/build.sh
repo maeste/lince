@@ -20,7 +20,24 @@ if command -v rustup >/dev/null 2>&1; then
     CARGO_BIN="$(rustup which cargo 2>/dev/null || true)"
     RUSTC_BIN="$(rustup which rustc 2>/dev/null || true)"
 fi
+
+# On macOS, Homebrew provides standalone rustc/cargo that cannot see
+# rustup-installed targets.  If rustup didn't resolve cargo, refuse to
+# fall back to a potentially-Homebrew binary — fail with remediation
+# steps instead of producing a cryptic "can't find crate for `core`".
 if [ -z "$CARGO_BIN" ] || [ ! -x "$CARGO_BIN" ]; then
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "ERROR: could not resolve a rustup-managed cargo." >&2
+        echo "  Homebrew's standalone cargo cannot build wasm32-wasip1 targets." >&2
+        echo "" >&2
+        echo "  Fix: ensure the rustup toolchain is active:" >&2
+        echo "    rustup default stable" >&2
+        echo "    source ~/.cargo/env" >&2
+        echo "" >&2
+        echo "  Then verify: rustup which cargo" >&2
+        exit 1
+    fi
+    # Linux: safe to fall back to PATH resolution (no Homebrew conflict)
     CARGO_BIN="$(command -v cargo 2>/dev/null || true)"
 fi
 if [ -z "$CARGO_BIN" ]; then
