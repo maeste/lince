@@ -121,6 +121,24 @@ else
     echo -e "${GREEN}  ✓ cargo${NC}"
 fi
 
+# On macOS, detect the common case where Homebrew provides standalone
+# rustc/cargo but rustup isn't installed or isn't the active toolchain.
+# The WASM build requires rustup-managed Rust because only rustup can
+# install the wasm32-wasip1 target.
+if [ "$(uname -s)" = "Darwin" ]; then
+    BREW_CARGO=""
+    if [ -x "/opt/homebrew/bin/cargo" ]; then
+        BREW_CARGO="/opt/homebrew/bin/cargo"
+    elif [ -x "/usr/local/bin/cargo" ]; then
+        BREW_CARGO="/usr/local/bin/cargo"
+    fi
+    if [ -n "$BREW_CARGO" ] && ! command -v rustup >/dev/null 2>&1; then
+        MISSING+=("rustup (Homebrew Rust detected at $BREW_CARGO but rustup is missing)")
+    elif [ -n "$BREW_CARGO" ] && ! rustup which cargo >/dev/null 2>&1; then
+        MISSING+=("rustup toolchain (run: rustup default stable)")
+    fi
+fi
+
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo -e "${RED}Missing prerequisites:${NC}"
     for m in "${MISSING[@]}"; do
@@ -142,10 +160,16 @@ if command -v rustup >/dev/null 2>&1; then
     if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
         echo "  Installing wasm32-wasip1 target..."
         rustup target add wasm32-wasip1
+        if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
+            echo -e "${RED}  ✗ Failed to install wasm32-wasip1 target${NC}"
+            exit 1
+        fi
     fi
     echo -e "${GREEN}  ✓ wasm32-wasip1 target installed${NC}"
 else
-    echo -e "${YELLOW}  ⚠ rustup not found — assuming wasm32-wasip1 is available${NC}"
+    echo -e "${RED}  ✗ rustup not found — wasm32-wasip1 target cannot be installed${NC}"
+    echo -e "${RED}    Install rustup: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh${NC}"
+    exit 1
 fi
 echo ""
 

@@ -1029,6 +1029,26 @@ check_prerequisites() {
     # Rustup (distro rustc alone cannot provide wasm32 targets needed for dashboard)
     if command -v rustup >/dev/null 2>&1; then
         echo -e "  ${GREEN}✓${NC} rustup $(rustup --version 2>/dev/null | awk '{print $2}')"
+        # On macOS, check for the common Homebrew Rust conflict: rustup binary
+        # exists but the toolchain isn't set up, so cargo resolves to Homebrew's
+        # standalone copy which can't see rustup-installed targets.
+        if [ "$OS_NAME" = "Darwin" ] && ! rustup which cargo >/dev/null 2>&1; then
+            echo -e "  ${YELLOW}⚠${NC} rustup found but no toolchain is active."
+            echo -e "      ${DIM}Setting up default stable toolchain...${NC}"
+            if rustup default stable 2>/dev/null; then
+                # shellcheck disable=SC1090
+                source "$HOME/.cargo/env" 2>/dev/null || true
+                if rustup which cargo >/dev/null 2>&1; then
+                    echo -e "  ${GREEN}✓${NC} rustup toolchain set up"
+                else
+                    warnings+=("rustup toolchain setup incomplete — dashboard build may fail")
+                    echo -e "  ${YELLOW}✗${NC} toolchain setup did not complete. Try: rustup default stable"
+                fi
+            else
+                warnings+=("rustup toolchain setup failed — dashboard build may fail")
+                echo -e "  ${YELLOW}✗${NC} Could not set up toolchain. Run manually: rustup default stable"
+            fi
+        fi
     else
         warnings+=("rustup not found (required to build dashboard WASM plugin)")
         echo -e "  ${YELLOW}✗${NC} rustup not found — needed to build dashboard"
