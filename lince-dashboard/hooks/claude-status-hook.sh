@@ -67,9 +67,21 @@ PAYLOAD="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${NATIVE_EVENT}\"}"
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ${AGENT_ID} ${NATIVE_EVENT}" >> "$LOG_FILE" 2>/dev/null || true
 
-# Primary: send via zellij pipe (if inside a Zellij session)
+# Primary: send via zellij pipe (if inside a Zellij session).
+# Use whatever `timeout` is available (GNU `timeout` on Linux, `gtimeout` on
+# macOS with `brew install coreutils`); fall back to running zellij directly
+# when neither exists — macOS ships without `timeout` by default.
+_lince_send_pipe() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 2 zellij pipe --name "$1"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout 2 zellij pipe --name "$1"
+    else
+        zellij pipe --name "$1"
+    fi
+}
 if [ -n "${ZELLIJ:-}" ] && command -v zellij >/dev/null 2>&1; then
-    echo "$PAYLOAD" | timeout 2 zellij pipe --name "claude-status" >/dev/null 2>&1 || true
+    echo "$PAYLOAD" | _lince_send_pipe "claude-status" >/dev/null 2>&1 || true
 fi
 
 # Fallback: write status to file (always, as backup)

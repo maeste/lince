@@ -57,8 +57,20 @@ PAYLOAD="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${NATIVE_EVENT}\"}"
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ${AGENT_ID} ${NATIVE_EVENT}" >> "$LOG_FILE" 2>/dev/null || true
 
+# Use whatever `timeout` is available (GNU `timeout` on Linux, `gtimeout` on
+# macOS with `brew install coreutils`); fall back to running zellij directly
+# when neither exists — macOS ships without `timeout` by default.
+_lince_send_pipe() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 2 zellij pipe --name "$1"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout 2 zellij pipe --name "$1"
+    else
+        zellij pipe --name "$1"
+    fi
+}
 if [ -n "${ZELLIJ:-}" ] && command -v zellij >/dev/null 2>&1; then
-    printf '%s' "$PAYLOAD" | timeout 2 zellij pipe --name "lince-status" >/dev/null 2>&1 || true
+    printf '%s' "$PAYLOAD" | _lince_send_pipe "lince-status" >/dev/null 2>&1 || true
 fi
 
 mkdir -p "${STATUS_DIR}" 2>/dev/null || true
