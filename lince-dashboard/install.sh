@@ -134,8 +134,19 @@ if [ "$(uname -s)" = "Darwin" ]; then
     fi
     if [ -n "$BREW_CARGO" ] && ! command -v rustup >/dev/null 2>&1; then
         MISSING+=("rustup (Homebrew Rust detected at $BREW_CARGO but rustup is missing)")
-    elif [ -n "$BREW_CARGO" ] && ! rustup which cargo >/dev/null 2>&1; then
-        MISSING+=("rustup toolchain (run: rustup default stable)")
+    elif [ -n "$BREW_CARGO" ]; then
+        # rustup exists — verify the resolved cargo is actually rustup-managed,
+        # not Homebrew's standalone one.  `rustup which cargo` may succeed even
+        # when bare `cargo` still resolves to Homebrew's binary.
+        RUSTUP_CARGO="$(rustup which cargo 2>/dev/null || true)"
+        ACTIVE_CARGO="$(command -v cargo 2>/dev/null || true)"
+        if [ -z "$RUSTUP_CARGO" ]; then
+            MISSING+=("rustup toolchain (run: rustup default stable)")
+        elif [ "$RUSTUP_CARGO" != "$ACTIVE_CARGO" ] && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
+            # rustup has a toolchain but the proxy in ~/.cargo/bin/ is missing —
+            # bare `cargo` will hit Homebrew's, and the build will fail.
+            MISSING+=("rustup cargo proxy (run: source ~/.cargo/env or restart your shell)")
+        fi
     fi
 fi
 
@@ -439,12 +450,17 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
         if grep -q "# LINCE aliases" "$rc" 2>/dev/null; then
             echo -e "${YELLOW}  Updating LINCE aliases in $(basename $rc)${NC}"
             # Remove old LINCE alias block and re-add
-            sed -i '/# LINCE aliases/d' "$rc"
-            sed -i '/alias lince=/d' "$rc"
-            sed -i '/alias lince-floating=/d' "$rc"
-            sed -i '/alias zd=/d' "$rc"
-            sed -i '/alias z="zellij"/d' "$rc"
-            sed -i '/alias zn=/d' "$rc"
+            # BSD sed (macOS) requires -i '' — GNU sed uses -i alone
+            _sed_inplace=(sed -i)
+            if [ "$(uname -s)" = "Darwin" ]; then
+                _sed_inplace=(sed -i "")
+            fi
+            "${_sed_inplace[@]}" '/# LINCE aliases/d' "$rc"
+            "${_sed_inplace[@]}" '/alias lince=/d' "$rc"
+            "${_sed_inplace[@]}" '/alias lince-floating=/d' "$rc"
+            "${_sed_inplace[@]}" '/alias zd=/d' "$rc"
+            "${_sed_inplace[@]}" '/alias z="zellij"/d' "$rc"
+            "${_sed_inplace[@]}" '/alias zn=/d' "$rc"
         fi
         echo "" >> "$rc"
         echo "$ALIAS_COMMENT" >> "$rc"
