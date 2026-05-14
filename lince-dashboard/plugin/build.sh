@@ -26,20 +26,22 @@ if [ -z "$CARGO_BIN" ]; then
     exit 1
 fi
 
-# Verify the resolved cargo is rustup-managed (has the wasm32-wasip1 sysroot).
+# Verify the resolved cargo is rustup-managed by checking its path.
 if [ "$(uname -s)" = "Darwin" ]; then
-    SYSROOT="$("$CARGO_BIN" rustc -- --print sysroot 2>/dev/null || true)"
-    if [ -n "$SYSROOT" ] && ! echo "$SYSROOT" | grep -q "rustup"; then
-        echo "ERROR: resolved cargo ($CARGO_BIN) is not rustup-managed." >&2
-        echo "  Homebrew's standalone cargo cannot build wasm32-wasip1 targets." >&2
-        echo "" >&2
-        echo "  Fix: ensure the rustup toolchain is active:" >&2
-        echo "    rustup default stable" >&2
-        echo "    source ~/.cargo/env" >&2
-        echo "" >&2
-        echo "  Then verify: rustup which cargo" >&2
-        exit 1
-    fi
+    case "$CARGO_BIN" in
+        */.rustup/*|*/rustup/*) ;;  # rustup-managed, OK
+        *)
+            echo "ERROR: resolved cargo ($CARGO_BIN) is not rustup-managed." >&2
+            echo "  Homebrew's standalone cargo cannot build wasm32-wasip1 targets." >&2
+            echo "" >&2
+            echo "  Fix: ensure the rustup toolchain is active:" >&2
+            echo "    rustup default stable" >&2
+            echo "    source ~/.cargo/env" >&2
+            echo "" >&2
+            echo "  Then verify: rustup which cargo" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 # Check target
