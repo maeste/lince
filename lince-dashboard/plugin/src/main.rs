@@ -225,11 +225,12 @@ impl ZellijPlugin for State {
                     }
                 }
 
-                // File-based status polling fallback
+                // File-based status polling: kick off an async `cat` of the
+                // .state files. `std::fs` can't reach the host filesystem from
+                // the WASI plugin sandbox, so the read goes through a host
+                // shell command; results land in the CMD_POLL_STATUS handler.
                 if self.config.status_method == StatusMethod::File {
-                    if self.poll_status_files() {
-                        needs_render = true;
-                    }
+                    config::poll_status_files_async(&self.config.status_file_dir);
                 }
 
                 // Clear transient status messages after timeout
@@ -439,6 +440,51 @@ impl ZellijPlugin for State {
                             // If no matches, leave state unchanged.
                         }
                         true
+                    }
+                    Some(config::CMD_POLL_STATUS) if exit_code == Some(0) => {
+                        // Output: one `<basename>\t<event>` line per .state file.
+                        // The claude hook writes `claude-{id}.state` (basename
+                        // `claude-{id}`); the agent wrapper writes `{id}.state`
+                        // (basename `{id}`). Match both per agent.
+                        let output = String::from_utf8_lossy(&stdout);
+                        let mut file_events: std::collections::HashMap<&str, &str> =
+                            std::collections::HashMap::new();
+                        for line in output.lines() {
+                            if let Some((name, event)) = line.split_once('\t') {
+                                let event = event.trim();
+                                if !event.is_empty() {
+                                    file_events.insert(name, event);
+                                }
+                            }
+                        }
+                        let mut changed = false;
+                        for agent in self.agents.iter_mut() {
+                            let claude_key = format!("claude-{}", agent.id);
+                            let event = file_events
+                                .get(claude_key.as_str())
+                                .or_else(|| file_events.get(agent.id.as_str()))
+                                .copied();
+                            if let Some(event) = event {
+                                if agent.last_polled_event.as_deref() == Some(event) {
+                                    continue;
+                                }
+                                agent.last_polled_event = Some(event.to_string());
+                                let msg = StatusMessage {
+                                    agent_id: agent.id.clone(),
+                                    event: event.to_string(),
+                                    timestamp: None,
+                                    error: None,
+                                };
+                                let new_status = msg.to_agent_status(
+                                    self.config.event_map_for(&agent.agent_type),
+                                );
+                                if agent.status != new_status {
+                                    agent.status = new_status;
+                                    changed = true;
+                                }
+                            }
+                        }
+                        changed
                     }
                     _ => false,
                 }
@@ -1300,41 +1346,11 @@ impl State {
 
     /// Poll status files for all agents (file-based fallback, LINCE-42).
     /// Returns true if any agent state changed.
-    fn poll_status_files(&mut self) -> bool {
-        let mut changed = false;
-        let status_dir = &self.config.status_file_dir;
-        for agent in self.agents.iter_mut() {
-            // Check both file naming conventions:
-            // Claude hook writes "claude-{id}.state", wrapper writes "{id}.state"
-            let path_claude = format!("{}/claude-{}.state", status_dir, agent.id);
-            let path_wrapper = format!("{}/{}.state", status_dir, agent.id);
-            let content_opt = std::fs::read_to_string(&path_claude)
-                .or_else(|_| std::fs::read_to_string(&path_wrapper))
-                .ok();
-            if let Some(content) = content_opt {
-                let event = content.trim().to_string();
-                if !event.is_empty() {
-                    // Skip if the event hasn't changed since last poll
-                    if agent.last_polled_event.as_ref() == Some(&event) {
-                        continue;
-                    }
-                    agent.last_polled_event = Some(event.clone());
-                    let msg = StatusMessage {
-                        agent_id: agent.id.clone(),
-                        event,
-                        timestamp: None,
-                        error: None,
-                    };
-                    let new_status = msg.to_agent_status(self.config.event_map_for(&agent.agent_type));
-                    if agent.status != new_status {
-                        agent.status = new_status;
-                        changed = true;
-                    }
-                }
-            }
-        }
-        changed
-    }
+    // Status-file polling is now async — see `config::poll_status_files_async`
+    // (kicked off from the Timer handler) and the `CMD_POLL_STATUS` arm in
+    // `update()`. The previous synchronous `poll_status_files()` used
+    // `std::fs::read_to_string`, which silently reads nothing from a WASI
+    // plugin sandbox: the host `/tmp` is not on the plugin's virtual fs.
 
     /// Save current agent state and quit Zellij.
     /// The actual quit happens in the RunCommandResult handler after

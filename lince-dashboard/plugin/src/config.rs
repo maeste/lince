@@ -410,6 +410,29 @@ pub fn run_typed_command_with(args: &[&str], cmd_type: &str, extra: &[(&str, &st
 /// Command type for async path tab-completion via `run_command`.
 pub const CMD_PATH_COMPLETE: &str = "path_complete";
 
+/// Command type for async polling of per-agent `.state` status files.
+pub const CMD_POLL_STATUS: &str = "poll_status";
+
+/// Kick off async polling of the per-agent `.state` files.
+///
+/// WASI plugins have a virtualized filesystem — `std::fs` cannot see the
+/// host's `/tmp`, so the old `poll_status_files()` using `std::fs::read_to_string`
+/// silently read nothing. Read the files through a host `cat` via
+/// `run_command`, the same channel every other host-filesystem access in
+/// this plugin uses. Output is one `<basename>\t<event>` line per `.state`
+/// file (basename without the `.state` suffix); results arrive in
+/// `Event::RunCommandResult` with context `type=poll_status`.
+pub fn poll_status_files_async(status_dir: &str) {
+    let dir = shell_escape(status_dir);
+    let script = format!(
+        "for f in '{}'/*.state; do [ -f \"$f\" ] || continue; \
+         printf '%s\\t%s\\n' \"$(basename \"$f\" .state)\" \
+         \"$(tr -d '\\n' < \"$f\" 2>/dev/null)\"; done",
+        dir
+    );
+    run_typed_command(&["sh", "-c", &script], CMD_POLL_STATUS);
+}
+
 /// Command type for async discovery of custom sandbox-level profiles.
 /// Output format: lines of `<backend>:<base>:<level>` (or `<backend>:<base>:` for the
 /// suffix-less "normal" profile). See `discover_sandbox_levels_async()`.
