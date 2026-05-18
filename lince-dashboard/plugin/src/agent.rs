@@ -169,6 +169,7 @@ fn synthesize_sandboxed_command(
     level: &str,
     agent_id: &str,
     project_dir: &str,
+    type_config: Option<&AgentTypeConfig>,
 ) -> Option<Vec<String>> {
     let base = agent_type_base_name(agent_type);
 
@@ -240,7 +241,21 @@ fn synthesize_sandboxed_command(
         "bash" => (vec!["bash".to_string()], ""),
         "zsh" => (vec!["zsh".to_string()], ""),
         "fish" => (vec!["fish".to_string()], ""),
-        _ => return None,
+        // Config-driven fallback: unknown agents use their [agents.<name>].command
+        // as the inner command for nono/none synthesis. Requires a matching
+        // nono profile at ~/.config/nono/profiles/lince-<agent>[-<level>].json.
+        _ => match type_config {
+            Some(cfg) => {
+                let inner = expand_command_template(
+                    &cfg.command, agent_id, project_dir, None,
+                );
+                let home_sub = cfg.sandbox_home_subdir
+                    .as_deref()
+                    .unwrap_or("");
+                (inner, home_sub)
+            }
+            None => return None,
+        },
     };
 
     let nono_profile = resolve_nono_profile(base, level);
@@ -438,6 +453,7 @@ fn spawn_inner(
                 level,
                 &id,
                 &project_dir,
+                Some(type_config),
             )
             .or_else(|| {
                 eprintln!(
