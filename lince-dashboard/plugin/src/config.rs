@@ -89,6 +89,13 @@ pub struct AgentTypeConfig {
     /// one option remains so the user never sees a single-choice picker.
     #[serde(default)]
     pub sandbox_levels: Vec<String>,
+    /// Home directory sub-path used by the paranoid nono wrapper to rsync agent
+    /// state into a scratch directory (e.g. ".claude", ".codex").
+    /// Only relevant when `sandbox_backend = "nono"` and `sandbox_level = "paranoid"`.
+    /// When empty/missing, paranoid mode skips the rsync step (agent starts with
+    /// clean HOME — appropriate for stateless agents like shells).
+    #[serde(default)]
+    pub sandbox_home_subdir: Option<String>,
 }
 
 /// Agent pane layout mode.
@@ -705,9 +712,10 @@ pub fn parse_agent_defaults(stdout: &[u8]) -> HashMap<String, AgentTypeConfig> {
     // Parse defaults file (chunk 0) — uses [agents.<name>] structure.
     let mut agent_types: HashMap<String, AgentTypeConfig> = if let Some(chunk) = chunks.first() {
         let content = String::from_utf8_lossy(chunk);
-        toml::from_str::<UserAgentsSection>(content.trim())
-            .map(|s| s.agents)
-            .unwrap_or_default()
+        match toml::from_str::<UserAgentsSection>(content.trim()) {
+            Ok(s) => s.agents,
+            Err(_) => HashMap::new(),
+        }
     } else {
         HashMap::new()
     };
@@ -1096,5 +1104,59 @@ mod tests {
         let mut claude = names.get("claude").cloned().unwrap_or_default();
         claude.sort();
         assert_eq!(claude, vec!["canonicalOnly", "legacyOnly"]);
+    }
+
+    /// Verify that an unknown agent type (e.g. "zai") parses with
+    /// sandbox_home_subdir and that the config-driven fallback works.
+    #[test]
+    fn unknown_agent_type_with_sandbox_home_subdir_parses() {
+        let toml_text = r#"
+[agents.custom-agent]
+command = ["custom-agent", "--flag"]
+pane_title_pattern = "custom-agent"
+status_pipe_name = "custom-status"
+display_name = "Custom Agent"
+short_label = "CST"
+color = "green"
+sandboxed = true
+has_native_hooks = true
+providers = ["__discover__"]
+sandbox_level = "normal"
+sandbox_backend = "nono"
+sandbox_home_subdir = ".custom-agent"
+"#;
+        let parsed: UserAgentsSection = toml::from_str(toml_text).unwrap();
+        let cfg = parsed.agents.get("custom-agent").unwrap();
+        assert_eq!(cfg.command, vec!["custom-agent", "--flag"]);
+        assert_eq!(cfg.sandbox_level.as_deref(), Some("normal"));
+        assert_eq!(cfg.sandbox_home_subdir.as_deref(), Some(".custom-agent"));
+        assert!(matches!(cfg.sandbox_backend, SandboxBackend::Nono));
+    }
+
+    /// Verify that sandbox_home_subdir defaults to None when omitted.
+    #[test]
+    fn sandbox_home_subdir_defaults_to_none() {
+        let toml_text = r#"
+[agents.claude]
+command = ["claude"]
+pane_title_pattern = "claude"
+status_pipe_name = "claude-status"
+display_name = "Claude Code"
+short_label = "CLA"
+color = "blue"
+sandboxed = true
+"#;
+        let parsed: UserAgentsSection = toml::from_str(toml_text).unwrap();
+        let cfg = parsed.agents.get("claude").unwrap();
+        assert!(cfg.sandbox_home_subdir.is_none());
+    }
+
+    /// Verify that parse_agent_defaults gracefully handles malformed TOML
+    /// (the unwrap→match fix) instead of silently returning an empty map.
+    #[test]
+    fn parse_agent_defaults_malformed_toml_returns_empty() {
+        let malformed = b"this is not valid toml [[[";
+        let result = parse_agent_defaults(malformed);
+        assert!(result.is_empty());
     }
 }
