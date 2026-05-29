@@ -1568,9 +1568,10 @@ def build_nono_cmd(
     agent_extra_args: list[str],
     safe_mode: bool = False,
     agent_id: str | None = None,
+    nono_profile: str | None = None,
 ) -> list[str]:
     """Build nono run command for the given agent."""
-    profile_name = f"lince-{agent_name}"
+    profile_name = nono_profile or f"lince-{agent_name}"
     cmd = ["nono", "run", "--profile", profile_name]
     cmd.extend(["--workdir", str(project_dir)])
     cmd.extend(["--allow-cwd"])
@@ -1671,10 +1672,13 @@ def generate_nono_profile(
         profile["filesystem"] = filesystem
 
     # --- Environment passthrough ---
+    # nono v0.33 used "passthrough"; v0.59+ renamed it to "allow_vars".
+    # Use the current canonical name.
     env_conf = config.get("env", {})
+    _nono_env_key = "allow_vars"
     passthrough = list(env_conf.get("passthrough", []))
     if passthrough:
-        profile["environment"] = {"passthrough": passthrough}
+        profile["environment"] = {_nono_env_key: passthrough}
 
     # --- Extra env vars ---
     # Collect env vars from agent config, profile env, and [env.extra]
@@ -1700,13 +1704,13 @@ def generate_nono_profile(
         all_env[var] = _expand_env_value(val)
 
     for var in sorted(all_env):
-        existing_pt = profile.get("environment", {}).get("passthrough", [])
+        existing_pt = profile.get("environment", {}).get(_nono_env_key, [])
         if var not in existing_pt:
             if "environment" not in profile:
-                profile["environment"] = {"passthrough": []}
-            if "passthrough" not in profile["environment"]:
-                profile["environment"]["passthrough"] = []
-            profile["environment"]["passthrough"].append(var)
+                profile["environment"] = {_nono_env_key: []}
+            if _nono_env_key not in profile["environment"]:
+                profile["environment"][_nono_env_key] = []
+            profile["environment"][_nono_env_key].append(var)
 
     # --- Security ---
     # allowed_commands was deprecated in nono v0.33.0 (startup-only,
@@ -2624,23 +2628,38 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         for d in agent_cfg.get("home_rw_dirs", []):
             (Path.home() / d).mkdir(parents=True, exist_ok=True)
 
-        # Ensure nono profile exists
-        nono_profile_file = NONO_PROFILE_DIR / f"lince-{agent_name}.json"
+        # Resolve nono profile: level-specific if a level was requested,
+        # otherwise the base profile.  Mirrors the dashboard plugin's
+        # resolve_nono_profile() in agent.rs.
+        resolved_level = getattr(args, "sandbox_level", None)
+        if resolved_level and resolved_level != "normal":
+            nono_profile_name = f"lince-{agent_name}-{resolved_level}"
+        else:
+            nono_profile_name = f"lince-{agent_name}"
+
+        nono_profile_file = NONO_PROFILE_DIR / f"{nono_profile_name}.json"
         if not nono_profile_file.exists():
-            print(f"nono profile not found: {nono_profile_file}", file=sys.stderr)
-            print("Run 'agent-sandbox nono-sync' to generate profiles.", file=sys.stderr)
-            sys.exit(1)
+            # Fall back to base profile if level-specific one is missing
+            base_profile = NONO_PROFILE_DIR / f"lince-{agent_name}.json"
+            if base_profile.exists():
+                nono_profile_name = f"lince-{agent_name}"
+                nono_profile_file = base_profile
+            else:
+                print(f"nono profile not found: {nono_profile_file}", file=sys.stderr)
+                print("Run 'agent-sandbox nono-sync' to generate profiles.", file=sys.stderr)
+                sys.exit(1)
 
         cmd = build_nono_cmd(
             agent_name, project_dir, agent_cfg, agent_extra,
             safe_mode=args.safe, agent_id=args.id,
+            nono_profile=nono_profile_name,
         )
 
         if args.dry_run:
             print("# nono command that would be executed:\n")
             print(f"# config: {config_path}")
             print(f"# agent: {agent_name} ({agent_cfg['command']})")
-            print(f"# nono profile: lince-{agent_name}")
+            print(f"# nono profile: {nono_profile_name}")
             if provider:
                 print(f"# provider: {provider}")
             _pretty_print_cmd(cmd)
@@ -2651,7 +2670,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         print(f"  config      {config_path}")
         print(f"  backend     nono ({shutil.which('nono')})")
         print(f"  agent       {agent_name} ({agent_cfg['command']})")
-        print(f"  nono prof   lince-{agent_name}")
+        print(f"  nono prof   {nono_profile_name}")
         if provider:
             desc = f" ({prof_desc})" if prof_desc else ""
             print(f"  provider    {provider}{desc}")
