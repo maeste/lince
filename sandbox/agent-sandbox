@@ -234,6 +234,10 @@ NONO_BUILTIN_PROFILES: dict[str, str] = {
 }
 
 NONO_PROFILE_DIR = Path.home() / ".config" / "nono" / "profiles"
+NONO_PROFILE_PREFIX = "lince-"
+# nono v0.33 used "passthrough"; v0.59+ renamed it to "allow_vars".
+# This constant is the canonical key for the nono profile JSON schema.
+NONO_ENV_VARS_KEY = "allow_vars"
 
 # ---------------------------------------------------------------------------
 # Credential proxy rules — maps env vars to API domain/header pairs
@@ -1672,13 +1676,10 @@ def generate_nono_profile(
         profile["filesystem"] = filesystem
 
     # --- Environment passthrough ---
-    # nono v0.33 used "passthrough"; v0.59+ renamed it to "allow_vars".
-    # Use the current canonical name.
     env_conf = config.get("env", {})
-    _nono_env_key = "allow_vars"
     passthrough = list(env_conf.get("passthrough", []))
     if passthrough:
-        profile["environment"] = {_nono_env_key: passthrough}
+        profile["environment"] = {NONO_ENV_VARS_KEY: passthrough}
 
     # --- Extra env vars ---
     # Collect env vars from agent config, profile env, and [env.extra]
@@ -1703,14 +1704,11 @@ def generate_nono_profile(
     for var, val in agent_config.get("env", {}).items():
         all_env[var] = _expand_env_value(val)
 
+    env_block = profile.setdefault("environment", {})
+    vars_list = env_block.setdefault(NONO_ENV_VARS_KEY, [])
     for var in sorted(all_env):
-        existing_pt = profile.get("environment", {}).get(_nono_env_key, [])
-        if var not in existing_pt:
-            if "environment" not in profile:
-                profile["environment"] = {_nono_env_key: []}
-            if _nono_env_key not in profile["environment"]:
-                profile["environment"][_nono_env_key] = []
-            profile["environment"][_nono_env_key].append(var)
+        if var not in vars_list:
+            vars_list.append(var)
 
     # --- Security ---
     # allowed_commands was deprecated in nono v0.33.0 (startup-only,
@@ -2630,19 +2628,20 @@ def cmd_run(args, agent_extra: list[str]) -> None:
 
         # Resolve nono profile: level-specific if a level was requested,
         # otherwise the base profile.  Mirrors the dashboard plugin's
-        # resolve_nono_profile() in agent.rs.
-        resolved_level = getattr(args, "sandbox_level", None)
-        if resolved_level and resolved_level != "normal":
-            nono_profile_name = f"lince-{agent_name}-{resolved_level}"
+        # resolve_nono_profile() in agent.rs.  sandbox_level is already
+        # resolved from args at line ~2555 above.
+        if sandbox_level and sandbox_level != "normal":
+            nono_profile_name = f"{NONO_PROFILE_PREFIX}{agent_name}-{sandbox_level}"
         else:
-            nono_profile_name = f"lince-{agent_name}"
+            nono_profile_name = f"{NONO_PROFILE_PREFIX}{agent_name}"
 
         nono_profile_file = NONO_PROFILE_DIR / f"{nono_profile_name}.json"
         if not nono_profile_file.exists():
             # Fall back to base profile if level-specific one is missing
-            base_profile = NONO_PROFILE_DIR / f"lince-{agent_name}.json"
+            base_name = f"{NONO_PROFILE_PREFIX}{agent_name}"
+            base_profile = NONO_PROFILE_DIR / f"{base_name}.json"
             if base_profile.exists():
-                nono_profile_name = f"lince-{agent_name}"
+                nono_profile_name = base_name
                 nono_profile_file = base_profile
             else:
                 print(f"nono profile not found: {nono_profile_file}", file=sys.stderr)

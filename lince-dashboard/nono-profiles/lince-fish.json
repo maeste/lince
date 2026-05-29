@@ -19,7 +19,7 @@
     ]
   },
   "environment": {
-    "passthrough": [
+    "allow_vars": [
       "TERM",
       "COLORTERM",
       "TERM_PROGRAM",
