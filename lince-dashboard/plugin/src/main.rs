@@ -474,6 +474,8 @@ impl ZellijPlugin for State {
                                     event: event.to_string(),
                                     timestamp: None,
                                     error: None,
+                                    session_id: None,
+                                    transcript_path: None,
                                 };
                                 let new_status = msg.to_agent_status(
                                     self.config.event_map_for(&agent.agent_type),
@@ -1306,6 +1308,15 @@ impl State {
 
         if let Some(e) = msg.error {
             agent.last_error = Some(e);
+        }
+
+        // Forward transcript_path from hook events to agent state.
+        // Updated on every hook event (not just SessionStart) for robustness —
+        // the field is stable within a session so repeated writes are benign.
+        if let Some(tp) = msg.transcript_path {
+            if !tp.is_empty() {
+                agent.transcript_path = Some(tp);
+            }
         }
     }
 

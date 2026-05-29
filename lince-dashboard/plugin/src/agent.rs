@@ -549,6 +549,7 @@ fn spawn_inner(
         last_polled_event: None,
         sandbox_level: resolved_sandbox_level,
         sandbox_backend: resolved_sandbox_backend,
+        transcript_path: None,
     })
 }
 
