@@ -567,6 +567,7 @@ impl ZellijPlugin for State {
             cols,
             effective_status,
             self.name_prompt.as_ref(),
+            self.relay_state.as_ref().map(|r| &r.phase),
             &self.config.agent_types,
             &self.config.sandbox_colors,
         );
