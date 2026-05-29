@@ -445,6 +445,55 @@ pub fn poll_status_files_async(status_dir: &str) {
 /// suffix-less "normal" profile). See `discover_sandbox_levels_async()`.
 pub const CMD_DISCOVER_SANDBOX_LEVELS: &str = "discover_sandbox_levels";
 
+/// Command type for async transcript extraction for the relay feature.
+pub const CMD_EXTRACT_TRANSCRIPT: &str = "extract_transcript";
+
+/// Kick off async extraction of the last N conversation messages from a
+/// Claude Code JSONL transcript file. Results arrive in
+/// `Event::RunCommandResult` with context `type=extract_transcript`.
+///
+/// Uses python3 (guaranteed present — Claude Code requires it) because
+/// JSONL with nested content arrays is awkward in jq but trivial in Python.
+pub fn extract_transcript_async(
+    source_agent_id: &str,
+    transcript_path: &str,
+    message_count: usize,
+) {
+    let path = shell_escape(transcript_path);
+    let count = message_count;
+    let script = format!(
+        r#"python3 -c "
+import json, sys
+msgs = []
+for line in open('{path}'):
+    line = line.strip()
+    if not line: continue
+    try: d = json.loads(line)
+    except: continue
+    t = d.get('type','')
+    if t not in ('user','assistant'): continue
+    content = d.get('message',{{}}).get('content',[])
+    texts = [c['text'].strip() for c in content if isinstance(c,dict) and c.get('type')=='text' and c.get('text','').strip()]
+    if texts:
+        role = 'User' if t == 'user' else 'Assistant'
+        msgs.append('[' + role + ']: ' + ' '.join(texts))
+for m in msgs[-{count}:]:
+    print(m)
+    print()
+" 2>/dev/null || echo '[error] python3 extraction failed'"#,
+        path = path,
+        count = count,
+    );
+    run_typed_command_with(
+        &["sh", "-c", &script],
+        CMD_EXTRACT_TRANSCRIPT,
+        &[
+            ("source_agent_id", source_agent_id),
+            ("message_count", &message_count.to_string()),
+        ],
+    );
+}
+
 /// Extract provider details from a TOML table (the value side of a
 /// `[*.providers.<name>]` / `[*.profiles.<name>]` entry).
 fn parse_provider_details(table: &toml::Table) -> ProviderDetails {

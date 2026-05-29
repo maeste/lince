@@ -110,6 +110,34 @@ pub struct NamePromptState {
     pub label: &'static str,
 }
 
+/// Phases of the inter-agent message relay state machine.
+///
+/// Flow: MessagePrompt → Extracting → DeliveryPending → (deliver or cancel).
+/// Triggered by `s` (relay last message) or `S` (prompt for count).
+#[derive(Debug, Clone)]
+pub enum RelayPhase {
+    /// User pressed S, entering message count (1-9).
+    MessagePrompt { input: String },
+    /// Async extraction from transcript in progress.
+    Extracting {
+        source_agent_id: String,
+        source_agent_name: String,
+        message_count: usize,
+    },
+    /// Extracted messages ready for delivery to target.
+    DeliveryPending {
+        source_agent_name: String,
+        captured_text: String,
+        message_count: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct RelayState {
+    pub phase: RelayPhase,
+    pub source_index: usize,
+}
+
 /// Which step the wizard is currently on.
 ///
 /// Note: `Provider` selects an env-var bundle (Anthropic vs Vertex vs Z.ai
