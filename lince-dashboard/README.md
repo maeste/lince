@@ -20,6 +20,8 @@ Multi-agent TUI dashboard for managing AI coding agents in [Zellij](https://zell
 
 Sandboxed agents run inside [agent-sandbox](../sandbox/) (bubblewrap, Linux) or [nono](https://github.com/always-further/nono) (Landlock/Seatbelt, Linux + macOS) — the dashboard manages pane lifecycle and status, not isolation. The sandbox backend is auto-detected or configurable per-agent.
 
+**Message relay**: Send conversation messages between agents (`s` to relay last message, `S` for N messages).
+
 ## Prerequisites
 
 - **Zellij** >= 0.40 (0.43.x recommended)
@@ -69,6 +71,8 @@ Press `n` to spawn an agent (quick name prompt), or `N` for the full wizard (typ
 | `h` / `Esc` | Hide agent pane |
 | `j` / `k` | Navigate agent list |
 | `i` | Toggle detail panel |
+| `s` | Relay last message to another agent |
+| `S` | Relay N messages (prompt for count) |
 | `x` | Kill agent |
 | `Q` | Save state & quit |
 | `?` | Help overlay |
