@@ -9,6 +9,8 @@
     "read": []
   },
   "network": {
-    "credentials": ["gemini"]
+    "block": true,
+    "credentials": ["gemini"],
+    "allow_domain": ["generativelanguage.googleapis.com"]
   }
 }

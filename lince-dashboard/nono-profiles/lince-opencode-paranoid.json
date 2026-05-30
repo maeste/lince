@@ -9,6 +9,8 @@
     "read": []
   },
   "network": {
-    "credentials": ["anthropic", "openai", "gemini"]
+    "block": true,
+    "credentials": ["anthropic", "openai", "gemini"],
+    "allow_domain": ["api.anthropic.com", "api.openai.com", "generativelanguage.googleapis.com"]
   }
 }

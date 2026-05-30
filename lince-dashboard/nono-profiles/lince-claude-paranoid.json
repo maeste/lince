@@ -9,6 +9,8 @@
     "read": []
   },
   "network": {
-    "credentials": ["anthropic"]
+    "block": true,
+    "credentials": ["anthropic"],
+    "allow_domain": ["api.anthropic.com"]
   }
 }

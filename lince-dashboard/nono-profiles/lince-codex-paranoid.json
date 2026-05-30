@@ -9,6 +9,8 @@
     "read": []
   },
   "network": {
-    "credentials": ["openai"]
+    "block": true,
+    "credentials": ["openai"],
+    "allow_domain": ["api.openai.com"]
   }
 }
