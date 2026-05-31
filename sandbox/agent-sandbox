@@ -1898,6 +1898,7 @@ def human_size(n: int) -> str:
 
 _home_path_dirs_cache: list[Path] | None = None
 _home_path_entries_cache: list[Path] | None = None
+_brew_path_dirs_cache: list[Path] | None = None
 
 
 def detect_home_path_dirs() -> list[Path]:
@@ -1949,6 +1950,39 @@ def detect_home_path_entries() -> list[Path]:
             result.append(p)
     _home_path_entries_cache = result
     return _home_path_entries_cache
+
+
+def detect_brew_path_dirs() -> list[Path]:
+    """Return Homebrew bin/sbin dirs found in the host $PATH (cached).
+
+    Homebrew-on-Linux installs under /home/linuxbrew/.linuxbrew, a *sibling* of
+    $HOME, so detect_home_path_dirs() (which only keeps entries under $HOME)
+    misses it. The whole FS is ro-bound into the sandbox, so these dirs are
+    already readable/executable — they just never make it onto PATH, which means
+    brew-installed tools like `uvx` (the launcher for the serena MCP server) are
+    invisible to the agent. Detect them explicitly so they can be added to PATH.
+    """
+    global _brew_path_dirs_cache
+    if _brew_path_dirs_cache is not None:
+        return _brew_path_dirs_cache
+    # Brew layout markers: linuxbrew (/home/linuxbrew/.linuxbrew) and the macOS /
+    # custom prefixes (/opt/homebrew, /usr/local/Homebrew → .../Homebrew/bin).
+    markers = ("/.linuxbrew/", "/homebrew/")
+    prefix = os.environ.get("HOMEBREW_PREFIX", "")
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for entry in os.environ.get("PATH", "").split(":"):
+        if not entry:
+            continue
+        is_brew = any(m in entry for m in markers) or (prefix and entry.startswith(prefix))
+        if not is_brew:
+            continue
+        p = Path(entry)
+        if p not in seen and p.is_dir():
+            seen.add(p)
+            result.append(p)
+    _brew_path_dirs_cache = result
+    return _brew_path_dirs_cache
 
 
 # ---------------------------------------------------------------------------
@@ -2298,6 +2332,12 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
             top = home_p / rel.parts[0]
             if top in mounted_tops:
                 path_parts.append(entry_str)
+        # Homebrew lives outside $HOME (e.g. /home/linuxbrew/.linuxbrew/bin) so
+        # the loops above skip it. The FS is ro-bound, so just add it to PATH.
+        for bp in detect_brew_path_dirs():
+            bp_str = str(bp)
+            if bp_str not in path_parts:
+                path_parts.append(bp_str)
     cmd += ["--setenv", "PATH", ":".join(dict.fromkeys(path_parts))]
 
     # Toolchain env vars
@@ -2516,6 +2556,12 @@ def cmd_init(args) -> None:
             print(f"    ro  {d}")
             for de in deep:
                 print(f"        + {de}  (deep PATH entry)")
+
+    brew_dirs = detect_brew_path_dirs()
+    if brew_dirs:
+        print(f"\n  Homebrew PATH dirs ({len(brew_dirs)}):")
+        for d in brew_dirs:
+            print(f"    ro  {d}")
 
     # Create default config.toml if none exists
     config_created = False
@@ -3238,6 +3284,9 @@ def cmd_status(args) -> None:
     deep_count = len(home_entries) - len(home_dirs)
     extra = f" (+{deep_count} deep)" if deep_count > 0 else ""
     print(f"  home PATH dirs  {len(home_dirs)} detected{extra}")
+    brew_dirs = detect_brew_path_dirs()
+    if brew_dirs:
+        print(f"  homebrew PATH   {len(brew_dirs)} detected")
 
     # Providers (env-var bundles) — collect from all agent types, scanning
     # both canonical [providers.*] / [<agent>.providers.*] and legacy
@@ -4936,6 +4985,12 @@ def build_learn_bwrap_cmd(
             top = home_p / rel.parts[0]
             if top in mounted_tops:
                 path_parts.append(entry_str)
+        # Homebrew lives outside $HOME (e.g. /home/linuxbrew/.linuxbrew/bin) so
+        # the loops above skip it. The FS is ro-bound, so just add it to PATH.
+        for bp in detect_brew_path_dirs():
+            bp_str = str(bp)
+            if bp_str not in path_parts:
+                path_parts.append(bp_str)
     cmd += ["--setenv", "PATH", ":".join(dict.fromkeys(path_parts))]
 
     # Toolchain env vars
