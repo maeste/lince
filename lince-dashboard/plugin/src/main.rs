@@ -801,6 +801,7 @@ impl State {
                     project_dir: default_dir,
                     completions: Vec::new(),
                     completion_index: None,
+                    project_dir_error: None,
                 };
                 state.step = state.active_steps().into_iter().next().unwrap_or(WizardStep::Name);
                 self.wizard = Some(state);
@@ -1182,8 +1183,50 @@ impl State {
                             wizard.project_dir = selected;
                         }
                         wizard.clear_completions();
-                    } else if let Some(next) = wizard.next_step() {
-                        wizard.step = next;
+                        wizard.project_dir_error = None;
+                    } else {
+                        // Validate BEFORE advancing. Sandbox backends (nono on
+                        // macOS, agent-sandbox/bwrap on Linux) require absolute
+                        // paths — catch typos here so the user sees the cause
+                        // and can correct without spawning a doomed agent.
+                        // The error is rendered as a red line below the input
+                        // by `render_wizard` (status_message is invisible while
+                        // the wizard overlay is active, hence this dedicated
+                        // field on WizardState).
+                        //
+                        // Tilde handling: the path completer collapses absolute
+                        // matches back to `~/...` for readability (handler
+                        // CMD_PATH_COMPLETE applies `collapse_tilde`). Expand
+                        // it transparently here so the wizard accepts `~/...`
+                        // input — the backend gets the absolute form.
+                        let trimmed_owned = wizard.project_dir.trim().to_string();
+                        if trimmed_owned.starts_with('~') {
+                            let expanded = config::expand_tilde(&trimmed_owned);
+                            if expanded.starts_with('/') {
+                                wizard.project_dir = expanded;
+                            }
+                        }
+                        let trimmed = wizard.project_dir.trim();
+                        let err = if trimmed.is_empty() {
+                            Some("Project dir is required.")
+                        } else if trimmed.starts_with('~') {
+                            // Tilde survived expansion → $HOME unavailable in
+                            // this plugin process. Ask for the full path.
+                            Some("Project dir does not expand `~`. Use the full /Users/... path (Tab to autocomplete).")
+                        } else if !trimmed.starts_with('/') {
+                            Some("Project dir must be an absolute path (Tab to autocomplete).")
+                        } else {
+                            None
+                        };
+                        if let Some(msg) = err {
+                            wizard.project_dir_error = Some(msg.to_string());
+                            // Stay on ProjectDir — Backspace to edit, Tab to autocomplete.
+                            return true;
+                        }
+                        wizard.project_dir_error = None;
+                        if let Some(next) = wizard.next_step() {
+                            wizard.step = next;
+                        }
                     }
                 }
                 BareKey::Tab => {
@@ -1211,11 +1254,13 @@ impl State {
                     } else {
                         wizard.project_dir.pop();
                         wizard.clear_completions();
+                        wizard.project_dir_error = None;
                     }
                 }
                 BareKey::Char(c) => {
                     wizard.project_dir.push(c);
                     wizard.clear_completions();
+                    wizard.project_dir_error = None;
                 }
                 _ => {}
             },
