@@ -207,6 +207,11 @@ impl SandboxColors {
     }
 }
 
+fn default_project_search_max_depth() -> usize {
+    3
+}
+
+
 fn default_status_file_dir() -> String {
     "/tmp/lince-dashboard".to_string()
 }
@@ -283,6 +288,17 @@ pub struct DashboardConfig {
     /// in `~/.config/lince-dashboard/config.toml`.
     #[serde(default)]
     pub sandbox_colors: SandboxColors,
+    /// Root directories scanned recursively when the wizard's Project dir
+    /// Tab-completion receives a bare name (no `/` or `~/` prefix). Enables
+    /// zoxide-like UX: `syn` + Tab finds `<root>/Personal/synoptic` anywhere
+    /// inside any configured root. Empty list = legacy glob in launch_dir.
+    #[serde(default)]
+    pub project_search_roots: Vec<String>,
+    /// Maximum depth (passed to `find -maxdepth`) when scanning
+    /// `project_search_roots`. Default 3 covers typical category-level
+    /// nesting (e.g. `Projects/Personal/<proj>`, `Projects/Work/<client>/<repo>`).
+    #[serde(default = "default_project_search_max_depth")]
+    pub project_search_max_depth: usize,
     /// Custom sandbox levels discovered from the filesystem, keyed by
     /// `<backend>:<base>` (e.g. `"nono:claude"` or `"agent-sandbox:claude"`).
     /// Populated asynchronously by `discover_sandbox_levels_async()` reading
@@ -311,6 +327,8 @@ impl Default for DashboardConfig {
             agent_types: HashMap::new(),
             sandbox_backend: BackendConfig::default(),
             sandbox_colors: SandboxColors::default(),
+            project_search_roots: Vec::new(),
+            project_search_max_depth: default_project_search_max_depth(),
             discovered_sandbox_levels: HashMap::new(),
         }
     }
@@ -792,17 +810,61 @@ pub fn parse_agent_defaults(stdout: &[u8]) -> HashMap<String, AgentTypeConfig> {
 /// Maximum number of completion results returned by the shell.
 const MAX_COMPLETIONS: usize = 50;
 
-pub fn complete_path_async(partial: &str) {
-    let prefix_expr = shell_path_expr(partial);
+pub fn complete_path_async(partial: &str, roots: &[String], max_depth: usize) {
+    let trimmed = partial.trim();
 
-    // Glob for directories matching the prefix. The trailing `*/` ensures
-    // only directories are matched. Limit output to avoid unbounded results
-    // on directories with many children (e.g. /usr/share/).
-    let script = format!(
-        "for d in {}*/; do [ -d \"$d\" ] && echo \"$d\"; done 2>/dev/null | head -n {}",
-        prefix_expr,
-        MAX_COMPLETIONS
-    );
+    // Dispatch by input shape:
+    //  - Absolute or tilde-prefixed → legacy glob at that exact prefix
+    //    (power users typing a specific path keep the familiar behavior).
+    //  - Bare name + configured roots → recursive find across roots
+    //    (zoxide-like: `syn` finds `<root>/.../synoptic` anywhere).
+    //  - Bare name + no roots → fallback to legacy glob in launch_dir CWD.
+    //  - Empty → no-op (avoids unbounded scan on accidental Tab).
+    let script = if trimmed.is_empty() {
+        // Empty stdout → handler will treat as "no matches", state unchanged.
+        "true".to_string()
+    } else if trimmed.starts_with('/') || trimmed.starts_with('~') {
+        let prefix_expr = shell_path_expr(trimmed);
+        format!(
+            "for d in {}*/; do [ -d \"$d\" ] && echo \"$d\"; done 2>/dev/null | head -n {}",
+            prefix_expr,
+            MAX_COMPLETIONS
+        )
+    } else if roots.is_empty() {
+        // Legacy: glob in the shell's CWD (= plugin host's launch_dir).
+        let prefix_expr = shell_path_expr(trimmed);
+        format!(
+            "for d in {}*/; do [ -d \"$d\" ] && echo \"$d\"; done 2>/dev/null | head -n {}",
+            prefix_expr,
+            MAX_COMPLETIONS
+        )
+    } else {
+        // Recursive multi-root scan. Build one `find` per root; output is
+        // a list of absolute paths (since roots are absolute). Common noisy
+        // subtrees are pruned to keep latency low on large homes.
+        let depth = max_depth.max(1);
+        let pattern = shell_escape(&format!("{}*", trimmed));
+        let mut cmd = String::from("{\n");
+        for root in roots {
+            // Each root is wrapped in single quotes; shell_escape handles any
+            // internal apostrophe. Tilde inside roots is expanded via $HOME
+            // (consistent with shell_path_expr).
+            let root_expr = shell_path_expr(root);
+            cmd.push_str(&format!(
+                "    find {root} -maxdepth {depth} -mindepth 1 -type d \\
+        -name '{pattern}' \\
+        -not -path '*/node_modules/*' \\
+        -not -path '*/.git/*' \\
+        -not -path '*/.cache/*' \\
+        -not -path '*/target/*' 2>/dev/null\n",
+                root = root_expr,
+                depth = depth,
+                pattern = pattern,
+            ));
+        }
+        cmd.push_str(&format!("}} | sort -u | head -n {}\n", MAX_COMPLETIONS));
+        cmd
+    };
 
     // Store the request prefix so the handler can detect stale results.
     run_typed_command_with(
