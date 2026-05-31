@@ -66,10 +66,26 @@ pub const CMD_DETECT_BACKEND: &str = "detect_backend";
 /// Checks for `agent-sandbox` and `nono` in PATH. Results arrive in
 /// `Event::RunCommandResult` with context `type=detect_backend`.
 pub fn detect_backend_async() {
+    // WASI plugins inherit a sandboxed / empty PATH and `export PATH=...`
+    // inside the script does NOT propagate the way one would expect under
+    // Zellij's host shell implementation. Bypass PATH entirely: probe
+    // well-known absolute install locations + use /usr/bin/uname directly.
+    // This covers macOS (Homebrew Apple Silicon /opt/homebrew, Intel
+    // /usr/local) and Linux (/usr/bin, /usr/local/bin, ~/.local/bin via
+    // $HOME) without depending on PATH at all.
     let script = concat!(
-        "echo -n 'agent-sandbox:'; command -v agent-sandbox >/dev/null 2>&1 && echo 'yes' || echo 'no'; ",
-        "echo -n 'nono:'; command -v nono >/dev/null 2>&1 && echo 'yes' || echo 'no'; ",
-        "echo -n 'os:'; uname -s 2>/dev/null || echo 'unknown'"
+        "as=no; ",
+        "for p in /usr/bin/agent-sandbox /usr/local/bin/agent-sandbox /opt/homebrew/bin/agent-sandbox \"$HOME/.local/bin/agent-sandbox\"; do ",
+        "  [ -x \"$p\" ] && { as=yes; break; }; ",
+        "done; ",
+        "echo \"agent-sandbox:$as\"; ",
+        "nn=no; ",
+        "for p in /opt/homebrew/bin/nono /usr/local/bin/nono /usr/bin/nono \"$HOME/.local/bin/nono\"; do ",
+        "  [ -x \"$p\" ] && { nn=yes; break; }; ",
+        "done; ",
+        "echo \"nono:$nn\"; ",
+        "os=$(/usr/bin/uname -s 2>/dev/null || /bin/uname -s 2>/dev/null); ",
+        "echo \"os:${os:-unknown}\""
     );
     crate::config::run_typed_command(&["sh", "-c", script], CMD_DETECT_BACKEND);
 }
