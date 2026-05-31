@@ -63,7 +63,28 @@ if [ "$HOOK_EVENT" = "Notification" ]; then
     fi
 fi
 
-PAYLOAD="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${NATIVE_EVENT}\"}"
+SESSION_ID=$(extract_json_field "session_id")
+TRANSCRIPT_PATH=$(extract_json_field "transcript_path")
+
+# Build JSON payload with optional session_id and transcript_path.
+# Use jq when available for safe escaping of special characters.
+if $HAS_JQ; then
+    PAYLOAD=$(jq -n --arg aid "$AGENT_ID" --arg evt "$NATIVE_EVENT" \
+        --arg sid "${SESSION_ID:-}" --arg tp "${TRANSCRIPT_PATH:-}" \
+        '{agent_id: $aid, event: $evt} +
+         (if $sid != "" then {session_id: $sid} else {} end) +
+         (if $tp  != "" then {transcript_path: $tp} else {} end)')
+else
+    # Fallback: manual string concatenation (no escaping — safe for known values only)
+    PAYLOAD="{\"agent_id\":\"${AGENT_ID}\",\"event\":\"${NATIVE_EVENT}\""
+    if [ -n "$SESSION_ID" ]; then
+        PAYLOAD="${PAYLOAD},\"session_id\":\"${SESSION_ID}\""
+    fi
+    if [ -n "$TRANSCRIPT_PATH" ]; then
+        PAYLOAD="${PAYLOAD},\"transcript_path\":\"${TRANSCRIPT_PATH}\""
+    fi
+    PAYLOAD="${PAYLOAD}}"
+fi
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ${AGENT_ID} ${NATIVE_EVENT}" >> "$LOG_FILE" 2>/dev/null || true
 

@@ -46,6 +46,11 @@ pub struct StatusMessage {
     pub timestamp: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)] // deserialized from hook JSON, reserved for future session tracking
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
 }
 
 /// Map a canonical status string to AgentStatus.
@@ -103,6 +108,34 @@ pub struct NamePromptState {
     pub default_name: String,
     /// Label shown before the input (e.g. "Name" or "Rename").
     pub label: &'static str,
+}
+
+/// Phases of the inter-agent message relay state machine.
+///
+/// Flow: MessagePrompt → Extracting → DeliveryPending → (deliver or cancel).
+/// Triggered by `s` (relay last message) or `S` (prompt for count).
+#[derive(Debug, Clone)]
+pub enum RelayPhase {
+    /// User pressed S, entering message count (1-9).
+    MessagePrompt { input: String },
+    /// Async extraction from transcript in progress.
+    Extracting {
+        source_agent_id: String,
+        source_agent_name: String,
+        message_count: usize,
+    },
+    /// Extracted messages ready for delivery to target.
+    DeliveryPending {
+        source_agent_name: String,
+        captured_text: String,
+        message_count: usize,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct RelayState {
+    pub phase: RelayPhase,
+    pub source_index: usize,
 }
 
 /// Which step the wizard is currently on.
@@ -304,6 +337,7 @@ pub struct AgentInfo {
     /// Runtime-selected sandbox backend (wizard choice or saved state).
     /// None means use the agent type's TOML-pinned `sandbox_backend`.
     pub sandbox_backend: Option<crate::sandbox_backend::SandboxBackend>,
+    pub transcript_path: Option<String>,
 }
 
 impl AgentInfo {
@@ -412,6 +446,8 @@ mod tests {
             event: event.to_string(),
             timestamp: None,
             error: None,
+            session_id: None,
+            transcript_path: None,
         }
     }
 
@@ -551,6 +587,7 @@ mod tests {
             last_polled_event: None,
             sandbox_level: None,
             sandbox_backend: None,
+            transcript_path: None,
         }
     }
 
@@ -609,6 +646,7 @@ mod tests {
             last_polled_event: None,
             sandbox_level: Some("paranoid".to_string()),
             sandbox_backend: Some(crate::sandbox_backend::SandboxBackend::Nono),
+            transcript_path: None,
         };
 
         let saved: SavedAgentInfo = (&agent).into();

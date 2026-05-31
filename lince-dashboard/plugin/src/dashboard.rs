@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::config::{AgentTypeConfig, SandboxColors};
 use crate::types::{
-    AgentInfo, AgentStatus, NamePromptState, WizardState, WizardStep,
+    AgentInfo, AgentStatus, NamePromptState, RelayPhase, WizardState, WizardStep,
 };
 
 /// Map a color name from config to an ANSI escape code.
@@ -230,6 +230,7 @@ pub fn render_dashboard(
     cols: usize,
     status_message: Option<&str>,
     name_prompt: Option<&NamePromptState>,
+    relay_phase: Option<&RelayPhase>,
     agent_types: &HashMap<String, AgentTypeConfig>,
     sandbox_colors: &SandboxColors,
 ) {
@@ -252,8 +253,12 @@ pub fn render_dashboard(
             if let Some(prompt) = name_prompt {
                 render_name_prompt_bar(prompt, cols);
                 print_status_pad_line(cols);
+            } else if let Some(RelayPhase::MessagePrompt { input }) = relay_phase {
+                render_relay_message_prompt(input, cols);
+                print_status_pad_line(cols);
             } else {
-                render_status_bar(cols, status_message, agents, focused, detail);
+                let rp = matches!(relay_phase, Some(RelayPhase::DeliveryPending { .. }));
+                render_status_bar(cols, status_message, agents, focused, detail, rp);
             }
         } else if status_lines == 1 {
             if let Some(prompt) = name_prompt {
@@ -295,8 +300,12 @@ pub fn render_dashboard(
     if let Some(prompt) = name_prompt {
         render_name_prompt_bar(prompt, cols);
         print_status_pad_line(cols);
+    } else if let Some(RelayPhase::MessagePrompt { input }) = relay_phase {
+        render_relay_message_prompt(input, cols);
+        print_status_pad_line(cols);
     } else {
-        render_status_bar(cols, status_message, agents, focused, detail);
+        let rp = matches!(relay_phase, Some(RelayPhase::DeliveryPending { .. }));
+        render_status_bar(cols, status_message, agents, focused, detail, rp);
     }
 }
 
@@ -675,6 +684,28 @@ fn render_name_prompt_bar(prompt: &NamePromptState, cols: usize) {
     println!();
 }
 
+/// Render the relay message-count prompt bar (blue background).
+/// Pattern matches render_name_prompt_bar: cursor block, dim default, hints.
+fn render_relay_message_prompt(input: &str, cols: usize) {
+    let cursor = "\u{2588}"; // solid block cursor
+    let input_part = if input.is_empty() {
+        format!("{}1{}{}", DIM, RESET, cursor) // default "1" in dim
+    } else {
+        format!("{}{}", input, cursor)
+    };
+
+    let text = format!(
+        " {}Relay:{} Messages (1-9): {}  {}[Enter]{} OK  {}[Esc]{} Cancel",
+        CYAN, RESET, input_part,
+        KEY_COLOR, RESET, KEY_COLOR, RESET,
+    );
+
+    let visible_len = strip_ansi_len(&text);
+    let padding = cols.saturating_sub(visible_len + 1);
+    print!("\x1b[44m {}{:>pad$}{}", text, "", RESET, pad = padding);
+    println!();
+}
+
 /// A key hint entry: (key label, description).
 type KeyHint = (&'static str, &'static str);
 
@@ -694,6 +725,11 @@ fn format_key_hints_short(hints: &[KeyHint]) -> String {
         .map(|(key, label)| format!("{}:{}", key, label))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Key hints shown during the relay DeliveryPending phase.
+fn relay_pending_hints() -> Vec<KeyHint> {
+    vec![("s", "Relay"), ("f/Enter", "Deliver"), ("j/k", "Nav"), ("1-9", "Quick"), ("Esc", "Cancel")]
 }
 
 /// Return the context-appropriate key hints.
@@ -718,7 +754,15 @@ fn render_status_bar(
     agents: &[AgentInfo],
     focused: Option<&str>,
     detail: Option<&str>,
+    relay_pending: bool,
 ) {
+    if relay_pending {
+        let hints = relay_pending_hints();
+        let text = format_key_hints(&hints);
+        print_status_line(&text, &hints, cols);
+        return;
+    }
+
     let is_empty = agents.is_empty();
     let is_focused = focused.is_some();
     let is_detail = detail.is_some();
@@ -1022,6 +1066,11 @@ pub fn render_help_overlay(rows: usize, cols: usize) {
     push_box_line(&mut lines, &format!("  {}Create{}", BOLD, RESET), box_width);
     push_box_line(&mut lines, &format!("  {}n{}          New agent (name prompt)", KEY_COLOR, RESET), box_width);
     push_box_line(&mut lines, &format!("  {}N{}          New agent wizard", KEY_COLOR, RESET), box_width);
+    push_box_line(&mut lines, "", box_width);
+
+    push_box_line(&mut lines, &format!("  {}Relay{}", BOLD, RESET), box_width);
+    push_box_line(&mut lines, &format!("  {}s{}          Relay last message to agent", KEY_COLOR, RESET), box_width);
+    push_box_line(&mut lines, &format!("  {}S{}          Relay N messages (prompt)", KEY_COLOR, RESET), box_width);
     push_box_line(&mut lines, "", box_width);
 
     push_box_line(&mut lines, &format!("  {}Other{}", BOLD, RESET), box_width);

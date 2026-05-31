@@ -21,8 +21,8 @@ const CMD_GET_CWD: &str = "get_cwd";
 const CMD_LOAD_CONFIG: &str = "load_config";
 
 use crate::types::{
-    AgentInfo, AgentStatus, NamePromptState, SavedAgentInfo, SessionDefaults,
-    StatusMessage, WizardState, WizardStep,
+    AgentInfo, AgentStatus, NamePromptState, RelayPhase, RelayState, SavedAgentInfo,
+    SessionDefaults, StatusMessage, WizardState, WizardStep,
 };
 
 struct State {
@@ -41,6 +41,8 @@ struct State {
     name_prompt: Option<NamePromptState>,
     /// When set, the name_prompt acts as a rename prompt for this agent id.
     rename_target: Option<String>,
+    /// Active relay state machine (None = idle). LINCE-87/88/89 relay feature.
+    relay_state: Option<RelayState>,
     launch_dir: Option<String>,
     /// Buffered saved state awaiting agent type defaults before restore.
     /// Set when load_state completes before load_agent_defaults.
@@ -79,6 +81,7 @@ impl Default for State {
             wizard: None,
             name_prompt: None,
             rename_target: None,
+            relay_state: None,
             launch_dir: None,
             pending_restore: None,
             agent_types_loaded: false,
@@ -474,6 +477,8 @@ impl ZellijPlugin for State {
                                     event: event.to_string(),
                                     timestamp: None,
                                     error: None,
+                                    session_id: None,
+                                    transcript_path: None,
                                 };
                                 let new_status = msg.to_agent_status(
                                     self.config.event_map_for(&agent.agent_type),
@@ -485,6 +490,38 @@ impl ZellijPlugin for State {
                             }
                         }
                         changed
+                    }
+                    Some(cmd_type) if cmd_type == config::CMD_EXTRACT_TRANSCRIPT => {
+                        // Only process if relay is still in Extracting phase
+                        let Some(ref rs) = self.relay_state else { return false };
+                        let RelayPhase::Extracting { source_agent_id, source_agent_name, message_count } = &rs.phase else { return false };
+
+                        let output = String::from_utf8_lossy(&stdout);
+                        let source_name = source_agent_name.clone();
+                        let source_id = source_agent_id.clone();
+                        let count = *message_count;
+                        let src_idx = rs.source_index;
+
+                        if exit_code != Some(0) || output.contains("[error]") || output.trim().is_empty() {
+                            self.relay_state = None;
+                            self.status_message = Some("Transcript extraction failed".to_string());
+                            set_timeout(3.0);
+                            return true;
+                        }
+
+                        self.relay_state = Some(RelayState {
+                            phase: RelayPhase::DeliveryPending {
+                                source_agent_name: source_name,
+                                captured_text: output.trim_end().to_string(),
+                                message_count: count,
+                            },
+                            source_index: src_idx,
+                        });
+                        self.status_message = Some(format!(
+                            "Extracted {} messages from {}. Select target (f/Enter/1-9), Esc cancel",
+                            count, source_id
+                        ));
+                        true
                     }
                     _ => false,
                 }
@@ -530,6 +567,7 @@ impl ZellijPlugin for State {
             cols,
             effective_status,
             self.name_prompt.as_ref(),
+            self.relay_state.as_ref().map(|r| &r.phase),
             &self.config.agent_types,
             &self.config.sandbox_colors,
         );
@@ -623,6 +661,11 @@ impl State {
             return self.handle_name_prompt_key(key);
         }
 
+        // If relay is active, route all keys there
+        if self.relay_state.is_some() {
+            return self.handle_relay_key(key);
+        }
+
         let bare = &key.bare_key;
         let no_mods = key.key_modifiers.is_empty();
 
@@ -658,6 +701,14 @@ impl State {
                         label: "Rename",
                     });
                 }
+                true
+            }
+            BareKey::Char('s') => {
+                self.start_relay(1);
+                true
+            }
+            BareKey::Char('S') => {
+                self.start_relay_with_prompt();
                 true
             }
             BareKey::Char('N') => {
@@ -1307,6 +1358,15 @@ impl State {
         if let Some(e) = msg.error {
             agent.last_error = Some(e);
         }
+
+        // Forward transcript_path from hook events to agent state.
+        // Updated on every hook event (not just SessionStart) for robustness —
+        // the field is stable within a session so repeated writes are benign.
+        if let Some(tp) = msg.transcript_path {
+            if !tp.is_empty() {
+                agent.transcript_path = Some(tp);
+            }
+        }
     }
 
     /// Handle a "voxcode-text" pipe message — relay text to active agent (LINCE-43).
@@ -1342,6 +1402,291 @@ impl State {
             self.focused_agent = Some(self.agents[idx].id.clone());
             self.selected_index = idx;
         }
+    }
+
+    /// Start relay: extract last `count` messages from selected agent's transcript.
+    /// LINCE-87/88/89 inter-agent message relay.
+    fn start_relay(&mut self, count: usize) {
+        let agent = match self.agents.get(self.selected_index) {
+            Some(a) => a,
+            None => {
+                self.status_message = Some("No agent selected".to_string());
+                set_timeout(3.0);
+                return;
+            }
+        };
+
+        let tp = match &agent.transcript_path {
+            Some(p) if !p.is_empty() => p.clone(),
+            _ => {
+                self.status_message = Some(format!(
+                    "Transcript not available for {}",
+                    agent.name
+                ));
+                set_timeout(3.0);
+                return;
+            }
+        };
+
+        if self.agents.len() < 2 {
+            self.status_message = Some("Need 2+ agents to relay".to_string());
+            set_timeout(3.0);
+            return;
+        }
+
+        let source_id = agent.id.clone();
+        let source_name = agent.name.clone();
+        let source_index = self.selected_index;
+
+        config::extract_transcript_async(&source_id, &tp, count);
+
+        self.relay_state = Some(RelayState {
+            phase: RelayPhase::Extracting {
+                source_agent_id: source_id,
+                source_agent_name: source_name,
+                message_count: count,
+            },
+            source_index,
+        });
+        self.status_message = Some("Extracting...".to_string());
+    }
+
+    /// Enter relay MessagePrompt phase so user can pick count 1-9.
+    fn start_relay_with_prompt(&mut self) {
+        let agent = match self.agents.get(self.selected_index) {
+            Some(a) => a,
+            None => {
+                self.status_message = Some("No agent selected".to_string());
+                set_timeout(3.0);
+                return;
+            }
+        };
+
+        if agent.transcript_path.as_deref().unwrap_or("").is_empty() {
+            self.status_message = Some(format!(
+                "Transcript not available for {}",
+                agent.name
+            ));
+            set_timeout(3.0);
+            return;
+        }
+
+        if self.agents.len() < 2 {
+            self.status_message = Some("Need 2+ agents to relay".to_string());
+            set_timeout(3.0);
+            return;
+        }
+
+        let source_index = self.selected_index;
+        self.relay_state = Some(RelayState {
+            phase: RelayPhase::MessagePrompt { input: String::new() },
+            source_index,
+        });
+    }
+
+    /// Handle keyboard input while relay state machine is active.
+    fn handle_relay_key(&mut self, key: KeyWithModifier) -> bool {
+        let bare = key.bare_key;
+        let no_mods = key.key_modifiers.is_empty();
+
+        if !no_mods {
+            return false;
+        }
+
+        // Take ownership of the current relay state for processing.
+        let rs = match self.relay_state.take() {
+            Some(rs) => rs,
+            None => return false,
+        };
+
+        match &rs.phase {
+            RelayPhase::MessagePrompt { .. } => {
+                match bare {
+                    BareKey::Char(c @ '1'..='9') => {
+                        let digit = c.to_string();
+                        self.relay_state = Some(RelayState {
+                            phase: RelayPhase::MessagePrompt { input: digit },
+                            source_index: rs.source_index,
+                        });
+                    }
+                    BareKey::Enter => {
+                        let input = match &rs.phase {
+                            RelayPhase::MessagePrompt { input } => input.clone(),
+                            _ => String::new(),
+                        };
+                        let count = if input.is_empty() { 1 } else { input.parse::<usize>().unwrap_or(1) };
+                        // Restore relay_state so start_relay can validate the agent.
+                        self.relay_state = Some(rs);
+                        self.start_relay(count);
+                    }
+                    BareKey::Esc => {
+                        // Clear relay_state (already taken).
+                    }
+                    _ => {
+                        // Unrecognized key: put state back.
+                        self.relay_state = Some(rs);
+                    }
+                }
+            }
+            RelayPhase::Extracting { .. } => {
+                match bare {
+                    BareKey::Esc => {
+                        // Clear relay_state (already taken).
+                    }
+                    _ => {
+                        // Ignore all other keys during extraction.
+                        self.relay_state = Some(rs);
+                    }
+                }
+            }
+            RelayPhase::DeliveryPending { .. } => {
+                let max_idx = self.agents.len().saturating_sub(1);
+                match bare {
+                    BareKey::Char('f') | BareKey::Enter => {
+                        // Restore state for deliver_relay_to_selected.
+                        self.relay_state = Some(rs);
+                        self.deliver_relay_to_selected();
+                    }
+                    BareKey::Char('j') => {
+                        let new_idx = rs.source_index.saturating_sub(1);
+                        self.relay_state = Some(RelayState {
+                            phase: rs.phase,
+                            source_index: new_idx,
+                        });
+                    }
+                    BareKey::Char('k') => {
+                        let new_idx = if rs.source_index < max_idx {
+                            rs.source_index + 1
+                        } else {
+                            max_idx
+                        };
+                        self.relay_state = Some(RelayState {
+                            phase: rs.phase,
+                            source_index: new_idx,
+                        });
+                    }
+                    BareKey::Char(c @ '1'..='9') => {
+                        let target_idx = (c as u8 - b'1') as usize;
+                        self.relay_state = Some(RelayState {
+                            phase: rs.phase,
+                            source_index: target_idx.min(max_idx),
+                        });
+                        self.deliver_relay_to_selected();
+                    }
+                    BareKey::Esc => {
+                        // Clear relay_state (already taken).
+                    }
+                    _ => {
+                        self.relay_state = Some(rs);
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Deliver relayed text to the target agent pane.
+    fn deliver_relay_to_selected(&mut self) {
+        let rs = match self.relay_state.take() {
+            Some(rs) => rs,
+            None => return,
+        };
+
+        let (source_name, captured_text, message_count) = match &rs.phase {
+            RelayPhase::DeliveryPending { source_agent_name, captured_text, message_count } => {
+                (source_agent_name.clone(), captured_text.clone(), *message_count)
+            }
+            _ => {
+                // Should not happen — put state back.
+                self.relay_state = Some(rs);
+                return;
+            }
+        };
+
+        // Validate target index.
+        let target_idx = rs.source_index;
+        if target_idx >= self.agents.len() {
+            self.relay_state = Some(RelayState {
+                phase: RelayPhase::DeliveryPending {
+                    source_agent_name: source_name,
+                    captured_text,
+                    message_count,
+                },
+                source_index: target_idx,
+            });
+            self.status_message = Some("Invalid target index".to_string());
+            set_timeout(3.0);
+            return;
+        }
+
+        let target = &self.agents[target_idx];
+
+        // Prevent self-relay.
+        let source_agent = self.agents.iter().find(|a| a.name == source_name);
+        if let Some(src) = source_agent {
+            if src.id == target.id {
+                self.relay_state = Some(RelayState {
+                    phase: RelayPhase::DeliveryPending {
+                        source_agent_name: source_name,
+                        captured_text,
+                        message_count,
+                    },
+                    source_index: target_idx,
+                });
+                self.status_message = Some("Cannot relay to self — select another agent".to_string());
+                set_timeout(3.0);
+                return;
+            }
+        }
+
+        // Validate target has a pane.
+        let target_pid = match target.pane_id {
+            Some(pid) => pid,
+            None => {
+                self.relay_state = Some(RelayState {
+                    phase: RelayPhase::DeliveryPending {
+                        source_agent_name: source_name,
+                        captured_text,
+                        message_count,
+                    },
+                    source_index: target_idx,
+                });
+                self.status_message = Some(format!("{} has no pane", target.name));
+                set_timeout(3.0);
+                return;
+            }
+        };
+
+        let target_name = target.name.clone();
+        let target_id = target.id.clone();
+
+        // Wrap text with header/footer.
+        let wrapped = format!(
+            "--- Relay from {} ({} messages) ---\n{}\n--- End relay ---\n",
+            source_name, message_count, captured_text
+        );
+
+        write_chars_to_pane_id(&wrapped, PaneId::Terminal(target_pid));
+
+        // Focus target agent pane.
+        if let Some(target_agent) = self.agents.get(target_idx) {
+            if pane_manager::focus_agent(
+                target_agent,
+                &self.agents,
+                &self.config.focus_mode,
+                &self.config.agent_layout,
+            ) {
+                self.focused_agent = Some(target_id);
+                self.selected_index = target_idx;
+            }
+        }
+
+        self.relay_state = None;
+        self.status_message = Some(format!(
+            "Relayed {} messages from {} to {}",
+            message_count, source_name, target_name
+        ));
+        set_timeout(3.0);
     }
 
     /// Poll status files for all agents (file-based fallback, LINCE-42).

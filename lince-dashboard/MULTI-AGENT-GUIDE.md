@@ -298,6 +298,46 @@ The dashboard now listens on two pipe names:
 
 Both pipes are active simultaneously. No configuration needed.
 
+## Message Relay
+
+The dashboard can relay conversation messages from one agent to another, letting you share context, cross-review output, or challenge one agent's work with another.
+
+### How it works
+
+The dashboard reads Claude Code's JSONL transcript files to extract structured conversation messages (user prompts and assistant responses). These are formatted and injected as typed text into the target agent's pane.
+
+### UX flow
+
+1. Navigate to the **source agent** (the one whose messages you want to relay)
+2. Press `s` to relay the **last message**, or `S` to be prompted for a count (1--9)
+3. The dashboard extracts the messages from the source agent's transcript
+4. A **target selection** overlay appears — pick the destination agent with `f`/`Enter` or its number key (`1`--`9`)
+5. The relayed text is typed into the target pane, delivered as if you pasted it
+
+### Use cases
+
+- **Cross-review**: Have one agent review another agent's output by relaying the conversation
+- **Challenge mode**: Relay one agent's solution to another agent and ask it to find flaws or improvements
+- **Context sharing**: Bring a second agent up to speed by relaying relevant conversation history
+- **Handoff**: Transfer partial work context when switching tasks between agents
+
+### Format
+
+Relayed text is wrapped with header and footer markers so the receiving agent can distinguish relayed content from direct input:
+
+```
+--- Relay from fullstack (2 messages) ---
+[User]: Implement a binary search tree with insert and delete
+[Assistant]: Here's the BST implementation with insert and delete operations...
+--- End relay ---
+```
+
+Messages are prefixed with `[User]:` or `[Assistant]:` to preserve the conversation structure.
+
+### Limitations
+
+Currently works with **Claude Code agents only**. The relay feature requires `transcript_path` from Claude Code's hooks to locate the JSONL conversation log. Agents without native hooks that don't report `transcript_path` will show "Transcript not available" when you attempt to relay from them. Support for other agent transcript formats may be added in the future.
+
 ## File Changes Summary
 
 | File | Change |

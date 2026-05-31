@@ -5,10 +5,12 @@
     "description": "Codex paranoid: only api.openai.com via nono credential proxy; ~/.codex on a per-agent scratch HOME."
   },
   "filesystem": {
-    "allow": ["$WORKDIR", "$HOME"],
+    "allow": ["$WORKDIR"],
     "read": []
   },
   "network": {
-    "credentials": ["openai"]
+    "block": true,
+    "credentials": ["openai"],
+    "allow_domain": ["api.openai.com"]
   }
 }
