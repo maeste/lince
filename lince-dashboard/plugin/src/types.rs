@@ -158,6 +158,34 @@ pub enum WizardStep {
     Confirm,
 }
 
+/// Sub-UI mode for the ProjectDir wizard step (#127).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectDirMode {
+    /// Navigable list of recent project dirs with filter-as-you-type.
+    List,
+    /// Free-text path input (legacy behavior; reached via `i`, or used
+    /// automatically when there are no recents yet).
+    Input,
+}
+
+/// Case-insensitive match used by the project-dir picker filter: a hit is
+/// either a substring match or an in-order subsequence match (so `snptc`
+/// matches `synoptic`). Both `haystack` and `needle` must be lowercased by
+/// the caller.
+pub fn project_dir_filter_matches(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.contains(needle) {
+        return true;
+    }
+    // Fuzzy fallback: every needle char appears in order in the haystack —
+    // e.g. "sntp" matches "synoptic". Advancing a single shared iterator keeps
+    // the match strictly in-order.
+    let mut chars = haystack.chars();
+    needle.chars().all(|nc| chars.any(|hc| hc == nc))
+}
+
 /// State for the multi-step "New Agent" wizard.
 #[derive(Debug, Clone)]
 pub struct WizardState {
@@ -203,7 +231,17 @@ pub struct WizardState {
     /// True while `project_dir` holds an un-edited pre-fill from the selected
     /// agent (#168). The first Backspace clears the field instead of navigating
     /// to the previous step; any keystroke or completion clears the flag.
+    /// Only meaningful in Input mode (#127).
     pub project_dir_suggested: bool,
+    /// Recent project dirs (most-recently-used first) offered by the picker.
+    /// Seeded from the global recents store when the wizard opens (#127).
+    pub available_project_dirs: Vec<String>,
+    /// Highlighted index into the *filtered* recents list (List mode).
+    pub project_dir_index: usize,
+    /// Filter text typed in List mode (substring / subsequence, case-insensitive).
+    pub project_dir_filter: String,
+    /// Whether the ProjectDir step shows the recents list or the free-text input.
+    pub project_dir_mode: ProjectDirMode,
 }
 
 impl WizardState {
@@ -257,6 +295,17 @@ impl WizardState {
     /// Return the currently selected sandbox level, or None if no levels available.
     pub fn selected_sandbox_level(&self) -> Option<&str> {
         self.available_sandbox_levels.get(self.sandbox_level_index).map(|s| s.as_str())
+    }
+
+    /// Recent project dirs matching the current List-mode filter, preserving
+    /// most-recently-used order. Empty filter → all recents (#127).
+    pub fn filtered_project_dirs(&self) -> Vec<&str> {
+        let needle = self.project_dir_filter.trim().to_lowercase();
+        self.available_project_dirs
+            .iter()
+            .filter(|d| project_dir_filter_matches(&d.to_lowercase(), &needle))
+            .map(|s| s.as_str())
+            .collect()
     }
 
     /// Build the ordered list of active wizard steps, applying skip rules.
