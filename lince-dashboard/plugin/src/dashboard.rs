@@ -46,6 +46,21 @@ const CYAN: &str = "\x1b[36m";
 const KEY_COLOR: &str = "\x1b[1;36m"; // bold cyan for key hints
 const BLUE_BOLD: &str = "\x1b[1;34m"; // blue bold for swimlane headers
 
+/// Hard-coded color palette cycled across unique workdir swimlane headers,
+/// in order of first appearance, so multi-project sessions are easy to tell
+/// apart at a glance. The first entry is `BLUE_BOLD`, so single-workdir setups
+/// keep their legacy appearance exactly. Intentionally not configurable —
+/// grouping by color helps everyone and another config knob would just add
+/// noise (see issue #161).
+const WORKDIR_HEADER_PALETTE: [&str; 6] = [
+    BLUE_BOLD,       // blue   (legacy)
+    "\x1b[1;35m",    // magenta
+    "\x1b[1;36m",    // cyan
+    "\x1b[1;32m",    // green
+    "\x1b[1;33m",    // yellow
+    "\x1b[1;31m",    // red
+];
+
 /// Truncate a string to fit within `max_width` *visible* characters, appending
 /// "..." if truncated. ANSI CSI sequences (e.g. `\x1b[1;31m`) are copied verbatim
 /// and never count toward width — without this, a cut landing inside a CSI
@@ -396,6 +411,19 @@ fn render_agent_table(
         header_dirs.push(String::new());
     }
 
+    // Assign each unique workdir a stable cycle index (order of first
+    // appearance) so its header color is independent of scroll position and
+    // survives a `Q` + restart (which preserves agent order via
+    // `restore_agents` → `sort_agents_by_dir`).
+    let mut dir_color_idx: HashMap<&str, usize> = HashMap::new();
+    for (i, slot) in virtual_rows.iter().enumerate() {
+        if slot.is_none() {
+            let d = header_dirs[i].as_str();
+            let next_idx = dir_color_idx.len();
+            dir_color_idx.entry(d).or_insert(next_idx);
+        }
+    }
+
     // Find the virtual row index of the selected agent
     let selected_vrow = virtual_rows.iter().position(|v| *v == Some(selected)).unwrap_or(0);
 
@@ -424,13 +452,16 @@ fn render_agent_table(
 
         match virtual_rows[vrow] {
             None => {
-                // Swimlane header row
+                // Swimlane header row — color cycles per workdir in order of
+                // first appearance (palette wraps modulo its length).
                 let dir = &header_dirs[vrow];
+                let idx = dir_color_idx.get(dir.as_str()).copied().unwrap_or(0);
+                let header_color = WORKDIR_HEADER_PALETTE[idx % WORKDIR_HEADER_PALETTE.len()];
                 let short = collapse_tilde(dir);
                 let fill_len = cols.saturating_sub(short.len() + 5);
                 println!(
                     " {}\u{250c} {} {}{}",
-                    BLUE_BOLD, short, repeat_char('\u{2500}', fill_len), RESET,
+                    header_color, short, repeat_char('\u{2500}', fill_len), RESET,
                 );
                 rendered_rows += 1;
             }
