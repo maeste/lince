@@ -57,23 +57,77 @@ pub fn sandbox_level_glyph(level: &str) -> &'static str {
 ///   The level is taken from `sandbox_level_override` (runtime wizard selection) first,
 ///   then falls back to the TOML-pinned `sandbox_level` for the agent type.
 /// - Sandboxed with no level anywhere (legacy static command): `<name>` (unchanged).
+///
+/// The per-instance `icon` (#166, a distinctive emoji) is prepended when
+/// non-empty — it renders inside the title regardless of the (theme-driven,
+/// green) pane frame, which a plugin cannot recolor. An empty `icon` is a no-op.
 pub fn pane_title(
     name: &str,
     agent_type: &str,
     agent_types: &HashMap<String, AgentTypeConfig>,
     sandbox_level_override: Option<&str>,
+    icon: &str,
 ) -> String {
+    let pre = if icon.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", icon)
+    };
     let cfg = agent_types.get(agent_type);
     let sandboxed = cfg.map_or(true, |c| c.sandboxed);
     if !sandboxed {
-        return format!("[NON-SANDBOXED] {}{}", name, CLOSE_PANE_HINT);
+        return format!("{}[NON-SANDBOXED] {}{}", pre, name, CLOSE_PANE_HINT);
     }
     let level = sandbox_level_override
         .or_else(|| cfg.and_then(|c| c.sandbox_level.as_deref()));
     match level {
-        Some(level) => format!("{} [{}] {}{}", sandbox_level_glyph(level), level, name, CLOSE_PANE_HINT),
-        None => format!("{}{}", name, CLOSE_PANE_HINT),
+        Some(level) => format!("{}{} [{}] {}{}", pre, sandbox_level_glyph(level), level, name, CLOSE_PANE_HINT),
+        None => format!("{}{}{}", pre, name, CLOSE_PANE_HINT),
     }
+}
+
+/// Pick the per-instance marker slot for a freshly spawned agent (#166).
+///
+/// Returns the first slot whose marker isn't currently used by a live agent —
+/// guaranteeing distinct markers for all concurrently-open agents up to the
+/// pool size. When every slot is taken, wraps deterministically by `next_id`.
+/// `None` when the marker pool is empty (instance markers disabled).
+pub fn pick_instance_slot(icons: &[String], agents: &[AgentInfo], next_id: u32) -> Option<usize> {
+    if icons.is_empty() {
+        return None;
+    }
+    let free = (0..icons.len()).find(|&i| !agents.iter().any(|a| a.icon == icons[i]));
+    Some(free.unwrap_or((next_id as usize) % icons.len()))
+}
+
+/// Suggest a default agent name derived from the working-directory basename (#167).
+///
+/// - Basename = last path component of `project_dir` (a leading `~` and trailing
+///   `/` are stripped first), so `~/myPrj/` → `myPrj`.
+/// - When the basename is empty / `.` / `..`, falls back to the legacy
+///   `<fallback_base>-<next_id + 1>` scheme.
+/// - Otherwise returns `<basename>-<n>` where `n` is one past the highest `N`
+///   among existing agents named `<basename>-<N>` (starts at 1).
+pub fn suggest_agent_name(
+    project_dir: &str,
+    agents: &[AgentInfo],
+    next_id: u32,
+    fallback_base: &str,
+) -> String {
+    let trimmed = project_dir.trim();
+    let without_tilde = trimmed.strip_prefix('~').unwrap_or(trimmed);
+    let basename = without_tilde.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    if basename.is_empty() || basename == "." || basename == ".." {
+        return format!("{}-{}", fallback_base, next_id + 1);
+    }
+    let prefix = format!("{}-", basename);
+    let max_existing = agents
+        .iter()
+        .filter_map(|a| a.name.strip_prefix(&prefix))
+        .filter_map(|suffix| suffix.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0);
+    format!("{}-{}", basename, max_existing + 1)
 }
 
 /// Default floating pane coordinates for agent panes (80% x 85%, centered).
@@ -530,6 +584,12 @@ fn spawn_inner(
     let resolved_sandbox_backend = sandbox_backend_override
         .or_else(|| config.agent_types.get(agent_type).map(|c| c.sandbox_backend.clone()));
 
+    // #166: claim a per-instance marker not already in use by a live agent.
+    let slot = pick_instance_slot(&config.instance_icons, agents, *next_id);
+    let icon = slot
+        .and_then(|i| config.instance_icons.get(i).cloned())
+        .unwrap_or_default();
+
     Ok(AgentInfo {
         id,
         name,
@@ -550,6 +610,7 @@ fn spawn_inner(
         sandbox_level: resolved_sandbox_level,
         sandbox_backend: resolved_sandbox_backend,
         transcript_path: None,
+        icon,
     })
 }
 
@@ -683,7 +744,7 @@ pub fn reconcile_panes(
                     // (hook events for native-hooks agents; permanently
                     // `Unknown` for non-hook agents — the dashboard is
                     // honest about not knowing the state).
-                    let title = pane_title(&agent.name, &agent.agent_type, agent_types, agent.sandbox_level.as_deref());
+                    let title = pane_title(&agent.name, &agent.agent_type, agent_types, agent.sandbox_level.as_deref(), &agent.icon);
                     rename_pane_with_id(PaneId::Terminal(pane.id), &title);
                     if expect_floating {
                         hide_pane_with_id(PaneId::Terminal(pane.id));
@@ -750,5 +811,86 @@ mod tests {
         assert!(!is_env_passthrough_self_ref("FOO", "${FOO"));
         assert!(!is_env_passthrough_self_ref("FOO", "$FOO_EXTRA"));
         assert!(!is_env_passthrough_self_ref("FOO", ""));
+    }
+
+    /// Minimal AgentInfo for naming/marker tests (only `name` and `icon` matter).
+    fn agent_with(name: &str, icon: &str) -> AgentInfo {
+        AgentInfo {
+            id: name.to_string(),
+            name: name.to_string(),
+            agent_type: "claude".to_string(),
+            provider: None,
+            project_dir: String::new(),
+            status: AgentStatus::Unknown,
+            pane_id: None,
+            started_at: None,
+            last_error: None,
+            exit_code: None,
+            group: None,
+            last_polled_event: None,
+            sandbox_level: None,
+            sandbox_backend: None,
+            transcript_path: None,
+            icon: icon.to_string(),
+        }
+    }
+
+    #[test]
+    fn suggest_name_from_basename_no_existing() {
+        assert_eq!(
+            suggest_agent_name("/home/user/myProj", &[], 5, "claude"),
+            "myProj-1"
+        );
+    }
+
+    #[test]
+    fn suggest_name_increments_past_existing() {
+        let agents = [agent_with("myProj-1", "")];
+        assert_eq!(
+            suggest_agent_name("/home/user/myProj", &agents, 5, "claude"),
+            "myProj-2"
+        );
+    }
+
+    #[test]
+    fn suggest_name_uses_max_existing_not_count() {
+        // Gaps must not lower the suggestion below the highest existing index.
+        let agents = [agent_with("myProj-1", ""), agent_with("myProj-4", "")];
+        assert_eq!(
+            suggest_agent_name("/home/user/myProj", &agents, 0, "claude"),
+            "myProj-5"
+        );
+    }
+
+    #[test]
+    fn suggest_name_strips_tilde_and_trailing_slash() {
+        assert_eq!(suggest_agent_name("~/src/lince/", &[], 0, "claude"), "lince-1");
+    }
+
+    #[test]
+    fn suggest_name_falls_back_on_dot_or_empty() {
+        assert_eq!(suggest_agent_name("/tmp/.", &[], 2, "claude"), "claude-3");
+        assert_eq!(suggest_agent_name("", &[], 2, "codex"), "codex-3");
+    }
+
+    #[test]
+    fn pick_slot_returns_first_free() {
+        let pool: Vec<String> = ["A", "B", "C"].iter().map(|s| s.to_string()).collect();
+        let agents = [agent_with("a", "A")];
+        // Slot 0 ("A") is taken → first free is slot 1 ("B").
+        assert_eq!(pick_instance_slot(&pool, &agents, 1), Some(1));
+    }
+
+    #[test]
+    fn pick_slot_wraps_when_pool_exhausted() {
+        let pool: Vec<String> = ["A", "B"].iter().map(|s| s.to_string()).collect();
+        let agents = [agent_with("a", "A"), agent_with("b", "B")];
+        // All taken → wrap by next_id: 2 % 2 == 0 → slot 0.
+        assert_eq!(pick_instance_slot(&pool, &agents, 2), Some(0));
+    }
+
+    #[test]
+    fn pick_slot_empty_pool_yields_none() {
+        assert_eq!(pick_instance_slot(&[], &[], 0), None);
     }
 }

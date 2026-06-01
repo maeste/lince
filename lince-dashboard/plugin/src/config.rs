@@ -211,6 +211,29 @@ fn default_project_search_max_depth() -> usize {
     3
 }
 
+/// Default pool of distinct per-instance marker glyphs (#166).
+///
+/// Each spawned agent claims the first marker not already in use by a live
+/// agent, giving instant visual disambiguation between panes — two `claude`
+/// instances open at once get different markers. The SAME glyph is shown in the
+/// pane title and in the dashboard list, so the list entry and the pane share
+/// one identity.
+///
+/// Distinctive, easy-to-tell-apart emoji (a plugin cannot recolor a pane's
+/// border/title — that color is theme-driven and global — so varied glyphs beat
+/// near-identical colored squares for at-a-glance recognition). Avoids the
+/// sandbox-level circles (🟢🔵🟡). Overridable via `[dashboard] instance_icons`;
+/// an empty list disables instance markers.
+fn default_instance_icons() -> Vec<String> {
+    [
+        "⭐", "⚡", "🔥", "🌙", "🍀", "🎯", "🌸", "🐢", "🦊", "🐙", "🌵", "🍁", "🎲", "🦋", "🌊",
+        "🍄",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 
 fn default_status_file_dir() -> String {
     "/tmp/lince-dashboard".to_string()
@@ -299,6 +322,13 @@ pub struct DashboardConfig {
     /// nesting (e.g. `Projects/Personal/<proj>`, `Projects/Work/<client>/<repo>`).
     #[serde(default = "default_project_search_max_depth")]
     pub project_search_max_depth: usize,
+    /// Pool of distinct per-instance marker glyphs (first-free) for visual pane
+    /// identification (#166). Each live agent claims one (a distinctive emoji by
+    /// default); it appears in the pane title and as the matching marker in the
+    /// dashboard list. Overridable via `[dashboard] instance_icons`; empty
+    /// disables instance markers.
+    #[serde(default = "default_instance_icons")]
+    pub instance_icons: Vec<String>,
     /// Custom sandbox levels discovered from the filesystem, keyed by
     /// `<backend>:<base>` (e.g. `"nono:claude"` or `"agent-sandbox:claude"`).
     /// Populated asynchronously by `discover_sandbox_levels_async()` reading
@@ -329,6 +359,7 @@ impl Default for DashboardConfig {
             sandbox_colors: SandboxColors::default(),
             project_search_roots: Vec::new(),
             project_search_max_depth: default_project_search_max_depth(),
+            instance_icons: default_instance_icons(),
             discovered_sandbox_levels: HashMap::new(),
         }
     }
