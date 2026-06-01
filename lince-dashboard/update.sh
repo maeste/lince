@@ -52,13 +52,17 @@ CONFIG_DIR="$HOME/.config/lince-dashboard"
 CONFIG_DST="$CONFIG_DIR/config.toml"
 mkdir -p "$CONFIG_DIR"
 
-if [ -f "$CONFIG_DST" ]; then
-    BACKUP="${CONFIG_DST}.bak.$(date +%Y%m%d_%H%M%S)"
-    cp "$CONFIG_DST" "$BACKUP"
-    echo -e "${YELLOW}  Existing config backed up → $(basename "$BACKUP")${NC}"
+if [ ! -f "$CONFIG_DST" ]; then
+    cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
+    echo -e "${GREEN}  ✓ Config installed${NC}"
+else
+    echo -e "${GREEN}  ✓ Existing config preserved${NC}"
 fi
-cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
-echo -e "${GREEN}  ✓ Config updated${NC}"
+# Always refresh the shipped-defaults sidecar so users can diff against new
+# upstream keys without losing their customizations:
+#   diff -u "$CONFIG_DST.dist" "$CONFIG_DST"
+cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST.dist"
+echo -e "${GREEN}  ✓ Upstream defaults available at config.toml.dist${NC}"
 echo ""
 
 # ── Hooks ──────────────────────────────────────────────────────────────
@@ -80,11 +84,24 @@ echo -e "${GREEN}[7/8] Updating agent defaults...${NC}"
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
 
-if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
+if [ -f "$AGENTS_DEFAULTS_SRC" ] && [ ! -f "$AGENTS_DEFAULTS_DST" ]; then
     cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
-    echo -e "${GREEN}  ✓ Agent defaults updated${NC}"
+    echo -e "${GREEN}  ✓ Agent defaults installed${NC}"
+elif [ -f "$AGENTS_DEFAULTS_DST" ]; then
+    echo -e "${GREEN}  ✓ Existing agent defaults preserved${NC}"
+fi
+# Always refresh the shipped-defaults sidecar (mirrors the config.toml.dist
+# pattern above) so new upstream agent defaults stay discoverable:
+#   diff -u "$AGENTS_DEFAULTS_DST.dist" "$AGENTS_DEFAULTS_DST"
+if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
+    cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST.dist"
+    echo -e "${GREEN}  ✓ Upstream defaults available at agents-defaults.toml.dist${NC}"
 fi
 echo ""
+
+# NOTE: new upstream keys are not auto-merged into preserved user files — by
+# design, to avoid clobbering customizations. The .dist sidecars surface the
+# diff. A tomlkit-based key-merge utility is tracked as follow-up in #108.
 
 # ── Lince-add-supported-agent skill ──────────────────────────────────
 echo -e "${GREEN}[8/8] Updating lince-add-supported-agent skill...${NC}"
