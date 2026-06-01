@@ -149,10 +149,12 @@ pub enum WizardStep {
     AgentType,
     SandboxBackend,
     SandboxLevel,
+    /// Selected before `Name` (#167) so the directory basename can seed the
+    /// default agent name (e.g. `myPrj-1`).
+    ProjectDir,
     Name,
     /// Pick the provider env-var bundle (was `Profile` pre-#81).
     Provider,
-    ProjectDir,
     Confirm,
 }
 
@@ -198,6 +200,10 @@ pub struct WizardState {
     /// `render_wizard`. Cleared as soon as the user edits the field or
     /// the value becomes valid.
     pub project_dir_error: Option<String>,
+    /// True while `project_dir` holds an un-edited pre-fill from the selected
+    /// agent (#168). The first Backspace clears the field instead of navigating
+    /// to the previous step; any keystroke or completion clears the flag.
+    pub project_dir_suggested: bool,
 }
 
 impl WizardState {
@@ -267,11 +273,13 @@ impl WizardState {
         if self.has_sandbox_levels() && !self.is_unsandboxed_choice() {
             steps.push(WizardStep::SandboxLevel);
         }
+        // #167: ProjectDir precedes Name so the directory basename can seed the
+        // default name shown on the Name step.
+        steps.push(WizardStep::ProjectDir);
         steps.push(WizardStep::Name);
         if self.has_providers() {
             steps.push(WizardStep::Provider);
         }
-        steps.push(WizardStep::ProjectDir);
         steps.push(WizardStep::Confirm);
         steps
     }
@@ -344,6 +352,12 @@ pub struct AgentInfo {
     /// None means use the agent type's TOML-pinned `sandbox_backend`.
     pub sandbox_backend: Option<crate::sandbox_backend::SandboxBackend>,
     pub transcript_path: Option<String>,
+    /// Per-instance marker glyph (#166), claimed first-free from
+    /// `[dashboard].instance_icons` at spawn (a distinctive emoji by default).
+    /// Shown in the pane title and the dashboard list. Empty when the pool is
+    /// empty. Runtime-only — not persisted to the state file (the spawn path
+    /// re-derives it on restore).
+    pub icon: String,
 }
 
 impl AgentInfo {
@@ -594,6 +608,7 @@ mod tests {
             sandbox_level: None,
             sandbox_backend: None,
             transcript_path: None,
+            icon: String::new(),
         }
     }
 
@@ -653,6 +668,7 @@ mod tests {
             sandbox_level: Some("paranoid".to_string()),
             sandbox_backend: Some(crate::sandbox_backend::SandboxBackend::Nono),
             transcript_path: None,
+            icon: String::new(), // not persisted
         };
 
         let saved: SavedAgentInfo = (&agent).into();

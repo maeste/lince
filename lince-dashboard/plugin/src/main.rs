@@ -702,7 +702,20 @@ impl State {
                     _ => self.effective_default_agent_type().to_string(),
                 };
                 let base = agent::agent_type_base_name(&effective_type);
-                let default_name = format!("{}-{}", base, self.next_agent_id + 1);
+                // #167: derive the default name from the working-directory
+                // basename. Mirror the spawn's own dir resolution so the name
+                // matches where the agent actually starts: session default dir →
+                // config default → dashboard launch dir → ".".
+                let default_dir = self
+                    .session_defaults
+                    .as_ref()
+                    .map(|sd| sd.project_dir.clone())
+                    .filter(|d| !d.is_empty())
+                    .or_else(|| self.config.default_project_dir.clone().filter(|d| !d.is_empty()))
+                    .or_else(|| self.launch_dir.clone().filter(|d| !d.is_empty()))
+                    .unwrap_or_else(|| String::from("."));
+                let default_name =
+                    agent::suggest_agent_name(&default_dir, &self.agents, self.next_agent_id, base);
                 self.name_prompt = Some(NamePromptState {
                     input: String::new(),
                     default_name,
@@ -730,8 +743,17 @@ impl State {
                 true
             }
             BareKey::Char('N') => {
-                let default_dir = self.config.default_project_dir.clone()
+                // #168: pre-fill the project dir from the selected agent when
+                // there is one; otherwise fall back to the config default.
+                let mut default_dir = self.config.default_project_dir.clone()
                     .unwrap_or_default();
+                let mut project_dir_suggested = false;
+                if let Some(sel) = self.agents.get(self.selected_index) {
+                    if !sel.project_dir.is_empty() {
+                        default_dir = sel.project_dir.clone();
+                        project_dir_suggested = true;
+                    }
+                }
                 // Step 1 list: deduplicated base agents (e.g. "claude", not "claude-unsandboxed").
                 let agent_type_list = self.config.base_agents();
                 // Prefer the configured default_agent_type's base (gh#62) when it
@@ -783,7 +805,15 @@ impl State {
                 let discover_bases: Vec<String> = self.config.base_agents()
                     .into_iter().map(|(b, _)| b).collect();
                 config::discover_sandbox_levels_async(&discover_bases);
-                let default_name = format!("{}-{}", default_base, self.next_agent_id + 1);
+                // #167: seed the default name from the (possibly pre-filled)
+                // project dir basename. Recomputed when the user changes the
+                // ProjectDir field (which now precedes the Name step).
+                let default_name = agent::suggest_agent_name(
+                    &default_dir,
+                    &self.agents,
+                    self.next_agent_id,
+                    default_base,
+                );
                 // Build state, then derive the first step from active_steps() so the
                 // skip rules don't drift between init and key handlers.
                 let mut state = WizardState {
@@ -802,6 +832,7 @@ impl State {
                     completions: Vec::new(),
                     completion_index: None,
                     project_dir_error: None,
+                    project_dir_suggested,
                 };
                 state.step = state.active_steps().into_iter().next().unwrap_or(WizardStep::Name);
                 self.wizard = Some(state);
@@ -902,7 +933,7 @@ impl State {
                     if let Some(agent) = self.agents.iter_mut().find(|a| a.id == agent_id) {
                         agent.name = name.clone();
                         if let Some(pid) = agent.pane_id {
-                            let title = agent::pane_title(&name, &agent.agent_type, &self.config.agent_types, agent.sandbox_level.as_deref());
+                            let title = agent::pane_title(&name, &agent.agent_type, &self.config.agent_types, agent.sandbox_level.as_deref(), &agent.icon);
                             rename_pane_with_id(PaneId::Terminal(pid), &title);
                         }
                         self.status_message = Some(format!("Renamed to {}", name));
@@ -1027,8 +1058,18 @@ impl State {
                     wizard.provider_index = self.config.default_provider.as_ref()
                         .and_then(|dp| wizard.available_providers.iter().position(|p| p == dp))
                         .unwrap_or(0);
-                    // Update default name to reflect the new base.
-                    wizard.default_name = format!("{}-{}", base, self.next_agent_id + 1);
+                    // #167: keep the default name dir-derived (the basename
+                    // doesn't depend on agent type). `base` only matters as the
+                    // fallback when project_dir has no usable basename. Skipped
+                    // if the user already typed a custom name.
+                    if wizard.name.is_empty() {
+                        wizard.default_name = agent::suggest_agent_name(
+                            &wizard.project_dir,
+                            &self.agents,
+                            self.next_agent_id,
+                            &base,
+                        );
+                    }
                     if let Some(next) = wizard.next_step() {
                         wizard.step = next;
                     }
@@ -1184,6 +1225,7 @@ impl State {
                         }
                         wizard.clear_completions();
                         wizard.project_dir_error = None;
+                        wizard.project_dir_suggested = false;
                     } else {
                         // Validate BEFORE advancing. Sandbox backends (nono on
                         // macOS, agent-sandbox/bwrap on Linux) require absolute
@@ -1224,12 +1266,25 @@ impl State {
                             return true;
                         }
                         wizard.project_dir_error = None;
+                        // #167: now that the project dir is finalized, refresh the
+                        // dir-derived default name shown on the Name step — unless
+                        // the user already typed a custom name.
+                        if wizard.name.is_empty() {
+                            let base = wizard.selected_base_agent().to_string();
+                            wizard.default_name = agent::suggest_agent_name(
+                                &wizard.project_dir,
+                                &self.agents,
+                                self.next_agent_id,
+                                &base,
+                            );
+                        }
                         if let Some(next) = wizard.next_step() {
                             wizard.step = next;
                         }
                     }
                 }
                 BareKey::Tab => {
+                    wizard.project_dir_suggested = false;
                     if wizard.completions.is_empty() {
                         // First Tab press: request completions from the shell.
                         config::complete_path_async(
@@ -1247,7 +1302,16 @@ impl State {
                     }
                 }
                 BareKey::Backspace => {
-                    if wizard.project_dir.is_empty() {
+                    if wizard.project_dir_suggested && !wizard.project_dir.is_empty() {
+                        // #168: first Backspace on a pristine pre-fill clears the
+                        // whole field (ready for a fresh path) instead of deleting
+                        // one char or navigating back. Subsequent Backspaces follow
+                        // the normal empty-field behavior.
+                        wizard.project_dir = String::new();
+                        wizard.project_dir_suggested = false;
+                        wizard.clear_completions();
+                        wizard.project_dir_error = None;
+                    } else if wizard.project_dir.is_empty() {
                         if let Some(prev) = wizard.prev_step() {
                             wizard.step = prev;
                         }
@@ -1258,6 +1322,7 @@ impl State {
                     }
                 }
                 BareKey::Char(c) => {
+                    wizard.project_dir_suggested = false;
                     wizard.project_dir.push(c);
                     wizard.clear_completions();
                     wizard.project_dir_error = None;
@@ -1267,7 +1332,15 @@ impl State {
             WizardStep::Confirm => match bare {
                 BareKey::Enter | BareKey::Char('!') => {
                     // Clone values out before dropping the borrow.
-                    let name = wizard.name.clone();
+                    // #167: an empty Name field uses the dir-derived default the
+                    // wizard advertised (e.g. `myPrj-1`), NOT the legacy
+                    // `<type>-<id>` — spawn_agent_custom only falls back to the
+                    // latter when this string is also empty.
+                    let name = if wizard.name.is_empty() {
+                        wizard.default_name.clone()
+                    } else {
+                        wizard.name.clone()
+                    };
                     let agent_type = wizard.effective_agent_type();
                     let provider = wizard.selected_provider().map(|s| s.to_string());
                     let project_dir = wizard.project_dir.clone();

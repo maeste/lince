@@ -495,6 +495,21 @@ fn render_agent_table(
                     String::new()
                 };
 
+                // #166: per-instance marker (distinctive emoji) prefix on the
+                // name column — the same glyph shown in the pane title, so the
+                // list entry and the pane share one identity. Reclaim 2 columns
+                // from the name pad for the marker + separating space.
+                let icon_pre = if agent.icon.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} ", agent.icon)
+                };
+                let name_col = if agent.icon.is_empty() {
+                    col_name
+                } else {
+                    col_name.saturating_sub(2)
+                };
+
                 if is_selected {
                     // Trailing without color attrs — preserves the REVERSE that
                     // wraps the whole row. The trailing space-separators match
@@ -510,9 +525,9 @@ fn render_agent_table(
                     }
 
                     let main_part = format!(
-                        "{}{}{} {}",
+                        "{}{}{} {}{}",
                         prefix, pad_left(&idx_str, col_idx), type_col,
-                        pad_left(&agent.name, col_name),
+                        icon_pre, pad_left(&agent.name, name_col),
                     );
                     let status_str = pad_left(&status_label, col_status);
                     let main_visible = strip_ansi_len(&main_part);
@@ -539,14 +554,14 @@ fn render_agent_table(
                 } else {
                     // For non-selected rows, use display_name (with group suffix) in the name column
                     let name_field = if agent.group.is_some() {
-                        let base = pad_left(&agent.name, col_name.saturating_sub(agent.group.as_ref().map_or(0, |g| g.len() + 3)));
+                        let base = pad_left(&agent.name, name_col.saturating_sub(agent.group.as_ref().map_or(0, |g| g.len() + 3)));
                         if let Some(ref group) = agent.group {
-                            format!("{} {}[{}]{}", base, DIM, group, RESET)
+                            format!("{}{} {}[{}]{}", icon_pre, base, DIM, group, RESET)
                         } else {
-                            base
+                            format!("{}{}", icon_pre, base)
                         }
                     } else {
-                        pad_left(&agent.name, col_name)
+                        format!("{}{}", icon_pre, pad_left(&agent.name, name_col))
                     };
 
                     // Wrap the plain sandbox content with its color attribute
@@ -1006,6 +1021,10 @@ pub fn render_wizard(
                         box_width,
                     );
                 }
+            } else if wizard.project_dir_suggested {
+                // #168: the field is pre-filled from the selected agent's dir.
+                push_box_line(&mut lines, "  (from selected agent — Backspace to clear)", box_width);
+                push_box_line(&mut lines, "  [Tab] autocomplete path", box_width);
             } else {
                 push_box_line(&mut lines, "  (default: current directory)", box_width);
                 push_box_line(&mut lines, "  [Tab] autocomplete path", box_width);
