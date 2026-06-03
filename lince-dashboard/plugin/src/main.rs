@@ -2,6 +2,7 @@ mod agent;
 mod config;
 mod dashboard;
 mod pane_manager;
+mod recents;
 mod sandbox_backend;
 mod state_file;
 mod types;
@@ -21,8 +22,8 @@ const CMD_GET_CWD: &str = "get_cwd";
 const CMD_LOAD_CONFIG: &str = "load_config";
 
 use crate::types::{
-    AgentInfo, AgentStatus, NamePromptState, RelayPhase, RelayState, SavedAgentInfo,
-    SessionDefaults, StatusMessage, WizardState, WizardStep,
+    AgentInfo, AgentStatus, NamePromptState, ProjectDirMode, RelayPhase, RelayState,
+    SavedAgentInfo, SessionDefaults, StatusMessage, WizardState, WizardStep,
 };
 
 struct State {
@@ -62,6 +63,10 @@ struct State {
     /// When `Some`, the `n` shortcut spawns with these values instead of
     /// resolving from `[dashboard].default_*` config fields.
     session_defaults: Option<SessionDefaults>,
+    /// Global most-recently-used project dirs, loaded from
+    /// `~/.config/lince-dashboard/recents.json` and offered by the wizard's
+    /// Project dir picker (#127).
+    recent_project_dirs: Vec<String>,
 }
 
 impl Default for State {
@@ -90,6 +95,7 @@ impl Default for State {
             cwd_retries: 0,
             cwd_retry_exhausted: false,
             session_defaults: None,
+            recent_project_dirs: Vec::new(),
         }
     }
 }
@@ -167,6 +173,9 @@ impl ZellijPlugin for State {
         // permissions for local file plugins, so run_command may already work.
         config::run_typed_command(&["pwd"], CMD_GET_CWD);
         sandbox_backend::detect_backend_async();
+        // Load the global recents list for the wizard's Project dir picker.
+        // Independent of launch_dir — the file lives under ~/.config.
+        recents::load_recents_async();
         // Load config async (std::fs fails in WASI sandbox)
         if let Some(ref path) = self.config_path {
             let script = format!("cat {} 2>/dev/null", config::shell_path_expr(path));
@@ -532,6 +541,16 @@ impl ZellijPlugin for State {
                         ));
                         true
                     }
+                    Some(recents::CMD_LOAD_RECENTS) => {
+                        self.recent_project_dirs = recents::parse_loaded_recents(&stdout);
+                        // No re-render needed: recents are only consumed when
+                        // the wizard opens, which seeds from this field.
+                        false
+                    }
+                    Some(recents::CMD_SAVE_RECENTS) => {
+                        // Fire-and-forget persistence; nothing to do on ack.
+                        false
+                    }
                     _ => false,
                 }
             }
@@ -653,6 +672,15 @@ fn workdir_key(s: &str) -> &str {
 impl State {
     /// Sort agents by project_dir, then by name within each group.
     /// Preserves the selected agent across the sort.
+    /// Record a freshly-spawned agent's project dir into the global recents
+    /// (MRU), then persist asynchronously. Only fires on user-initiated spawns
+    /// — never on session restore (#127).
+    fn record_recent_project_dir(&mut self, dir: &str) {
+        if recents::push_recent(&mut self.recent_project_dirs, dir) {
+            recents::save_recents_async(&self.recent_project_dirs);
+        }
+    }
+
     fn sort_agents_by_dir(&mut self) {
         let selected_id = self.agents.get(self.selected_index).map(|a| a.id.clone());
 
@@ -814,6 +842,26 @@ impl State {
                     self.next_agent_id,
                     default_base,
                 );
+                // Seed the project-dir picker from the global recents, then bias
+                // toward the focused/selected agent's workdir by moving it to the
+                // front so it's pre-highlighted (context default, cf. #168).
+                let mut seed_project_dirs = self.recent_project_dirs.clone();
+                if let Some(dir) = self
+                    .focused_agent
+                    .as_ref()
+                    .and_then(|name| self.agents.iter().find(|a| &a.name == name))
+                    .or_else(|| self.agents.get(self.selected_index))
+                    .map(|a| a.project_dir.clone())
+                {
+                    recents::push_recent(&mut seed_project_dirs, &dir);
+                }
+                // Show the recents list when we have any; otherwise drop straight
+                // to the legacy free-text input (no empty list to navigate).
+                let project_dir_mode = if seed_project_dirs.is_empty() {
+                    ProjectDirMode::Input
+                } else {
+                    ProjectDirMode::List
+                };
                 // Build state, then derive the first step from active_steps() so the
                 // skip rules don't drift between init and key handlers.
                 let mut state = WizardState {
@@ -833,6 +881,10 @@ impl State {
                     completion_index: None,
                     project_dir_error: None,
                     project_dir_suggested,
+                    available_project_dirs: seed_project_dirs,
+                    project_dir_index: 0,
+                    project_dir_filter: String::new(),
+                    project_dir_mode,
                 };
                 state.step = state.active_steps().into_iter().next().unwrap_or(WizardStep::Name);
                 self.wizard = Some(state);
@@ -975,6 +1027,7 @@ impl State {
                     ) {
                         Ok(info) => {
                             self.status_message = Some(format!("Spawned {}", info.name));
+                            self.record_recent_project_dir(&info.project_dir);
                             self.agents.push(info);
                             self.sort_agents_by_dir();
                             self.hide_all_agent_panes();
@@ -1216,118 +1269,195 @@ impl State {
                 }
                 _ => {}
             },
-            WizardStep::ProjectDir => match bare {
-                BareKey::Enter => {
-                    // If completions are showing and one is highlighted, accept it first.
-                    if let Some(idx) = wizard.completion_index {
-                        if let Some(selected) = wizard.completions.get(idx).cloned() {
-                            wizard.project_dir = selected;
+            // Dual-mode (#127): a navigable recents picker (List) with a
+            // free-text escape hatch (Input). When there are no recents the
+            // wizard opens straight in Input mode (legacy behavior intact).
+            WizardStep::ProjectDir => match wizard.project_dir_mode {
+                // ── Recents picker (#127) ──────────────────────────────
+                ProjectDirMode::List => match bare {
+                    BareKey::Down => {
+                        let len = wizard.filtered_project_dirs().len();
+                        if len > 0 {
+                            wizard.project_dir_index = (wizard.project_dir_index + 1) % len;
                         }
-                        wizard.clear_completions();
-                        wizard.project_dir_error = None;
-                        wizard.project_dir_suggested = false;
-                    } else {
-                        // Validate BEFORE advancing. Sandbox backends (nono on
-                        // macOS, agent-sandbox/bwrap on Linux) require absolute
-                        // paths — catch typos here so the user sees the cause
-                        // and can correct without spawning a doomed agent.
-                        // The error is rendered as a red line below the input
-                        // by `render_wizard` (status_message is invisible while
-                        // the wizard overlay is active, hence this dedicated
-                        // field on WizardState).
-                        //
-                        // Tilde handling: the path completer collapses absolute
-                        // matches back to `~/...` for readability (handler
-                        // CMD_PATH_COMPLETE applies `collapse_tilde`). Expand
-                        // it transparently here so the wizard accepts `~/...`
-                        // input — the backend gets the absolute form.
-                        let trimmed_owned = wizard.project_dir.trim().to_string();
-                        if trimmed_owned.starts_with('~') {
-                            let expanded = config::expand_tilde(&trimmed_owned);
-                            if expanded.starts_with('/') {
-                                wizard.project_dir = expanded;
+                    }
+                    BareKey::Up => {
+                        let len = wizard.filtered_project_dirs().len();
+                        if len > 0 {
+                            wizard.project_dir_index = (wizard.project_dir_index + len - 1) % len;
+                        }
+                    }
+                    BareKey::Enter => {
+                        let selected = wizard
+                            .filtered_project_dirs()
+                            .get(wizard.project_dir_index)
+                            .map(|s| s.to_string());
+                        if let Some(dir) = selected {
+                            wizard.project_dir = dir;
+                            wizard.project_dir_error = None;
+                            wizard.project_dir_suggested = false;
+                            // #167: refresh the dir-derived default name unless the
+                            // user already typed a custom one.
+                            if wizard.name.is_empty() {
+                                let base = wizard.selected_base_agent().to_string();
+                                wizard.default_name = agent::suggest_agent_name(
+                                    &wizard.project_dir,
+                                    &self.agents,
+                                    self.next_agent_id,
+                                    &base,
+                                );
+                            }
+                            if let Some(next) = wizard.next_step() {
+                                wizard.step = next;
+                            }
+                        } else {
+                            // Filter matched nothing → hand the typed text over to
+                            // free-text input so the user can finish a fresh path
+                            // instead of hitting a dead end.
+                            wizard.project_dir = wizard.project_dir_filter.trim().to_string();
+                            wizard.project_dir_filter.clear();
+                            wizard.project_dir_index = 0;
+                            wizard.project_dir_suggested = false;
+                            wizard.project_dir_mode = ProjectDirMode::Input;
+                        }
+                    }
+                    // `i` switches to free-text ONLY as the first keystroke (filter
+                    // still empty). Once filtering has begun, `i` is a normal filter
+                    // character — otherwise paths containing "i" (most of them)
+                    // couldn't be filtered.
+                    BareKey::Char('i') if wizard.project_dir_filter.is_empty() => {
+                        wizard.project_dir_mode = ProjectDirMode::Input;
+                    }
+                    BareKey::Char(c) => {
+                        wizard.project_dir_filter.push(c);
+                        wizard.project_dir_index = 0;
+                    }
+                    BareKey::Backspace => {
+                        if wizard.project_dir_filter.is_empty() {
+                            if let Some(prev) = wizard.prev_step() {
+                                wizard.step = prev;
+                            }
+                        } else {
+                            wizard.project_dir_filter.pop();
+                            wizard.project_dir_index = 0;
+                        }
+                    }
+                    _ => {}
+                },
+                // ── Free-text input (legacy escape hatch) ──────────────
+                ProjectDirMode::Input => match bare {
+                    BareKey::Enter => {
+                        // If completions are showing and one is highlighted, accept it first.
+                        if let Some(idx) = wizard.completion_index {
+                            if let Some(selected) = wizard.completions.get(idx).cloned() {
+                                wizard.project_dir = selected;
+                            }
+                            wizard.clear_completions();
+                            wizard.project_dir_error = None;
+                            wizard.project_dir_suggested = false;
+                        } else {
+                            // Validate BEFORE advancing. Sandbox backends (nono on
+                            // macOS, agent-sandbox/bwrap on Linux) require absolute
+                            // paths — catch typos here so the user sees the cause
+                            // and can correct without spawning a doomed agent.
+                            //
+                            // Tilde handling: the path completer collapses absolute
+                            // matches back to `~/...` for readability. Expand it
+                            // transparently here so the wizard accepts `~/...` input.
+                            let trimmed_owned = wizard.project_dir.trim().to_string();
+                            if trimmed_owned.starts_with('~') {
+                                let expanded = config::expand_tilde(&trimmed_owned);
+                                if expanded.starts_with('/') {
+                                    wizard.project_dir = expanded;
+                                }
+                            }
+                            let trimmed = wizard.project_dir.trim();
+                            let err = if trimmed.is_empty() {
+                                Some("Project dir is required.")
+                            } else if trimmed.starts_with('~') {
+                                // Tilde survived expansion → $HOME unavailable in
+                                // this plugin process. Ask for the full path.
+                                Some("Project dir does not expand `~`. Use the full /Users/... path (Tab to autocomplete).")
+                            } else if !trimmed.starts_with('/') {
+                                Some("Project dir must be an absolute path (Tab to autocomplete).")
+                            } else {
+                                None
+                            };
+                            if let Some(msg) = err {
+                                wizard.project_dir_error = Some(msg.to_string());
+                                // Stay on ProjectDir — Backspace to edit, Tab to autocomplete.
+                                return true;
+                            }
+                            wizard.project_dir_error = None;
+                            // #167: refresh the dir-derived default name unless the
+                            // user already typed a custom one.
+                            if wizard.name.is_empty() {
+                                let base = wizard.selected_base_agent().to_string();
+                                wizard.default_name = agent::suggest_agent_name(
+                                    &wizard.project_dir,
+                                    &self.agents,
+                                    self.next_agent_id,
+                                    &base,
+                                );
+                            }
+                            if let Some(next) = wizard.next_step() {
+                                wizard.step = next;
                             }
                         }
-                        let trimmed = wizard.project_dir.trim();
-                        let err = if trimmed.is_empty() {
-                            Some("Project dir is required.")
-                        } else if trimmed.starts_with('~') {
-                            // Tilde survived expansion → $HOME unavailable in
-                            // this plugin process. Ask for the full path.
-                            Some("Project dir does not expand `~`. Use the full /Users/... path (Tab to autocomplete).")
-                        } else if !trimmed.starts_with('/') {
-                            Some("Project dir must be an absolute path (Tab to autocomplete).")
-                        } else {
-                            None
-                        };
-                        if let Some(msg) = err {
-                            wizard.project_dir_error = Some(msg.to_string());
-                            // Stay on ProjectDir — Backspace to edit, Tab to autocomplete.
-                            return true;
-                        }
-                        wizard.project_dir_error = None;
-                        // #167: now that the project dir is finalized, refresh the
-                        // dir-derived default name shown on the Name step — unless
-                        // the user already typed a custom name.
-                        if wizard.name.is_empty() {
-                            let base = wizard.selected_base_agent().to_string();
-                            wizard.default_name = agent::suggest_agent_name(
-                                &wizard.project_dir,
-                                &self.agents,
-                                self.next_agent_id,
-                                &base,
-                            );
-                        }
-                        if let Some(next) = wizard.next_step() {
-                            wizard.step = next;
-                        }
                     }
-                }
-                BareKey::Tab => {
-                    wizard.project_dir_suggested = false;
-                    if wizard.completions.is_empty() {
-                        // First Tab press: request completions from the shell.
-                        config::complete_path_async(
-                            &wizard.project_dir,
-                            &self.config.project_search_roots,
-                            self.config.project_search_max_depth,
-                        );
-                    } else {
-                        // Subsequent Tab presses: cycle through suggestions.
-                        let len = wizard.completions.len();
-                        wizard.completion_index = Some(match wizard.completion_index {
-                            Some(i) => (i + 1) % len,
-                            None => 0,
-                        });
-                    }
-                }
-                BareKey::Backspace => {
-                    if wizard.project_dir_suggested && !wizard.project_dir.is_empty() {
-                        // #168: first Backspace on a pristine pre-fill clears the
-                        // whole field (ready for a fresh path) instead of deleting
-                        // one char or navigating back. Subsequent Backspaces follow
-                        // the normal empty-field behavior.
-                        wizard.project_dir = String::new();
+                    BareKey::Tab => {
                         wizard.project_dir_suggested = false;
-                        wizard.clear_completions();
-                        wizard.project_dir_error = None;
-                    } else if wizard.project_dir.is_empty() {
-                        if let Some(prev) = wizard.prev_step() {
-                            wizard.step = prev;
+                        if wizard.completions.is_empty() {
+                            // First Tab press: request completions from the shell.
+                            config::complete_path_async(
+                                &wizard.project_dir,
+                                &self.config.project_search_roots,
+                                self.config.project_search_max_depth,
+                            );
+                        } else {
+                            // Subsequent Tab presses: cycle through suggestions.
+                            let len = wizard.completions.len();
+                            wizard.completion_index = Some(match wizard.completion_index {
+                                Some(i) => (i + 1) % len,
+                                None => 0,
+                            });
                         }
-                    } else {
-                        wizard.project_dir.pop();
+                    }
+                    BareKey::Backspace => {
+                        if wizard.project_dir_suggested && !wizard.project_dir.is_empty() {
+                            // #168: first Backspace on a pristine pre-fill clears the
+                            // whole field (ready for a fresh path) instead of deleting
+                            // one char or navigating back.
+                            wizard.project_dir = String::new();
+                            wizard.project_dir_suggested = false;
+                            wizard.clear_completions();
+                            wizard.project_dir_error = None;
+                        } else if wizard.project_dir.is_empty() {
+                            // Back out to the recents list if we have any (#127),
+                            // else step backward through the wizard.
+                            if wizard.available_project_dirs.is_empty() {
+                                if let Some(prev) = wizard.prev_step() {
+                                    wizard.step = prev;
+                                }
+                            } else {
+                                wizard.project_dir_mode = ProjectDirMode::List;
+                                wizard.clear_completions();
+                                wizard.project_dir_error = None;
+                            }
+                        } else {
+                            wizard.project_dir.pop();
+                            wizard.clear_completions();
+                            wizard.project_dir_error = None;
+                        }
+                    }
+                    BareKey::Char(c) => {
+                        wizard.project_dir_suggested = false;
+                        wizard.project_dir.push(c);
                         wizard.clear_completions();
                         wizard.project_dir_error = None;
                     }
-                }
-                BareKey::Char(c) => {
-                    wizard.project_dir_suggested = false;
-                    wizard.project_dir.push(c);
-                    wizard.clear_completions();
-                    wizard.project_dir_error = None;
-                }
-                _ => {}
+                    _ => {}
+                },
             },
             WizardStep::Confirm => match bare {
                 BareKey::Enter | BareKey::Char('!') => {
@@ -1421,6 +1551,7 @@ impl State {
         ) {
             Ok(info) => {
                 self.status_message = Some(format!("Spawned {}", info.name));
+                self.record_recent_project_dir(&info.project_dir);
                 self.agents.push(info);
                 self.sort_agents_by_dir();
                 self.hide_all_agent_panes();

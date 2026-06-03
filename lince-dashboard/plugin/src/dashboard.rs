@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::config::{AgentTypeConfig, SandboxColors};
 use crate::types::{
-    AgentInfo, AgentStatus, NamePromptState, RelayPhase, WizardState, WizardStep,
+    AgentInfo, AgentStatus, NamePromptState, ProjectDirMode, RelayPhase, WizardState, WizardStep,
 };
 
 /// Map a color name from config to an ANSI escape code.
@@ -121,6 +121,20 @@ fn truncate(s: &str, max_width: usize) -> String {
         out.push_str("...");
     }
     out
+}
+
+/// Truncate `s` from the LEFT to at most `max_len` visible chars, prefixing an
+/// ellipsis (`…`) so the distinguishing tail of a path stays visible. Returns
+/// `s` unchanged when it already fits or `max_len <= 1`. Char-based, so it
+/// never splits a multi-byte UTF-8 sequence.
+fn truncate_left(s: &str, max_len: usize) -> String {
+    if s.chars().count() > max_len && max_len > 1 {
+        let skip = s.chars().count() - max_len + 1;
+        let tail: String = s.chars().skip(skip).collect();
+        format!("\u{2026}{}", tail)
+    } else {
+        s.to_string()
+    }
 }
 
 /// Pad or truncate a string to exactly `width` characters, left-aligned.
@@ -1011,68 +1025,107 @@ pub fn render_wizard(
             );
             push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);
         }
-        WizardStep::ProjectDir => {
-            // Horizontal scroll: show the tail of the input when it overflows.
-            let input_prefix = "  > ";
-            let input_suffix = "_";
-            let max_visible = box_width.saturating_sub(4 + input_prefix.len() + input_suffix.len());
-            let dir_display = if wizard.project_dir.chars().count() > max_visible && max_visible > 1 {
-                let skip = wizard.project_dir.chars().count() - max_visible + 1;
-                let s: String = wizard.project_dir.chars().skip(skip).collect();
-                format!("\u{2026}{}", s) // …prefix
-            } else {
-                wizard.project_dir.clone()
-            };
-            push_box_line(&mut lines, &format!("{}{}{}", input_prefix, dir_display, input_suffix), box_width);
+        WizardStep::ProjectDir => match wizard.project_dir_mode {
+            // ── Recents picker (#127) ──────────────────────────────────
+            ProjectDirMode::List => {
+                push_box_line(
+                    &mut lines,
+                    &format!("  Filter: {}_", wizard.project_dir_filter),
+                    box_width,
+                );
+                push_box_line(&mut lines, "", box_width);
 
-            // Show completion suggestions (max 5 visible).
-            if !wizard.completions.is_empty() {
-                let max_show = 5.min(wizard.completions.len());
-                for (i, entry) in wizard.completions.iter().take(max_show).enumerate() {
-                    let marker = if wizard.completion_index == Some(i) { ">" } else { " " };
-                    // Truncate long paths to fit the box.
-                    let max_len = box_width.saturating_sub(6);
-                    let display: &str = if entry.len() > max_len {
-                        // Truncate from the left (show the distinguishing tail).
-                        // Advance past any mid-char byte to a valid UTF-8 boundary.
-                        let mut start = entry.len() - max_len;
-                        while !entry.is_char_boundary(start) && start < entry.len() {
-                            start += 1;
-                        }
-                        &entry[start..]
-                    } else {
-                        entry
-                    };
-                    push_box_line(&mut lines, &format!("  {} {}", marker, display), box_width);
-                }
-                if wizard.completions.len() > max_show {
+                let filtered = wizard.filtered_project_dirs();
+                if filtered.is_empty() {
                     push_box_line(
                         &mut lines,
-                        &format!("    (+{} more)", wizard.completions.len() - max_show),
+                        "  (no match — [Enter] types it as a new path)",
+                        box_width,
+                    );
+                } else {
+                    push_box_line(&mut lines, "  RECENTS", box_width);
+                    // Scrolling window of up to 6 rows around the selection.
+                    let max_show = 6;
+                    let total = filtered.len();
+                    let sel = wizard.project_dir_index.min(total.saturating_sub(1));
+                    let start = if sel >= max_show { sel + 1 - max_show } else { 0 };
+                    for (i, entry) in filtered.iter().enumerate().skip(start).take(max_show) {
+                        let marker = if i == sel { ">" } else { " " };
+                        let short = collapse_tilde(entry);
+                        // Truncate from the left to keep the distinguishing tail.
+                        let disp = truncate_left(&short, box_width.saturating_sub(6));
+                        push_box_line(&mut lines, &format!("  {} {}", marker, disp), box_width);
+                    }
+                    if total > start + max_show {
+                        push_box_line(
+                            &mut lines,
+                            &format!("    (+{} more)", total - (start + max_show)),
+                            box_width,
+                        );
+                    }
+                }
+                push_box_line(&mut lines, "", box_width);
+                // `[i] free text` only applies while the filter is empty (that's
+                // when `i` switches modes); once filtering, Backspace backs out.
+                let hint = if wizard.project_dir_filter.is_empty() {
+                    "  [type] filter  [\u{2191}/\u{2193}] move  [Enter] select  [i] free text"
+                } else {
+                    "  [type] filter  [\u{2191}/\u{2193}] move  [Enter] select  [\u{232b}] back"
+                };
+                push_box_line(&mut lines, hint, box_width);
+            }
+            // ── Free-text input (legacy escape hatch) ──────────────────
+            ProjectDirMode::Input => {
+                // Horizontal scroll: show the tail of the input when it overflows.
+                let input_prefix = "  > ";
+                let input_suffix = "_";
+                let max_visible = box_width.saturating_sub(4 + input_prefix.len() + input_suffix.len());
+                let dir_display = if wizard.project_dir.chars().count() > max_visible && max_visible > 1 {
+                    let skip = wizard.project_dir.chars().count() - max_visible + 1;
+                    let s: String = wizard.project_dir.chars().skip(skip).collect();
+                    format!("\u{2026}{}", s) // …prefix
+                } else {
+                    wizard.project_dir.clone()
+                };
+                push_box_line(&mut lines, &format!("{}{}{}", input_prefix, dir_display, input_suffix), box_width);
+
+                // Show completion suggestions (max 5 visible).
+                if !wizard.completions.is_empty() {
+                    let max_show = 5.min(wizard.completions.len());
+                    for (i, entry) in wizard.completions.iter().take(max_show).enumerate() {
+                        let marker = if wizard.completion_index == Some(i) { ">" } else { " " };
+                        let display = truncate_left(entry, box_width.saturating_sub(6));
+                        push_box_line(&mut lines, &format!("  {} {}", marker, display), box_width);
+                    }
+                    if wizard.completions.len() > max_show {
+                        push_box_line(
+                            &mut lines,
+                            &format!("    (+{} more)", wizard.completions.len() - max_show),
+                            box_width,
+                        );
+                    }
+                } else if wizard.project_dir_suggested {
+                    // #168: the field is pre-filled from the selected agent's dir.
+                    push_box_line(&mut lines, "  (from selected agent — Backspace to clear)", box_width);
+                    push_box_line(&mut lines, "  [Tab] autocomplete path", box_width);
+                } else {
+                    push_box_line(&mut lines, "  (default: current directory)", box_width);
+                    push_box_line(&mut lines, "  [Tab] autocomplete path", box_width);
+                }
+                // Validation error line (set by the ProjectDir Enter handler when
+                // the path is empty/relative/tilde-prefixed). Bold red, cleared as
+                // soon as the user edits the field.
+                if let Some(ref err) = wizard.project_dir_error {
+                    push_box_line(&mut lines, "", box_width);
+                    push_box_line(
+                        &mut lines,
+                        &format!("  \x1b[1;31m✗ {}\x1b[0m", err),
                         box_width,
                     );
                 }
-            } else if wizard.project_dir_suggested {
-                // #168: the field is pre-filled from the selected agent's dir.
-                push_box_line(&mut lines, "  (from selected agent — Backspace to clear)", box_width);
-                push_box_line(&mut lines, "  [Tab] autocomplete path", box_width);
-            } else {
-                push_box_line(&mut lines, "  (default: current directory)", box_width);
-                push_box_line(&mut lines, "  [Tab] autocomplete path", box_width);
-            }
-            // Validation error line (set by the ProjectDir Enter handler when
-            // the path is empty/relative/tilde-prefixed). Bold red, cleared as
-            // soon as the user edits the field.
-            if let Some(ref err) = wizard.project_dir_error {
                 push_box_line(&mut lines, "", box_width);
-                push_box_line(
-                    &mut lines,
-                    &format!("  \x1b[1;31m✗ {}\x1b[0m", err),
-                    box_width,
-                );
+                push_box_line(&mut lines, "  [Enter] Next  [Esc] Cancel", box_width);
             }
-            push_box_line(&mut lines, "", box_width);
-            push_box_line(&mut lines, "  [Enter] Next  [Esc] Cancel", box_width);
         }
         WizardStep::Name => {
             // Horizontal scroll for name input too.
