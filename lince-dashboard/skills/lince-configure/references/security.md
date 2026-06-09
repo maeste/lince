@@ -20,7 +20,7 @@ When `credential_proxy = true`:
 - API key is stripped from sandbox environment
 
 Auto-mapped env vars → domains:
-- `ANTHROPIC_API_KEY` → `api.anthropic.com`
+- `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` → `api.anthropic.com` (on conflict, the Bearer token vars win over `ANTHROPIC_API_KEY`)
 - `OPENAI_API_KEY` → `api.openai.com`
 - `GEMINI_API_KEY` / `GOOGLE_API_KEY` → `googleapis.com`
 

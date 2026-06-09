@@ -262,6 +262,13 @@ CREDENTIAL_PROXY_RULES: dict[str, dict[str, str]] = {
         "env_var": "ANTHROPIC_AUTH_TOKEN",
         "base_url_env": "ANTHROPIC_BASE_URL",
     },
+    "CLAUDE_CODE_OAUTH_TOKEN": {
+        "domain": "api.anthropic.com",
+        "header_name": "Authorization",
+        "header_prefix": "Bearer ",
+        "env_var": "CLAUDE_CODE_OAUTH_TOKEN",
+        "base_url_env": "ANTHROPIC_BASE_URL",
+    },
     "OPENAI_API_KEY": {
         "domain": "api.openai.com",
         "header_name": "Authorization",
@@ -1021,32 +1028,73 @@ def _collect_proxy_rules(env_vars: dict[str, str]) -> tuple[list[dict], list[str
     stripped from the sandbox (even when two vars map to the same domain
     and only one proxy rule is created, e.g. ANTHROPIC_API_KEY and
     ANTHROPIC_AUTH_TOKEN both target api.anthropic.com).
+
+    At most one rule is registered per domain. On conflict, a rule whose
+    header is ``Authorization`` (Bearer token) takes precedence over a
+    non-Authorization rule (e.g. ``x-api-key``) — Bearer credentials sent
+    through the wrong header break upstream auth (#194). When both
+    conflicting rules use the same header type, the first match wins
+    (dict order: ANTHROPIC_AUTH_TOKEN before CLAUDE_CODE_OAUTH_TOKEN, so
+    the explicit override var wins Bearer-vs-Bearer ties). Either way a
+    warning naming both env vars and the winner is printed to stderr.
     """
     rules: list[dict] = []
     strip_vars: list[str] = []
-    seen_domains: set[str] = set()
+    rule_by_domain: dict[str, dict] = {}
     for env_key, rule_tpl in CREDENTIAL_PROXY_RULES.items():
         value = env_vars.get(env_key)
         if not value:
             continue
         # Always strip the env var from the sandbox.
         strip_vars.append(env_key)
-        # Register at most one proxy rule per domain (first match wins).
-        if rule_tpl["domain"] not in seen_domains:
-            # Capture the original base URL (if the user set one, e.g.
-            # for third-party proxies like Z.ai) so the proxy forwards
-            # to the correct upstream instead of the default domain.
-            original_base = env_vars.get(rule_tpl["base_url_env"], "")
-            rules.append({
-                "domain": rule_tpl["domain"],
-                "header_name": rule_tpl["header_name"],
-                "header_prefix": rule_tpl.get("header_prefix", ""),
-                "header_value": value,
-                "env_var": env_key,
-                "base_url_env": rule_tpl["base_url_env"],
-                "upstream_base": original_base,
-            })
-            seen_domains.add(rule_tpl["domain"])
+        domain = rule_tpl["domain"]
+        existing = rule_by_domain.get(domain)
+        if existing is not None:
+            # Conflict: two env vars target the same domain.
+            if rule_tpl["header_name"] == "Authorization" and existing["header_name"] != "Authorization":
+                # Bearer wins over non-Authorization (e.g. x-api-key).
+                winner, loser = env_key, existing["env_var"]
+                print(
+                    f"Warning: both {loser} and {winner} are set for {domain}; "
+                    f"using {winner} (Authorization: Bearer takes precedence)",
+                    file=sys.stderr,
+                )
+                original_base = env_vars.get(rule_tpl["base_url_env"], "")
+                replacement = {
+                    "domain": domain,
+                    "header_name": rule_tpl["header_name"],
+                    "header_prefix": rule_tpl.get("header_prefix", ""),
+                    "header_value": value,
+                    "env_var": env_key,
+                    "base_url_env": rule_tpl["base_url_env"],
+                    "upstream_base": original_base,
+                }
+                rules[rules.index(existing)] = replacement
+                rule_by_domain[domain] = replacement
+            else:
+                # Same header type (or existing already Authorization):
+                # keep the first match, warn about the ignored var.
+                print(
+                    f"Warning: both {existing['env_var']} and {env_key} are set for {domain}; "
+                    f"using {existing['env_var']} (first match wins for same header type)",
+                    file=sys.stderr,
+                )
+            continue
+        # Capture the original base URL (if the user set one, e.g.
+        # for third-party proxies like Z.ai) so the proxy forwards
+        # to the correct upstream instead of the default domain.
+        original_base = env_vars.get(rule_tpl["base_url_env"], "")
+        rule = {
+            "domain": domain,
+            "header_name": rule_tpl["header_name"],
+            "header_prefix": rule_tpl.get("header_prefix", ""),
+            "header_value": value,
+            "env_var": env_key,
+            "base_url_env": rule_tpl["base_url_env"],
+            "upstream_base": original_base,
+        }
+        rules.append(rule)
+        rule_by_domain[domain] = rule
     return rules, strip_vars
 
 
