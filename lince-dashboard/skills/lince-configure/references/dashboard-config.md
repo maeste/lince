@@ -34,7 +34,10 @@ Valid colors: red, green, yellow, blue, magenta, cyan, white.
 
 ## [agents.\<name\>] — Agent Type Overrides
 
-Override shipped presets or define custom agents. Full replacement (no per-field merge).
+Override shipped presets or define custom agents. Full replacement (no per-field merge):
+every `[agents.<name>]` entry must be a COMPLETE definition including all 7 required
+fields below. A single malformed/incomplete entry makes the dashboard silently drop
+ALL `[agents.*]` entries from `config.toml`.
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
@@ -66,7 +69,7 @@ Requires restart:
 
 ## agents-defaults.toml
 
-Shipped presets at `~/.agent-sandbox/agents-defaults.toml`. Overwritten on updates.
+Shipped presets at `~/.config/lince-dashboard/agents-defaults.toml`. Overwritten on updates.
 Customize in `config.toml` instead.
 
 Default agent types: claude, claude-unsandboxed, codex, gemini, opencode, pi.

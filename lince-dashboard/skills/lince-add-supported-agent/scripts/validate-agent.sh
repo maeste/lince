@@ -11,7 +11,8 @@ set -uo pipefail
 KEY="${1:?Usage: validate-agent.sh <agent-key>}"
 
 SANDBOX_CONFIG="$HOME/.agent-sandbox/config.toml"
-DASHBOARD_CONFIG="$HOME/.config/lince-dashboard/agents-defaults.toml"
+DASHBOARD_CONFIG="$HOME/.config/lince-dashboard/config.toml"
+LEGACY_DEFAULTS="$HOME/.config/lince-dashboard/agents-defaults.toml"
 HOOK_DIR="$HOME/.local/share/lince/hooks"
 
 CANONICAL_EVENTS="running input permission stopped"
@@ -158,6 +159,19 @@ else
     esac
 fi
 echo
+
+# Stale-entry check: agents-defaults.toml is shipped data and is always
+# overwritten by update.sh — a custom [agents.<key>] left there is a legacy
+# leftover that will be clobbered on the next update.
+if [[ -f "$LEGACY_DEFAULTS" ]]; then
+    parsed=$(parse_toml "$LEGACY_DEFAULTS" "$KEY")
+    case "$parsed" in
+        exists=true*)
+            warn "[agents.$KEY] also present in $LEGACY_DEFAULTS — that file is always overwritten on update; remove the stale entry (config.toml fully replaces it for this key)"
+            echo
+            ;;
+    esac
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Tier-specific checks

@@ -298,9 +298,12 @@ Walk through creating a custom level following the customization story in the de
    ```bash
    mkdir -p ~/.local/share/test-data && echo "hello" > ~/.local/share/test-data/marker
    ```
-3. In `~/.config/lince-dashboard/agents-defaults.toml` (user override), set:
+3. In `~/.config/lince-dashboard/config.toml`, copy the full `[agents.claude]`
+   block from the shipped `agents-defaults.toml` (user entries fully replace
+   shipped ones — a partial block would be rejected) and set:
    ```toml
    [agents.claude]
+   # ... full shipped definition ...
    sandbox_level = "mytest"
    sandbox_backend = "nono"
    ```

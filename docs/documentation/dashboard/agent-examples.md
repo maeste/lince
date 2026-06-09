@@ -21,7 +21,7 @@ The following agent types ship in `agents-defaults.toml` and are available in th
 | `fish` | Fish Shell | FSH | Yes | No | Fish equivalent of `bash`. |
 | `fish-unsandboxed` | Fish Shell (unsandboxed) | FSU | No | No | Raw fish on the host, no isolation. |
 
-Each sandboxed agent ships at `sandbox_level = "normal"` by default. `paranoid` and `permissive` variants are available as commented blocks in `agents-defaults.toml` — uncomment to add them as separate entries to the N-picker. See [Sandbox Levels](dashboard/sandbox-levels.md) for what each level enforces.
+Each sandboxed agent ships at `sandbox_level = "normal"` by default. `paranoid` and `permissive` variants are available as commented blocks in the shipped `agents-defaults.toml` — copy a block into `~/.config/lince-dashboard/config.toml` as a complete `[agents.<key>]` entry to add it to the N-picker (do not edit the installed `agents-defaults.toml`; it is overwritten on update). See [Sandbox Levels](dashboard/sandbox-levels.md) for what each level enforces.
 
 ### Shell Agents (bash / zsh / fish)
 

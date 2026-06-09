@@ -372,7 +372,7 @@ sandbox_level = "with-aws"
 
 The next time you spawn a Claude Code agent it will launch with `lince-claude-with-aws` instead of `lince-claude`.
 
-For agent-sandbox (bwrap) users, the equivalent is a TOML fragment at `~/.agent-sandbox/profiles/with-aws.toml` deep-merged into the resolved config (lists appended, scalars overridden); flip the same `sandbox_level = "with-aws"` switch in `agents-defaults.toml` (or in the user `[agents.claude]` override block of `config.toml`) to activate it.
+For agent-sandbox (bwrap) users, the equivalent is a TOML fragment at `~/.agent-sandbox/profiles/with-aws.toml` deep-merged into the resolved config (lists appended, scalars overridden); flip the same `sandbox_level = "with-aws"` switch in the user `[agents.claude]` override block of `~/.config/lince-dashboard/config.toml` (a complete copy of the shipped entry — entries fully replace, no per-field merge; do not edit `agents-defaults.toml`, it is overwritten on update) to activate it.
 
 ### Extending the network allowlist with `allow_domains`
 
