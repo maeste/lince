@@ -291,7 +291,12 @@ pub struct DashboardConfig {
     pub agent_layout: AgentLayout,
     #[serde(default)]
     pub focus_mode: FocusMode,
+    // Retained for config back-compat (existing configs may set
+    // `status_method = "file"`), but no longer drives behavior: the dashboard
+    // always polls the .state files now (the pipe is a best-effort fast-path
+    // that can't cross the agent sandbox boundary). See the Timer handler.
     #[serde(default)]
+    #[allow(dead_code)]
     pub status_method: StatusMethod,
     #[serde(default = "default_status_file_dir")]
     pub status_file_dir: String,
@@ -1150,12 +1155,57 @@ impl DashboardConfig {
     }
 
     /// Return the event_map for a given agent type, or None if empty/missing.
+    ///
+    /// Resolution order:
+    /// 1. The on-disk config's map for this exact agent type (when non-empty).
+    /// 2. The binary-embedded shipped defaults (exact agent type, then base
+    ///    name).
+    ///
+    /// The embedded fallback exists because `agents-defaults.toml` is shipped
+    /// defaults, but `update.sh` *preserves* a pre-existing on-disk copy (it
+    /// never overwrites it once present). Users who first installed before
+    /// LINCE-122 added `event_map` therefore keep an event_map-less file across
+    /// updates, which left every native hook event mapping to `Unknown` and
+    /// froze the Status column at "-". Falling back to the compiled-in defaults
+    /// keeps status working for the built-in agents no matter how stale the
+    /// on-disk file is, while still letting a non-empty on-disk map override.
     pub fn event_map_for(&self, agent_type: &str) -> Option<&HashMap<String, String>> {
-        self.agent_types
+        if let Some(m) = self
+            .agent_types
             .get(agent_type)
             .map(|c| &c.event_map)
             .filter(|m| !m.is_empty())
+        {
+            return Some(m);
+        }
+
+        let embedded = embedded_event_maps();
+        if let Some(m) = embedded.get(agent_type).filter(|m| !m.is_empty()) {
+            return Some(m);
+        }
+        let base = crate::agent::agent_type_base_name(agent_type);
+        embedded.get(base).filter(|m| !m.is_empty())
     }
+}
+
+/// Event maps for the built-in agents, parsed once from the shipped
+/// `agents-defaults.toml` baked into the binary at compile time. Used as a
+/// fallback by `event_map_for` so a stale or partial on-disk config can't
+/// break the status column for built-in agents. See `event_map_for`.
+fn embedded_event_maps() -> &'static HashMap<String, HashMap<String, String>> {
+    static MAPS: std::sync::OnceLock<HashMap<String, HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    MAPS.get_or_init(|| {
+        const SHIPPED: &str = include_str!("../../agents-defaults.toml");
+        match toml::from_str::<UserAgentsSection>(SHIPPED) {
+            Ok(s) => s
+                .agents
+                .into_iter()
+                .map(|(k, v)| (k, v.event_map))
+                .collect(),
+            Err(_) => HashMap::new(),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1304,5 +1354,77 @@ sandboxed = true
         let malformed = b"this is not valid toml [[[";
         let result = parse_agent_defaults(malformed);
         assert!(result.is_empty());
+    }
+
+    /// The binary-embedded shipped defaults must carry event maps for the
+    /// built-in agents so `event_map_for` can fall back to them.
+    #[test]
+    fn embedded_event_maps_cover_builtin_agents() {
+        let maps = embedded_event_maps();
+        for agent in ["claude", "codex", "pi", "opencode"] {
+            assert!(
+                maps.get(agent).map(|m| !m.is_empty()).unwrap_or(false),
+                "embedded event_map missing for built-in agent {agent}"
+            );
+        }
+        // Claude's full native→canonical mapping must be present.
+        let claude = &maps["claude"];
+        assert_eq!(claude.get("PreToolUse").map(String::as_str), Some("running"));
+        assert_eq!(claude.get("Stop").map(String::as_str), Some("input"));
+        assert_eq!(
+            claude.get("permission_prompt").map(String::as_str),
+            Some("permission")
+        );
+    }
+
+    /// A stale on-disk config (claude entry with an empty event_map) must still
+    /// resolve via the embedded fallback — this is the Status-column fix.
+    #[test]
+    fn event_map_for_falls_back_to_embedded_when_config_empty() {
+        let mut cfg = DashboardConfig::default();
+        cfg.agent_types = parse_agent_defaults(
+            br#"
+            [agents.claude]
+            command = ["claude"]
+            pane_title_pattern = "claude"
+            status_pipe_name = "claude-status"
+            display_name = "Claude"
+            short_label = "CLA"
+            color = "blue"
+            sandboxed = true
+            "#,
+        );
+        // The stale entry has no event_map...
+        assert!(cfg.agent_types["claude"].event_map.is_empty());
+        // ...but event_map_for resolves it from the embedded defaults.
+        let resolved = cfg.event_map_for("claude").expect("fallback map");
+        assert_eq!(resolved.get("PreToolUse").map(String::as_str), Some("running"));
+
+        // A sandbox variant (suffix stripped by agent_type_base_name) with no
+        // embedded entry of its own resolves to the base agent's map.
+        let resolved_variant = cfg.event_map_for("claude-paranoid").expect("base fallback");
+        assert_eq!(resolved_variant.get("Stop").map(String::as_str), Some("input"));
+    }
+
+    /// A non-empty on-disk map still wins over the embedded fallback.
+    #[test]
+    fn event_map_for_prefers_config_over_embedded() {
+        let mut cfg = DashboardConfig::default();
+        cfg.agent_types = parse_agent_defaults(
+            br#"
+            [agents.claude]
+            command = ["claude"]
+            pane_title_pattern = "claude"
+            status_pipe_name = "claude-status"
+            display_name = "Claude"
+            short_label = "CLA"
+            color = "blue"
+            sandboxed = true
+            [agents.claude.event_map]
+            PreToolUse = "stopped"
+            "#,
+        );
+        let resolved = cfg.event_map_for("claude").expect("config map");
+        assert_eq!(resolved.get("PreToolUse").map(String::as_str), Some("stopped"));
     }
 }
