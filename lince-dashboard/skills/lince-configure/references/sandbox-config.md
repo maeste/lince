@@ -12,7 +12,7 @@ Quick reference for `~/.agent-sandbox/config.toml` keys. Loaded by `lince-config
 | `auto_expose_path` | bool | `true` | Auto-detect $PATH under $HOME |
 | `home_ro_dirs` | list | `[".config/gcloud"]` | Home subdirs to expose read-only |
 | `default_provider` | str | `""` | Default provider name (no -P needed) |
-| `backend` | str | `"auto"` | `"agent-sandbox"`, `"nono"`, or `"auto"` |
+| `backend` | str | `"auto"` | `"agent-sandbox"`, `"seatbelt"` (macOS), `"nono"` (deprecated), or `"auto"` |
 
 ## [security]
 

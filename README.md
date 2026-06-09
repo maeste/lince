@@ -54,7 +54,7 @@ For a detailed step-by-step guide with scenarios (Mini/Full/Custom), troubleshoo
 - **Claude Code** (`npm install -g @anthropic-ai/claude-code`)
 - **bubblewrap** (`sudo dnf install bubblewrap` / `sudo apt install bubblewrap`)
 - **Rust** with `wasm32-wasip1` target (for building the dashboard plugin)
-- **macOS** (experimental): **nono** sandbox backend (`brew install nono`), Python 3.11+, Zellij
+- **macOS** (experimental): native **Seatbelt** sandbox backend (`sandbox-exec`, built into macOS — no extra install), Python 3.11+, Zellij. The legacy `nono` backend is deprecated — see the [migration guide](docs/documentation/sandbox/migration-nono-to-seatbelt.md)
 
 ### Step 1: Install the sandbox
 

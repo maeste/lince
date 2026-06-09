@@ -232,11 +232,11 @@ This separation is why `env_unset` is profile-only: the agent type defines what 
 Profiles can declare an `env_unset` list to remove conflicting environment variables before the profile's own vars are applied. This is essential for non-sandboxed agents that inherit the full host environment:
 
 ```toml
-[profiles.vertex]
+[providers.vertex]
 description = "Vertex AI"
 env_unset = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]  # clean conflicting vars
 
-[profiles.vertex.env]
+[providers.vertex.env]
 CLAUDE_CODE_USE_VERTEX = "1"
 CLOUD_ML_REGION = "us-east5"
 ```
