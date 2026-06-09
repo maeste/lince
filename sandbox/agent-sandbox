@@ -3064,7 +3064,7 @@ def cmd_init(args) -> None:
                         shutil.rmtree(item)
                     else:
                         item.unlink()
-                shutil.copytree(src, dst, dirs_exist_ok=True)
+                shutil.copytree(src, dst, dirs_exist_ok=True, ignore_dangling_symlinks=True)
                 print(f"  claude-config {src} -> {dst}")
                 # Check for secrets in settings.json
                 settings = dst / "settings.json"
