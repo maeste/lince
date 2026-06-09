@@ -10,7 +10,7 @@ mod types;
 use std::collections::BTreeMap;
 use zellij_tile::prelude::*;
 
-use crate::config::{DashboardConfig, StatusMethod, DEFAULT_AGENT_TYPE};
+use crate::config::{DashboardConfig, DEFAULT_AGENT_TYPE};
 use crate::sandbox_backend::DetectedBackends;
 
 const PIPE_CLAUDE_STATUS: &str = "claude-status";
@@ -237,13 +237,22 @@ impl ZellijPlugin for State {
                     }
                 }
 
-                // File-based status polling: kick off an async `cat` of the
-                // .state files. `std::fs` can't reach the host filesystem from
-                // the WASI plugin sandbox, so the read goes through a host
-                // shell command; results land in the CMD_POLL_STATUS handler.
-                if self.config.status_method == StatusMethod::File {
-                    config::poll_status_files_async(&self.config.status_file_dir);
-                }
+                // Status polling: kick off an async `cat` of the .state files.
+                // `std::fs` can't reach the host filesystem from the WASI plugin
+                // sandbox, so the read goes through a host shell command; results
+                // land in the CMD_POLL_STATUS handler.
+                //
+                // Polling runs UNCONDITIONALLY, not just for `status_method =
+                // "file"`. The hooks always write `.state` files to a host-shared
+                // dir (/tmp/lince-dashboard), so polling is the one status channel
+                // that reliably works. The `zellij pipe` fast-path runs from
+                // *inside* the agent sandbox (bwrap) and can't reach Zellij's IPC
+                // socket — the socket dir isn't bind-mounted, only /tmp is — so on
+                // a sandboxed agent the pipe is silently dropped and the Status
+                // column would otherwise stay "-" forever. The pipe still updates
+                // status instantly when it does work (unsandboxed agents); polling
+                // reconciles everything else within the timer period.
+                config::poll_status_files_async(&self.config.status_file_dir);
 
                 // Clear transient status messages after timeout
                 if self.status_message.is_some() && self.config_error.is_none() {

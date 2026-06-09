@@ -291,7 +291,12 @@ pub struct DashboardConfig {
     pub agent_layout: AgentLayout,
     #[serde(default)]
     pub focus_mode: FocusMode,
+    // Retained for config back-compat (existing configs may set
+    // `status_method = "file"`), but no longer drives behavior: the dashboard
+    // always polls the .state files now (the pipe is a best-effort fast-path
+    // that can't cross the agent sandbox boundary). See the Timer handler.
     #[serde(default)]
+    #[allow(dead_code)]
     pub status_method: StatusMethod,
     #[serde(default = "default_status_file_dir")]
     pub status_file_dir: String,
