@@ -1986,7 +1986,10 @@ def check_seatbelt_level_warnings(
     """Return warning strings when a Seatbelt backend cannot fully enforce a level.
 
     Currently only *paranoid* produces warnings, because Seatbelt lacks the
-    kernel-level PID and network namespace isolation that bwrap provides.
+    kernel-level PID namespace isolation that bwrap provides. Network at
+    paranoid is loopback-only (Seatbelt ``(deny network*)`` + loopback
+    allows) with egress only via the allowlist-enforcing credential proxy —
+    parity with bwrap ``--unshare-net``.
     """
     if backend != "seatbelt" or sandbox_level != "paranoid":
         return []
@@ -1999,10 +2002,10 @@ def check_seatbelt_level_warnings(
     )
 
     warnings.append(
-        "Seatbelt has no network namespace. The credential proxy is active but "
-        "the agent CAN make direct network connections (kernel-level blocking is "
-        "unavailable). Paranoid on Seatbelt provides filesystem isolation + "
-        "credential injection only."
+        "Seatbelt paranoid denies all non-loopback network: the profile is "
+        "loopback-only and egress is possible only through the credential "
+        "proxy on 127.0.0.1, which enforces the domain allowlist. Remaining "
+        "gap vs bwrap paranoid is the missing PID namespace."
     )
 
     return warnings
@@ -2023,8 +2026,11 @@ def generate_seatbelt_profile(
       - ``"normal"`` / ``None``: baseline profile (default).
       - ``"permissive"``: baseline + extra ``(allow file-read* ...)`` from the
         permissive config fragment (e.g. ``~/.config/gh``, ``~/.cache``).
-      - ``"paranoid"``: permissive-level access plus an explanatory comment
-        block documenting Seatbelt limitations vs the bwrap backend.
+      - ``"paranoid"``: loopback-only network (``(deny network*)`` plus
+        loopback allows) so all egress goes through the host-side credential
+        proxy on 127.0.0.1, which enforces the domain allowlist. Also adds an
+        explanatory comment block documenting the remaining Seatbelt
+        limitations vs the bwrap backend (no PID namespace).
     """
     warnings: list[str] = []
     sandbox_conf = config.get("sandbox", {})
@@ -2135,9 +2141,17 @@ def generate_seatbelt_profile(
     lines.append("")
 
     # --- Network ---
-    # Allow network out by default (same as bwrap backend).
     lines.append("; Network")
-    lines.append("(allow network*)")
+    if sandbox_level == "paranoid":
+        lines.append("; Paranoid: loopback only — all egress must go through the")
+        lines.append("; credential proxy on 127.0.0.1 (which enforces the domain allowlist).")
+        lines.append("(deny network*)")
+        lines.append('(allow network-outbound (remote ip "localhost:*"))')
+        lines.append('(allow network-inbound (local ip "localhost:*"))')
+        lines.append('(allow network-bind (local ip "localhost:*"))')
+    else:
+        lines.append("; Allow network out by default (same as bwrap backend).")
+        lines.append("(allow network*)")
     lines.append("")
 
     # --- Mach lookups commonly needed ---
@@ -2176,14 +2190,14 @@ def generate_seatbelt_profile(
         # plus a comment block documenting what Seatbelt *cannot* enforce.
         lines.append("; === PARANOID LEVEL (Seatbelt) ===")
         lines.append("; NOTE: The following bwrap paranoid features are NOT available:")
-        lines.append(";   - Network namespace (--unshare-net): agent can reach any host")
         lines.append(";   - PID namespace: agent can see/kill host processes")
         lines.append(";   - strace/learn mode: not available on macOS")
         lines.append(";")
         lines.append("; What IS enforced:")
+        lines.append(";   - Network: loopback-only (deny network*), egress via credential proxy allowlist")
         lines.append(";   - Filesystem write isolation (deny file-write* + allowlist)")
         lines.append(";   - Environment variable clearing (via env -i wrapper)")
-        lines.append(";   - Credential proxy (userland, best-effort)")
+        lines.append(";   - Credential proxy (host-side, allowlist-enforcing)")
         lines.append(";   - Git push blocking (PATH wrapper)")
         lines.append(";   - Config snapshots (rsync, userland)")
         lines.append("")
@@ -2313,22 +2327,32 @@ def cmd_seatbelt_sync(args) -> None:
         print(f"  output: {SEATBELT_PROFILE_DIR}/\n")
 
     all_warnings: list[str] = []
+    written = 0
 
     for agent_name in agent_names:
         agent_cfg = resolve_agent_config(config, agent_name)
-        profile_text, warnings = generate_seatbelt_profile(
-            agent_name, agent_cfg, config,
-        )
-        all_warnings.extend(warnings)
+        # Emit the base profile plus per-level variants so users can inspect
+        # what each level enforces (e.g. the paranoid loopback-only network
+        # section). Enforcement itself uses the runtime profile regenerated
+        # by build_seatbelt_cmd at launch.
+        for level in (None, "permissive", "paranoid"):
+            profile_text, warnings = generate_seatbelt_profile(
+                agent_name, agent_cfg, config,
+                sandbox_level=level,
+            )
+            all_warnings.extend(warnings)
 
-        out_file = SEATBELT_PROFILE_DIR / f"lince-{agent_name}.sb"
+            suffix = f"-{level}" if level else ""
+            out_name = f"lince-{agent_name}{suffix}"
+            out_file = SEATBELT_PROFILE_DIR / f"{out_name}.sb"
 
-        print(f"  lince-{agent_name}:")
-        if dry_run:
-            print(profile_text)
-        else:
-            out_file.write_text(profile_text)
-            print(f"    -> {out_file}")
+            print(f"  {out_name}:")
+            if dry_run:
+                print(profile_text)
+            else:
+                out_file.write_text(profile_text)
+                print(f"    -> {out_file}")
+            written += 1
 
     # Print warnings
     if all_warnings:
@@ -2340,7 +2364,7 @@ def cmd_seatbelt_sync(args) -> None:
                 print(f"\033[33m⚠ {w}\033[0m")
 
     if not dry_run:
-        print(f"\nDone. {len(agent_names)} profile(s) written to {SEATBELT_PROFILE_DIR}/")
+        print(f"\nDone. {written} profile(s) written to {SEATBELT_PROFILE_DIR}/")
         print("Run with:  agent-sandbox run --backend seatbelt -a <agent>")
 
 
@@ -3398,9 +3422,11 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                     proxy_conf.get("blocked_hosts", DEFAULT_BLOCKED_HOSTS)
                 )
                 allow_domains_cfg = list(sec.get("allow_domains", []))
-                # Seatbelt cannot enforce network-level allowlisting, but we
-                # still configure the proxy for credential injection.
-                enforce_allowlist = False
+                # Parity with the bwrap path: paranoid fragments set
+                # `unshare_net = true`, which on Seatbelt maps to the
+                # loopback-only profile — the proxy is then the only egress
+                # path and must enforce the domain allowlist.
+                enforce_allowlist = bool(sec.get("unshare_net", False))
                 sb_proxy = CredentialProxy(
                     rules,
                     blocked_hosts=blocked,
@@ -3420,6 +3446,70 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                 sb_proxy_env["http_proxy"] = proxy_base
                 sb_proxy_env["HTTPS_PROXY"] = proxy_base
                 sb_proxy_env["https_proxy"] = proxy_base
+
+        # --- Paranoid guard (seatbelt path) ---
+        # With `unshare_net = true` the generated Seatbelt profile is
+        # loopback-only ((deny network*) + loopback allows), so the agent has
+        # ZERO egress unless the credential proxy is running. Mirror the
+        # bwrap unshare_net guard: bail out with a clear error instead of
+        # launching an agent that cannot reach any API.
+        sb_unshare_net = bool(sec.get("unshare_net", False))
+        if sb_unshare_net and sb_proxy is None:
+            if not sb_proxy_enabled:
+                print(
+                    "Error: [security] unshare_net = true requires "
+                    "[security] credential_proxy = true. Without the "
+                    "proxy the loopback-only (paranoid) Seatbelt sandbox "
+                    "has no path out.",
+                    file=sys.stderr,
+                )
+            else:
+                # Reaching here means the fragment ran but produced no
+                # rules — either it auto-maps known keys none of which
+                # are exported, or it doesn't auto-map anything.
+                fragment_keys = [
+                    k for k in sb_collected_env
+                    if k in CREDENTIAL_PROXY_RULES
+                ]
+                if fragment_keys:
+                    keys_for_msg = ", ".join(fragment_keys)
+                    quick = (
+                        f"Quick fix: export {fragment_keys[0]} (or "
+                        f"another from {keys_for_msg}) in your host "
+                        f"shell — the paranoid fragment for agent "
+                        f"'{agent_name}' auto-maps it via [env.extra]."
+                    )
+                else:
+                    keys_for_msg = ", ".join(CREDENTIAL_PROXY_RULES.keys())
+                    quick = (
+                        f"Quick fix: add one of [{keys_for_msg}] to "
+                        f"[env.extra] in your fragment for agent "
+                        f"'{agent_name}', then export the matching "
+                        f"host env var."
+                    )
+                oauth_note = ""
+                if agent_name in OAUTH_CAPABLE_AGENTS:
+                    oauth_note = (
+                        f"\nNote: {agent_name} OAuth/browser-login users "
+                        f"have no API key in their host env, so paranoid "
+                        f"cannot inject one — pick `--sandbox-level "
+                        f"normal` or `permissive` instead, or switch to "
+                        f"API-key auth (see "
+                        f"docs/documentation/dashboard/sandbox-levels.md)."
+                    )
+                print(
+                    "Error: [security] unshare_net = true requires at "
+                    f"least one credential rule (e.g. {keys_for_msg} in "
+                    "[env.extra] or in the active provider's [providers.<name>.env] "
+                    "block), otherwise the proxy doesn't start and the sandbox "
+                    "has no path to any LLM API.\n"
+                    f"{quick}\n"
+                    f"You can also add a key to [env.extra] in "
+                    f"{config_path} or pick a provider with `-P` / `--provider`."
+                    f"{oauth_note}",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
 
         # --- Git push blocking setup (seatbelt path) ---
         # Uses GIT_CONFIG_GLOBAL + PATH wrapper instead of bind-mounts.
@@ -3445,7 +3535,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             print("# seatbelt command that would be executed:\n")
             print(f"# config: {config_path}")
             print(f"# agent: {agent_name} ({agent_cfg['command']})")
-            print(f"# seatbelt profile: {sb_profile_name} (base)")
+            print(f"# seatbelt profile: {sb_profile_name}")
             print(f"# runtime profile: {runtime_profile}")
             if provider:
                 print(f"# provider: {provider}")
@@ -3473,7 +3563,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             print(f"  provider    {provider}{desc}")
         print(f"  project     {project_dir}")
         print(f"  isolation   Apple Seatbelt (sandbox-exec)")
-        print(f"  network     enabled")
+        print(f"  network     {'loopback-only (paranoid)' if sandbox_level == 'paranoid' else 'enabled'}")
         if sb_proxy:
             print(f"  cred proxy  127.0.0.1:{sb_proxy_port} (direct TCP)")
         print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")

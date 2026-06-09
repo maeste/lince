@@ -45,13 +45,13 @@ The table below summarises the differences. Sections after it give the concrete 
 
 | Aspect                                  | paranoid (bwrap)              | paranoid (nono)        | paranoid (seatbelt)   | normal             | permissive                                              |
 |-----------------------------------------|-------------------------------|------------------------|-----------------------|--------------------|---------------------------------------------------------|
-| Network (allowed destinations)          | Anthropic API only            | Anthropic API only     | Anthropic API only (userland proxy) | inherited base     | + GitHub + gh CLI domains                               |
-| Network isolation enforcement           | kernel (netns) + proxy allowlist | kernel (Landlock + nono policy) | userland proxy only (no kernel netns) | inherited       | proxy allowlist                                         |
-| Agent opens raw socket to exfiltrate    | blocked (no route in netns) ✓ | blocked (kernel policy) ✓ | ⚠ not kernel-blocked (proxy allowlist is userland) | depends on base | blocked for non-allowlisted hosts (proxy)               |
+| Network (allowed destinations)          | Anthropic API only            | Anthropic API only     | Anthropic API only (loopback-only profile + proxy allowlist) | inherited base     | + GitHub + gh CLI domains                               |
+| Network isolation enforcement           | kernel (netns) + proxy allowlist | kernel (Landlock + nono policy) | Seatbelt `(deny network*)` loopback-only + proxy allowlist | inherited       | proxy allowlist                                         |
+| Agent opens raw socket to exfiltrate    | blocked (no route in netns) ✓ | blocked (kernel policy) ✓ | blocked (Seatbelt denies non-loopback) ✓ | depends on base | blocked for non-allowlisted hosts (proxy)               |
 | PID namespace                           | yes (host processes hidden) ✓ | yes (nono policy) ✓    | ⚠ not available (host processes visible) | yes (bwrap/none) | yes (bwrap/none)                                        |
 | Filesystem                              | $WORKDIR + scratch ~/.claude + scratch ~/.claude.json | $WORKDIR + scratch ~/.claude | $WORKDIR + deny file-write* + allowlist | as today      | + ~/.config/gh, ~/.cache, ~/.ssh/known_hosts            |
 | Env var clearing                        | `--clearenv`                  | env wrapper            | `env -i` wrapper      | same as backend    | same as backend                                         |
-| Credential proxy                        | host-side, kernel-gated       | host-side, kernel-gated| host-side, userland only | opt-in             | off by default                                          |
+| Credential proxy                        | host-side, kernel-gated       | host-side, kernel-gated| host-side, Seatbelt-gated (loopback-only) | opt-in             | off by default                                          |
 | Learn mode (strace)                     | yes                           | no (not available on macOS) | no (not available on macOS) | yes (bwrap)        | yes (bwrap)                                             |
 | `gh` CLI                                | no                            | no                     | no                    | no                 | yes                                                     |
 | `docker` / `podman`                     | no                            | no                     | no                    | no                 | **no** (out of scope)                                   |
@@ -59,12 +59,13 @@ The table below summarises the differences. Sections after it give the concrete 
 
 ### 2.1 Paranoid
 
-**Network.** Only the Anthropic API is reachable, and isolation is **kernel-enforced** on both backends.
+**Network.** Only the Anthropic API is reachable, and isolation is enforced below the agent on all backends (kernel namespaces on bwrap, Landlock + nono policy on nono, the Seatbelt MAC layer on macOS).
 
 - Under bwrap: the sandbox runs in a fresh network namespace (`bwrap --unshare-net`) with only its own loopback. There is no route to anywhere on the host or the internet — a raw TCP connect to `1.1.1.1:443` or a DNS lookup for `attacker.com` fails at the kernel. The host-side credential proxy is reached over a unix domain socket bind-mounted into the sandbox at `/run/lince-proxy.sock`; a small `socat` helper inside the sandbox listens on `127.0.0.1:8118` and forwards each TCP connection to that unix socket. The agent sees `HTTP_PROXY=http://127.0.0.1:8118` and uses TCP localhost as before — no SDK changes are required. On top of the kernel netns isolation, the credential proxy enforces an application-layer allowlist (`allow_domains`, default `["api.anthropic.com"]`); any HTTPS CONNECT or HTTP request to a destination outside the allowlist is rejected with a 403.
 - Under nono: kernel-level via Landlock LSM and nono's native network policy; application-level via the same credential proxy mechanism.
+- Under seatbelt: the generated paranoid profile denies all non-loopback network (`(deny network*)` plus loopback-only allows), so the agent can only reach `127.0.0.1` — i.e. the host-side credential proxy, which enforces the same application-layer allowlist (any CONNECT or HTTP request outside `allow_domains` ∪ credential-rule domains is rejected with 403). The remaining gap vs bwrap paranoid is the missing PID namespace, not network.
 
-The credential proxy injects the API key on the host side in both cases, so the key never enters the sandbox environment. Everything else — DNS for arbitrary hosts, plain HTTPS to other services, even `pip install` from PyPI — fails.
+The credential proxy injects the API key on the host side in all cases, so the key never enters the sandbox environment. Everything else — DNS for arbitrary hosts, plain HTTPS to other services, even `pip install` from PyPI — fails.
 
 nono profile (`~/.config/nono/profiles/lince-claude-paranoid.json`):
 
@@ -273,11 +274,11 @@ The dashboard supports three backends, switched per agent via `sandbox_backend`:
 
 - `sandbox_backend = "bwrap"` — agent-sandbox, Linux only, isolation via Bubblewrap mount/PID/network namespaces and a host-side credential proxy.
 - `sandbox_backend = "nono"` — nono, Linux + macOS, isolation via Landlock (Linux) or Seatbelt (macOS) plus nono's own network policy engine.
-- `sandbox_backend = "seatbelt"` — Apple Seatbelt (`sandbox-exec`), macOS only, filesystem isolation via Seatbelt's mandatory access control. Does **not** provide PID or network namespace isolation; paranoid level degrades gracefully with warnings.
+- `sandbox_backend = "seatbelt"` — Apple Seatbelt (`sandbox-exec`), macOS only, filesystem isolation via Seatbelt's mandatory access control. At paranoid the generated profile is loopback-only (`(deny network*)` + loopback allows) so all egress goes through the allowlist-enforcing credential proxy. Does **not** provide PID namespace isolation; a warning is printed at startup.
 
 The default is per-OS: Linux picks `bwrap` (agent-sandbox), macOS picks `seatbelt` when `sandbox-exec` is available (falls back to `nono` if nono is installed). A Linux user who wants kernel-enforced filesystem isolation via Landlock can override that and pick `nono` explicitly.
 
-**Backend implementation note.** bwrap and nono both achieve kernel-enforced network isolation under paranoid; the implementation paths differ. bwrap paranoid uses `--unshare-net` plus a socat unix-socket bridge to the credential proxy. nono paranoid uses Landlock LSM plus nono's native network policy. **Seatbelt paranoid does not achieve kernel-level network isolation** -- it provides filesystem isolation + userland credential proxy + env clearing. From a threat-model standpoint, seatbelt paranoid is weaker than bwrap/nono paranoid for network and PID isolation, but still provides meaningful filesystem and credential protection. Warnings are printed at startup listing exactly what is unavailable.
+**Backend implementation note.** All three backends contain network under paranoid; the implementation paths differ. bwrap paranoid uses `--unshare-net` plus a socat unix-socket bridge to the credential proxy. nono paranoid uses Landlock LSM plus nono's native network policy. Seatbelt paranoid uses a loopback-only profile (`(deny network*)` + loopback allows, enforced by the Seatbelt MAC layer): the agent can only reach the host-side credential proxy on `127.0.0.1`, which enforces the domain allowlist. From a threat-model standpoint, the remaining seatbelt gap vs bwrap/nono paranoid is PID isolation (host processes stay visible), not network. Warnings are printed at startup listing exactly what is unavailable.
 
 **Prerequisites for paranoid + bwrap.** `socat` must be available on the host's `$PATH` (most distros: install the `socat` package). `install.sh` warns when it is missing. If `unshare_net = true` is resolved at run time and `socat` is not found, `agent-sandbox` errors out with a clear message rather than silently degrading.
 

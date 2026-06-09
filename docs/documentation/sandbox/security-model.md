@@ -208,7 +208,7 @@ Build tools work with minimal friction because system directories are read-only 
 
 ## Seatbelt Backend (macOS)
 
-On macOS the Seatbelt backend (`sandbox-exec`) replaces bubblewrap. Seatbelt is Apple's built-in mandatory access control framework; it operates at the filesystem and process level but does **not** provide kernel-level namespace isolation.
+On macOS the Seatbelt backend (`sandbox-exec`) replaces bubblewrap. Seatbelt is Apple's built-in mandatory access control framework; it operates at the filesystem and process level but does **not** provide kernel-level namespace isolation (network containment at paranoid is achieved instead via a loopback-only Seatbelt profile that forces all egress through the credential proxy).
 
 ### Limitation Matrix
 
@@ -218,9 +218,9 @@ The table below compares each defense layer between bwrap (Linux) and Seatbelt (
 |---|---|---|---|
 | Filesystem write isolation | `--ro-bind / /` + allowlist | `(deny file-write*)` + allowlist | Equivalent enforcement |
 | PID namespace | `--unshare-pid` | **Not available** | Agent can see and signal host processes |
-| Network namespace | `--unshare-net` | **Not available** | Agent can make direct network connections; credential proxy is userland only |
+| Network containment (paranoid) | `--unshare-net` (netns) | Loopback-only profile: `(deny network*)` + loopback allows | Both force all egress through the host-side credential proxy, which enforces the domain allowlist |
 | Env var clearing | `--clearenv` + `--setenv` | `env -i` wrapper | Equivalent enforcement |
-| Credential proxy | Host-side, kernel-netns-gated | Host-side, userland | Proxy runs but cannot enforce at kernel level |
+| Credential proxy | Host-side, kernel-netns-gated | Host-side, Seatbelt-gated (loopback-only at paranoid) | Proxy is the only egress path at paranoid on both backends |
 | Git push blocking | PATH wrapper | PATH wrapper | Equivalent enforcement |
 | Config snapshots | rsync hardlinks | rsync hardlinks | Equivalent enforcement |
 | Learn mode (strace) | `strace -f -e trace=...` | **Not available** | macOS lacks strace; use DTrace or cross-platform profile porting |
@@ -229,14 +229,14 @@ The table below compares each defense layer between bwrap (Linux) and Seatbelt (
 
 ### Paranoid on macOS vs Linux
 
-Paranoid level on the Seatbelt backend provides a **reduced but still meaningful** isolation envelope:
+Paranoid level on the Seatbelt backend provides a **near-parity** isolation envelope:
 
-- **What works**: filesystem write isolation, environment variable clearing, credential proxy (userland), git push blocking, config snapshots.
-- **What does not work**: kernel-level network namespace isolation (`--unshare-net`), PID namespace isolation, strace-based learn mode.
+- **What works**: loopback-only network (`(deny network*)` + loopback allows — all egress goes through the allowlist-enforcing credential proxy on `127.0.0.1`), filesystem write isolation, environment variable clearing, git push blocking, config snapshots.
+- **What does not work**: PID namespace isolation (host processes stay visible), strace-based learn mode.
 
 When paranoid is selected with the Seatbelt backend, `agent-sandbox` prints clear warnings listing exactly which features are unavailable and then proceeds -- the user explicitly requested paranoid and the remaining defenses still provide real value.
 
-**Network hardening recommendation for macOS**: to approximate the Linux kernel network namespace on macOS, you can use `pfctl` (Packet Filter) to restrict the sandboxed process's outbound traffic. Example:
+**Additional network hardening for macOS** (optional): on top of the Seatbelt loopback-only profile, you can use `pfctl` (Packet Filter) to restrict outbound traffic at the host level as defense in depth. Example:
 
 ```bash
 # Create an anchor that blocks all outbound except the Anthropic API
