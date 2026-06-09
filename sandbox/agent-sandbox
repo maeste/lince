@@ -3188,6 +3188,10 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             sys.exit(1)
         config = merge_sandbox_level(config, fragment)
 
+    # CLI --backend overrides the configured [sandbox].backend for this run.
+    if getattr(args, "backend", None):
+        config.setdefault("sandbox", {})["backend"] = args.backend
+
     backend = resolve_backend(config)
 
     project_dir = Path(args.project).resolve()
@@ -6185,6 +6189,10 @@ def main() -> None:
     p_run = sub.add_parser("run", help="Run an agent inside the sandbox")
     p_run.add_argument("-p", "--project", default=".",
                        help="Project directory (default: cwd)")
+    p_run.add_argument("--backend", default=None,
+                       choices=["auto", "agent-sandbox", "seatbelt", "nono"],
+                       help="Override the configured [sandbox].backend for this "
+                            "run (default: use config, which defaults to auto).")
     p_run.add_argument("-a", "--agent", default="claude",
                        help="Agent to run (default: claude). "
                             "Looks up [agents.<name>] in config.")
