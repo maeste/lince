@@ -217,6 +217,15 @@ pub fn resolve_nono_profile(agent_type: &str, level: &str) -> String {
 ///
 /// The returned argv is final — no more placeholder substitution needed
 /// downstream.
+/// Backends whose spawn rides the generic `agent-sandbox run` argv (and thus
+/// must also receive the `-P <provider>` passthrough in `spawn_agent_custom`).
+fn backend_rides_agent_sandbox(backend: &SandboxBackend) -> bool {
+    matches!(
+        backend,
+        SandboxBackend::AgentSandbox | SandboxBackend::Seatbelt
+    )
+}
+
 fn synthesize_sandboxed_command(
     agent_type: &str,
     backend: &SandboxBackend,
@@ -227,11 +236,14 @@ fn synthesize_sandboxed_command(
 ) -> Option<Vec<String>> {
     let base = agent_type_base_name(agent_type);
 
-    // AgentSandbox (bwrap) doesn't need per-agent inner-command knowledge —
-    // agent-sandbox resolves the inner binary and args itself via --agent.
-    // Handle it generically so any agent type (including future ones) gets
-    // --sandbox-level passed through correctly.
-    if matches!(backend, SandboxBackend::AgentSandbox) {
+    // AgentSandbox (bwrap) and Seatbelt don't need per-agent inner-command
+    // knowledge — agent-sandbox resolves the inner binary and args itself via
+    // --agent, and implements both backends. Handle them generically so any
+    // agent type (including future ones) gets --sandbox-level passed through
+    // correctly. Seatbelt pins `--backend seatbelt` explicitly so the wizard's
+    // choice survives whatever the user's [sandbox].backend config says (#237);
+    // bwrap stays unpinned so the script's `auto` keeps deciding.
+    if backend_rides_agent_sandbox(backend) {
         let mut cmd = vec![
             "agent-sandbox".to_string(),
             "run".to_string(),
@@ -242,6 +254,10 @@ fn synthesize_sandboxed_command(
             "--agent".to_string(),
             base.to_string(),
         ];
+        if matches!(backend, SandboxBackend::Seatbelt) {
+            cmd.push("--backend".to_string());
+            cmd.push("seatbelt".to_string());
+        }
         if level != "normal" {
             cmd.push("--sandbox-level".to_string());
             cmd.push(level.to_string());
@@ -357,11 +373,8 @@ fn synthesize_sandboxed_command(
             }
         }
         SandboxBackend::None => inner_command,
-        // AgentSandbox handled by the early return above.
-        SandboxBackend::AgentSandbox => unreachable!(),
-        // Seatbelt uses the same inner command as None — sandbox-exec
-        // profiles are applied externally via launch configuration.
-        SandboxBackend::Seatbelt => inner_command,
+        // AgentSandbox and Seatbelt handled by the early return above.
+        SandboxBackend::AgentSandbox | SandboxBackend::Seatbelt => unreachable!(),
     })
 }
 
@@ -530,11 +543,12 @@ fn spawn_inner(
                 provider.as_deref(),
             ));
         }
-        // For agent-sandbox (bwrap) agents, pass the provider via -P flag so
-        // agent-sandbox can resolve the provider's env vars internally. Nono
-        // agents already have `--profile` (nono's own concept, unrelated to
-        // provider) baked into their command template.
-        if type_config.sandboxed && *effective_backend == SandboxBackend::AgentSandbox {
+        // For agents riding the agent-sandbox argv (bwrap and seatbelt), pass
+        // the provider via -P flag so agent-sandbox can resolve the provider's
+        // env vars internally. Nono agents already have `--profile` (nono's
+        // own concept, unrelated to provider) baked into their command
+        // template.
+        if type_config.sandboxed && backend_rides_agent_sandbox(effective_backend) {
             if let Some(ref p) = provider {
                 if !p.is_empty() {
                     expanded.push("-P".to_string());
@@ -772,6 +786,93 @@ pub fn reconcile_panes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- #237: Seatbelt spawns must ride the agent-sandbox argv ---
+
+    #[test]
+    fn seatbelt_normal_routes_through_agent_sandbox_with_backend_pinned() {
+        let argv = synthesize_sandboxed_command(
+            "claude",
+            &SandboxBackend::Seatbelt,
+            "normal",
+            "agent-3",
+            "/tmp/proj",
+            None,
+        )
+        .expect("seatbelt must synthesize a sandboxed command");
+        assert_eq!(
+            argv,
+            vec![
+                "agent-sandbox",
+                "run",
+                "-p",
+                "/tmp/proj",
+                "--id",
+                "agent-3",
+                "--agent",
+                "claude",
+                "--backend",
+                "seatbelt",
+            ]
+        );
+    }
+
+    #[test]
+    fn seatbelt_paranoid_appends_sandbox_level() {
+        let argv = synthesize_sandboxed_command(
+            "codex",
+            &SandboxBackend::Seatbelt,
+            "paranoid",
+            "agent-7",
+            "/tmp/proj",
+            None,
+        )
+        .expect("seatbelt must synthesize a sandboxed command");
+        assert_eq!(
+            argv,
+            vec![
+                "agent-sandbox",
+                "run",
+                "-p",
+                "/tmp/proj",
+                "--id",
+                "agent-7",
+                "--agent",
+                "codex",
+                "--backend",
+                "seatbelt",
+                "--sandbox-level",
+                "paranoid",
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_sandbox_arm_keeps_backend_unpinned() {
+        // bwrap spawns stay flag-free so the script's `auto` (and the user's
+        // [sandbox].backend) keeps deciding — only Seatbelt pins explicitly.
+        let argv = synthesize_sandboxed_command(
+            "claude",
+            &SandboxBackend::AgentSandbox,
+            "normal",
+            "agent-1",
+            "/tmp/proj",
+            None,
+        )
+        .expect("agent-sandbox must synthesize a sandboxed command");
+        assert!(!argv.contains(&"--backend".to_string()));
+        assert_eq!(argv[0], "agent-sandbox");
+    }
+
+    #[test]
+    fn provider_gate_covers_both_agent_sandbox_argv_backends() {
+        // The -P provider passthrough must reach every backend that rides the
+        // agent-sandbox argv (gate at spawn_agent_custom), i.e. bwrap AND seatbelt.
+        assert!(backend_rides_agent_sandbox(&SandboxBackend::AgentSandbox));
+        assert!(backend_rides_agent_sandbox(&SandboxBackend::Seatbelt));
+        assert!(!backend_rides_agent_sandbox(&SandboxBackend::Nono));
+        assert!(!backend_rides_agent_sandbox(&SandboxBackend::None));
+    }
 
     #[test]
     fn passthrough_self_ref_dollar_form() {
