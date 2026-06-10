@@ -28,9 +28,9 @@ run() {  # run "<label>" <cmd...>
 
   run "[1/5] probe"                  python3 "${HERE}/landlock_probe.py"
   run "[2/5] demo (fs+net+inherit)"  python3 "${HERE}/demo.py"
-  # Bind the spike dir to a path outside /tmp so the fresh --tmpfs /tmp does
-  # not shadow it when the repo itself is cloned under /tmp.
-  run "[3/5] Q4: demo under bwrap"   bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc --ro-bind "${HERE}" /opt/landlock-spike -- python3 /opt/landlock-spike/demo.py
+  # Re-bind the spike dir INTO the fresh tmpfs (writable, so bwrap can make the
+  # mountpoint) so --tmpfs /tmp does not shadow it when the repo is under /tmp.
+  run "[3/5] Q4: demo under bwrap"   bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc --ro-bind "${HERE}" /tmp/spike -- python3 /tmp/spike/demo.py
   run "[4/5] paranoid gate (native ABI)" bash "${HERE}/paranoid_gate.sh"
   echo "--- [5/5] paranoid gate (FORCE_ABI=4 — exercises the v4 codepath)"
   LINCE_LANDLOCK_FORCE_ABI=4 bash "${HERE}/paranoid_gate.sh"
