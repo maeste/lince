@@ -59,6 +59,9 @@ Enforceable by agent-sandbox on this kernel:
 ### `demo.py`
 
 ```
+Landlock demo — kernel 6.19.14-300.fc44.x86_64
+parent: project dir /tmp/landlock_demo_05j71czg
+parent: allowed port 35427, denied port 57021 (both have live listeners)
 child: Landlock ABI 7, restricting self...
 child: ruleset built + applied in 67.2 us (9 path rules, 1 net rules)
   [PASS] fs: write inside allowed dir succeeds — /tmp/landlock_demo_05j71czg/inside.txt
@@ -69,12 +72,12 @@ child: ruleset built + applied in 67.2 us (9 path rules, 1 net rules)
   [PASS] net: bind blocked (no bind rule added) — errno=EACCES
   [PASS] inherit: subprocess (fork+execve) still denied outside write — rc=1
   [PASS] inherit: subprocess can still write inside allowed dir — rc=0
-Landlock demo — kernel 6.19.14-300.fc44.x86_64
-parent: project dir /tmp/landlock_demo_05j71czg
-parent: allowed port 35427, denied port 57021 (both have live listeners)
 
 RESULT: ALL CHECKS PASSED
 ```
+
+(The capture pipe block-buffered the parent's stdout, so the raw capture showed the
+parent's header lines after the child's; reordered here to actual execution order.)
 
 Setup-time over 5 consecutive runs: 60.1 / 65.5 / 66.0 / 71.6 / 74.1 µs
 (10 `landlock_add_rule` calls + `landlock_restrict_self`).
@@ -88,6 +91,9 @@ tmpfs `/tmp`** — the case that breaks the host-side `preexec_fn` variant:
 ```
 $ bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc -- \
     python3 sandbox/spikes/landlock/demo.py
+Landlock demo — kernel 6.19.14-300.fc44.x86_64
+parent: project dir /tmp/landlock_demo_92vjy2ai
+parent: allowed port 38299, denied port 39993 (both have live listeners)
 child: Landlock ABI 7, restricting self...
 child: ruleset built + applied in 59.6 us (9 path rules, 1 net rules)
   [PASS] fs: write inside allowed dir succeeds — /tmp/landlock_demo_92vjy2ai/inside.txt
@@ -98,9 +104,6 @@ child: ruleset built + applied in 59.6 us (9 path rules, 1 net rules)
   [PASS] net: bind blocked (no bind rule added) — errno=EACCES
   [PASS] inherit: subprocess (fork+execve) still denied outside write — rc=1
   [PASS] inherit: subprocess can still write inside allowed dir — rc=0
-Landlock demo — kernel 6.19.14-300.fc44.x86_64
-parent: project dir /tmp/landlock_demo_92vjy2ai
-parent: allowed port 38299, denied port 39993 (both have live listeners)
 
 RESULT: ALL CHECKS PASSED
 ```

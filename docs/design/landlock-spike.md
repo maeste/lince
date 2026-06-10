@@ -204,7 +204,7 @@ at `landlock_add_rule` time*, not to a path string. Consequences:
 
 ## Q5 — Cost
 
-**Runtime (measured, this box, ABI v7, 10 path rules + 1 net rule):**
+**Runtime (measured, this box, ABI v7, 9 path rules + 1 net rule — 10 `landlock_add_rule` calls):**
 ruleset create + add rules + `restrict_self` = **60–75 µs** across runs
 (`60.1 / 65.5 / 66.0 / 71.6 / 74.1 µs` over 5 consecutive runs; the demo
 prints the measurement). One-time at spawn — invisible next to bwrap +

@@ -193,7 +193,7 @@ WASM_DST="$PLUGIN_DIR/lince-dashboard.wasm"
 
 if [ -f "$WASM_DST" ]; then
     echo -e "${YELLOW}  Existing plugin found, backing up...${NC}"
-    cp "$WASM_DST" "${WASM_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$WASM_DST" "${WASM_DST}.bak.$(date +%Y%m%d-%H%M%S)"
 fi
 
 cp "$WASM_SRC" "$WASM_DST"
@@ -267,7 +267,7 @@ if [ -f "$LINCE_ZELLIJ_CONFIG" ]; then
         echo "  Your current config will be backed up."
         echo ""
         if confirm "  Install LINCE keybindings?"; then
-            BACKUP="${ZELLIJ_CONFIG}.bak.$(date +%Y%m%d_%H%M%S)"
+            BACKUP="${ZELLIJ_CONFIG}.bak.$(date +%Y%m%d-%H%M%S)"
             cp "$ZELLIJ_CONFIG" "$BACKUP"
             echo -e "${GREEN}  ✓ Backup: $BACKUP${NC}"
             cp "$LINCE_ZELLIJ_CONFIG" "$ZELLIJ_CONFIG"
@@ -302,7 +302,7 @@ CONFIG_DST="$CONFIG_DIR/config.toml"
 mkdir -p "$CONFIG_DIR"
 
 if [ -f "$CONFIG_DST" ]; then
-    BACKUP="${CONFIG_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+    BACKUP="${CONFIG_DST}.bak.$(date +%Y%m%d-%H%M%S)"
     cp "$CONFIG_DST" "$BACKUP"
     echo -e "${YELLOW}  Existing config backed up → $(basename "$BACKUP")${NC}"
 fi
@@ -370,7 +370,7 @@ fi
 
 if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
     if [ -f "$AGENTS_DEFAULTS_DST" ]; then
-        AGENTS_BACKUP="${AGENTS_DEFAULTS_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+        AGENTS_BACKUP="${AGENTS_DEFAULTS_DST}.bak.$(date +%Y%m%d-%H%M%S)"
         cp "$AGENTS_DEFAULTS_DST" "$AGENTS_BACKUP"
         echo -e "${YELLOW}  Existing agent defaults backed up → $(basename "$AGENTS_BACKUP")${NC}"
     fi
