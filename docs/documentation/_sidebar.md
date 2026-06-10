@@ -1,5 +1,7 @@
 - **Getting Started**
   - [Overview](/)
+  - [Configuration Keys (generated)](configuration-keys.md)
+  - [Docs Inventory](docs-inventory.md)
 
 - **Sandbox (agent-sandbox)**
   - [CLI Reference](sandbox/cli-reference.md)
