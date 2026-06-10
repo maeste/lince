@@ -53,11 +53,15 @@ scratch_home_files = [".claude.json"]
 [env.extra]
 # Auto-pick the user's host Anthropic credential so the credential proxy
 # has something to inject without requiring `-P someprofile` or a manual
-# entry in the user's [env.extra]. Both forms are recognized — whichever
-# is set in the host env wins; the unset one expands to empty and is
-# silently dropped by the proxy rule collector.
+# entry in the user's [env.extra]. All three forms are recognized —
+# whichever is set in the host env wins; unset ones expand to empty and
+# are silently dropped by the proxy rule collector. On conflict an
+# Authorization/Bearer credential (ANTHROPIC_AUTH_TOKEN or
+# CLAUDE_CODE_OAUTH_TOKEN) takes precedence over ANTHROPIC_API_KEY;
+# ANTHROPIC_AUTH_TOKEN wins over CLAUDE_CODE_OAUTH_TOKEN.
 ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"
 ANTHROPIC_AUTH_TOKEN = "$ANTHROPIC_AUTH_TOKEN"
+CLAUDE_CODE_OAUTH_TOKEN = "$CLAUDE_CODE_OAUTH_TOKEN"
 
 [security]
 credential_proxy = true

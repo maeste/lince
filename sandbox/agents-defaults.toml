@@ -24,6 +24,7 @@
 #
 #     ANTHROPIC_API_KEY   -> api.anthropic.com        (x-api-key header)
 #     ANTHROPIC_AUTH_TOKEN-> api.anthropic.com        (Authorization: Bearer header)
+#     CLAUDE_CODE_OAUTH_TOKEN -> api.anthropic.com    (Authorization: Bearer header)
 #     OPENAI_API_KEY      -> api.openai.com           (Authorization: Bearer header)
 #     GOOGLE_API_KEY      -> googleapis.com            (x-goog-api-key header)
 #     GEMINI_API_KEY      -> googleapis.com            (x-goog-api-key header)

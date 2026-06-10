@@ -149,9 +149,18 @@ credential_proxy = true
 |---------|------------|--------|
 | `ANTHROPIC_API_KEY` | `api.anthropic.com` | `x-api-key` |
 | `ANTHROPIC_AUTH_TOKEN` | `api.anthropic.com` | `Authorization: Bearer` |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `api.anthropic.com` | `Authorization: Bearer` |
 | `OPENAI_API_KEY` | `api.openai.com` | `Authorization: Bearer` |
 | `GOOGLE_API_KEY` | `generativelanguage.googleapis.com` | `x-goog-api-key` |
 | `GEMINI_API_KEY` | `generativelanguage.googleapis.com` | `x-goog-api-key` |
+
+At most one rule is registered per domain. If two env vars target the same
+domain with different header types, the `Authorization: Bearer` credential
+wins over the non-Authorization one (e.g. `ANTHROPIC_AUTH_TOKEN` or
+`CLAUDE_CODE_OAUTH_TOKEN` beats `ANTHROPIC_API_KEY`); for same-header-type
+conflicts the first variable in the table above wins. Either way a warning
+naming both variables and the winner is printed to stderr, and **all**
+matched variables are stripped from the sandbox environment.
 
 ### SSRF blocking
 
