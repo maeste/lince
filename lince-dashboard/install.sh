@@ -337,6 +337,11 @@ AGENTS_TEMPLATE_DST="$CONFIG_DIR/agents-template.toml"
 USER_CONFIG="$CONFIG_DIR/config.toml"
 
 if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
+    if [ -f "$AGENTS_DEFAULTS_DST" ]; then
+        AGENTS_BACKUP="${AGENTS_DEFAULTS_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+        cp "$AGENTS_DEFAULTS_DST" "$AGENTS_BACKUP"
+        echo -e "${YELLOW}  Existing agent defaults backed up → $(basename "$AGENTS_BACKUP")${NC}"
+    fi
     cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
     echo -e "${GREEN}  ✓ Installed: $AGENTS_DEFAULTS_DST${NC}"
 else

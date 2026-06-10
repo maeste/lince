@@ -9,6 +9,20 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Pick a backup path that never clobbers an earlier backup, even when two
+# updates run within the same second (timestamp collision → -1, -2, ... suffix).
+unique_backup_path() {
+    local base candidate n
+    base="$1.bak.$(date +%Y%m%d-%H%M%S)"
+    candidate="$base"
+    n=1
+    while [ -e "$candidate" ]; do
+        candidate="$base-$n"
+        n=$((n + 1))
+    done
+    printf '%s' "$candidate"
+}
+
 echo -e "${BLUE}================================================${NC}"
 echo -e "${BLUE}   LINCE Dashboard — Update${NC}"
 echo -e "${BLUE}================================================${NC}"
@@ -55,8 +69,29 @@ mkdir -p "$CONFIG_DIR"
 if [ ! -f "$CONFIG_DST" ]; then
     cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
     echo -e "${GREEN}  ✓ Config installed${NC}"
+elif [ "${LINCE_RESET_CONFIG:-0}" = "1" ]; then
+    CONFIG_BAK="$(unique_backup_path "$CONFIG_DST")"
+    cp "$CONFIG_DST" "$CONFIG_BAK"
+    cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
+    echo -e "${YELLOW}  LINCE_RESET_CONFIG=1 — config reset to shipped defaults${NC}"
+    echo -e "${YELLOW}  Previous config backed up → $(basename "$CONFIG_BAK")${NC}"
 else
-    echo -e "${GREEN}  ✓ Existing config preserved${NC}"
+    # Merge new shipped defaults into the user config (user values win,
+    # new upstream keys added, orphans preserved). Backs up as .bak.<ts>.
+    MERGER="$SCRIPT_DIR/../scripts/config_merge.py"
+    set +e
+    python3 "$MERGER" "$CONFIG_DST" "$SCRIPT_DIR/config.toml"
+    MERGE_RC=$?
+    set -e
+    if [ "$MERGE_RC" -eq 0 ]; then
+        echo -e "${GREEN}  ✓ Config merged (user values preserved, new defaults added)${NC}"
+    elif [ "$MERGE_RC" -eq 3 ]; then
+        echo -e "${YELLOW}  ⚠ tomlkit not installed — existing config preserved unmerged.${NC}"
+        echo -e "${YELLOW}    Install it (pip install --user tomlkit) and re-run update.sh,${NC}"
+        echo -e "${YELLOW}    or diff against the sidecar: diff -u $CONFIG_DST.dist $CONFIG_DST${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ Config merge failed (exit $MERGE_RC) — existing config preserved.${NC}"
+    fi
 fi
 # Always refresh the shipped-defaults sidecar so users can diff against new
 # upstream keys without losing their customizations:
@@ -84,24 +119,62 @@ echo -e "${GREEN}[7/8] Updating agent defaults...${NC}"
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
 
-if [ -f "$AGENTS_DEFAULTS_SRC" ] && [ ! -f "$AGENTS_DEFAULTS_DST" ]; then
-    cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
-    echo -e "${GREEN}  ✓ Agent defaults installed${NC}"
-elif [ -f "$AGENTS_DEFAULTS_DST" ]; then
-    echo -e "${GREEN}  ✓ Existing agent defaults preserved${NC}"
-fi
-# Always refresh the shipped-defaults sidecar (mirrors the config.toml.dist
-# pattern above) so new upstream agent defaults stay discoverable:
-#   diff -u "$AGENTS_DEFAULTS_DST.dist" "$AGENTS_DEFAULTS_DST"
 if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
-    cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST.dist"
-    echo -e "${GREEN}  ✓ Upstream defaults available at agents-defaults.toml.dist${NC}"
+    # agents-defaults.toml is fully shipped data (#199) — always overwritten.
+    # Fail-safe migration: if the old installed file differs from the shipped
+    # one IN ANY WAY (custom [agents.*] keys, edited values of shipped entries,
+    # quickstart-filtered subsets, even a malformed hand-edited file that no
+    # parser can read), back it up before the unconditional overwrite below.
+    # After the first overwrite DST == SRC, so later updates skip the backup.
+    if [ -f "$AGENTS_DEFAULTS_DST" ] && ! cmp -s "$AGENTS_DEFAULTS_DST" "$AGENTS_DEFAULTS_SRC"; then
+        AGENTS_BAK="$(unique_backup_path "$AGENTS_DEFAULTS_DST")"
+        cp "$AGENTS_DEFAULTS_DST" "$AGENTS_BAK"
+        # Best-effort detection of non-shipped agent keys for a targeted
+        # warning; a parse failure just means we fall back to the generic one.
+        EXTRA_KEYS="$(python3 - "$AGENTS_DEFAULTS_DST" "$AGENTS_DEFAULTS_SRC" << 'PYEOF'
+import sys
+import tomllib
+
+
+def agent_keys(path):
+    try:
+        with open(path, "rb") as f:
+            return set(tomllib.load(f).get("agents", {}))
+    except Exception:
+        return set()
+
+
+print(" ".join(sorted(agent_keys(sys.argv[1]) - agent_keys(sys.argv[2]))))
+PYEOF
+)"
+        if [ -n "$EXTRA_KEYS" ]; then
+            echo -e "${YELLOW}  ⚠ Custom agents detected in agents-defaults.toml: $EXTRA_KEYS${NC}"
+            echo -e "${YELLOW}    This file is shipped data and is now always overwritten on update.${NC}"
+            echo -e "${YELLOW}    Backup saved → $(basename "$AGENTS_BAK")${NC}"
+            echo -e "${YELLOW}    Move those [agents.<key>] blocks into $CONFIG_DIR/config.toml${NC}"
+            echo -e "${YELLOW}    (each entry must be a COMPLETE definition — entries fully replace, no per-field merge).${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ Your agents-defaults.toml differed from the shipped file and is now overwritten.${NC}"
+            echo -e "${YELLOW}    Backup saved → $(basename "$AGENTS_BAK")${NC}"
+            echo -e "${YELLOW}    If you had edited values of shipped entries, re-apply them as complete${NC}"
+            echo -e "${YELLOW}    [agents.<key>] blocks in $CONFIG_DIR/config.toml (entries fully replace).${NC}"
+        fi
+    fi
+    cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
+    echo -e "${GREEN}  ✓ Agent defaults updated (shipped file, always overwritten)${NC}"
+fi
+# The .dist sidecar is redundant now that the installed file always equals
+# the shipped one — drop a stale sidecar if present.
+if [ -f "$AGENTS_DEFAULTS_DST.dist" ]; then
+    rm -f "$AGENTS_DEFAULTS_DST.dist"
+    echo -e "${GREEN}  ✓ Removed stale agents-defaults.toml.dist sidecar${NC}"
 fi
 echo ""
 
-# NOTE: new upstream keys are not auto-merged into preserved user files — by
-# design, to avoid clobbering customizations. The .dist sidecars surface the
-# diff. A tomlkit-based key-merge utility is tracked as follow-up in #108.
+# NOTE: config.toml is user-owned — new upstream keys are merged into it via
+# scripts/config_merge.py (user values win; .bak + .dist sidecar kept; #108).
+# agents-defaults.toml is shipped data and always overwritten (#199): custom
+# agents belong in config.toml [agents.<key>] blocks.
 
 # ── Lince-add-supported-agent skill ──────────────────────────────────
 echo -e "${GREEN}[8/8] Updating lince-add-supported-agent skill...${NC}"

@@ -2,10 +2,13 @@
 
 Real-world configurations from the lince ecosystem, organised by tier.
 
-All examples use the `[agents.<key>]` nested form — that's how both the
-sandbox config and the dashboard config (`agents-defaults.toml`) lay out
-agent entries. Verify against `lince-dashboard/agents-defaults.toml` in the
-repo before copying.
+All examples use the `[agents.<key>]` nested form — that's how the sandbox
+config, the shipped dashboard defaults (`agents-defaults.toml`) and the user
+dashboard config (`config.toml` `[agents.*]`) all lay out agent entries.
+Verify against `lince-dashboard/agents-defaults.toml` in the repo before
+copying. User-side entries always go into
+`~/.config/lince-dashboard/config.toml` — never into the installed
+`agents-defaults.toml`, which is overwritten on update.
 
 ---
 
@@ -191,7 +194,7 @@ bwrap_conflict = false
 disable_inner_sandbox_args = []
 ```
 
-### `~/.config/lince-dashboard/agents-defaults.toml`
+### `~/.config/lince-dashboard/config.toml`
 
 ```toml
 [agents.kiro]
@@ -220,7 +223,7 @@ Promote to Tier A later by writing
 
 ## Sandbox vs Dashboard config — quick contrast
 
-| Aspect | Sandbox (`~/.agent-sandbox/config.toml`) | Dashboard (`~/.config/lince-dashboard/agents-defaults.toml`) |
+| Aspect | Sandbox (`~/.agent-sandbox/config.toml`) | Dashboard (`~/.config/lince-dashboard/config.toml` `[agents.*]`) |
 |--------|------------------------------------------|--------------------------------------------------------------|
 | Section header | `[agents.<key>]` | `[agents.<key>]` (same form) |
 | `command` type | string (binary name) | list[string] (full launch template) |

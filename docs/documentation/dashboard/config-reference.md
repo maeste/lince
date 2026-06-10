@@ -9,7 +9,7 @@ The dashboard reads from two configuration files:
 | File | Location | Purpose |
 |------|----------|---------|
 | `config.toml` | `~/.config/lince-dashboard/config.toml` | Dashboard behavior and user overrides |
-| `agents-defaults.toml` | `~/.agent-sandbox/agents-defaults.toml` | Shipped agent type presets |
+| `agents-defaults.toml` | `~/.config/lince-dashboard/agents-defaults.toml` | Shipped agent type presets |
 
 Both files are TOML format. User entries in `config.toml` take precedence over defaults in `agents-defaults.toml` for the same agent key. See [Config Merge Order](#config-merge-order) for details.
 
@@ -104,9 +104,11 @@ home_ro_dirs = ["~/.config/my-agent/"]
 
 ## agents-defaults.toml
 
-**File**: `~/.agent-sandbox/agents-defaults.toml`
+**File**: `~/.config/lince-dashboard/agents-defaults.toml`
 
 Installed and updated by `install.sh` / `update.sh`. Contains preset agent type definitions. This file is overwritten on updates -- put your customizations in `config.toml` instead.
+
+> **Migration note**: older LINCE versions preserved this file across updates, so some users defined custom agents directly in it. Custom `[agents.*]` blocks must now move to `config.toml`. If the old installed file differs from the shipped one in any way (custom agents, edited values, even a malformed file), `update.sh` backs it up as `agents-defaults.toml.bak.<timestamp>` before overwriting, and prints a warning listing any non-shipped agent keys to move. Known side effect: older `quickstart.sh` installs wrote a *filtered* `agents-defaults.toml` containing only the agents selected during setup; after this update the wizard's agent picker again lists **all** shipped agent types. This is an accepted regression of the always-overwrite policy — there is currently no supported way to hide shipped entries.
 
 Each agent type is defined as a `[agents.<name>]` TOML table.
 
@@ -215,6 +217,8 @@ config.toml [agents.*]        <-- user overrides + custom agents (never overwrit
 Merge rules:
 
 - If `config.toml` defines `[agents.claude]`, it **fully replaces** the `[agents.claude]` entry from `agents-defaults.toml`. There is no per-field merge; the entire agent definition is replaced.
+- Because entries fully replace, every `[agents.*]` entry in `config.toml` must be a **complete definition** -- the 7 required fields (`command`, `pane_title_pattern`, `status_pipe_name`, `display_name`, `short_label`, `color`, `sandboxed`) must all be present.
+- **Known sharp edge**: if any single `[agents.*]` entry in `config.toml` is malformed or missing a required field, the dashboard silently drops **all** user agent entries and falls back to the shipped defaults only. A more tolerant per-entry loader is deferred to the agent-registry work.
 - If `config.toml` defines `[agents.my-custom]` (a key not in defaults), it is added as a new agent type.
 - Keys only in `agents-defaults.toml` are preserved as-is.
 

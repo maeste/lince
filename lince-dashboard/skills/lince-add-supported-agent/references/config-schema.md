@@ -35,11 +35,17 @@ disable_inner_sandbox_args = ["--no-sandbox"]
 
 ---
 
-## 2. Dashboard config — `~/.config/lince-dashboard/agents-defaults.toml`
+## 2. Dashboard config — `~/.config/lince-dashboard/config.toml` `[agents.<key>]`
 
-User-side overrides file. Same `[agents.<key>]` section form. The dashboard
-merges this with the repo's `lince-dashboard/agents-defaults.toml`; user
-entries win on key conflicts.
+Custom agents and overrides go into the user's dashboard `config.toml`,
+using the same `[agents.<key>]` section form as the shipped defaults. The
+dashboard merges these entries over the installed
+`~/.config/lince-dashboard/agents-defaults.toml` (shipped data, always
+overwritten on update — never edit it); a user entry **fully replaces** the
+shipped entry for the same key (no per-field merge), so each entry must be a
+COMPLETE definition with all 7 required fields below. Warning: a single
+malformed/incomplete `[agents.*]` entry makes the dashboard silently drop
+ALL user agent entries.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -47,10 +53,10 @@ entries win on key conflicts.
 | `display_name` | string | yes | — | Name shown in dashboard UI |
 | `short_label` | string | yes | — | 3-character column label (e.g. `"CDX"`) |
 | `color` | string | yes | — | ANSI colour name (see below) |
-| `sandboxed` | bool | no | `true` | Run inside the outer bwrap sandbox |
+| `sandboxed` | bool | yes | — | Run inside the outer bwrap sandbox |
 | `has_native_hooks` | bool | no | `false` | `true` ⇒ Tier A; `false` ⇒ Tier B |
 | `pane_title_pattern` | string | yes | — | Substring matched against Zellij pane titles |
-| `status_pipe_name` | string | no | `"lince-status"` | Zellij pipe to read events from |
+| `status_pipe_name` | string | yes | — | Zellij pipe to read events from (use `"lince-status"` unless reserved) |
 | `providers` | list[string] | no | `[]` | `["__discover__"]` for auto, or explicit list |
 | `sandbox_level` | string | no | `"normal"` | `paranoid` \| `normal` \| `permissive` (or custom) |
 | `env_vars` | dict | no | `{}` | Env vars passed to the agent process (note: name is `env_vars`, NOT `env`) |
@@ -198,6 +204,6 @@ command = ["env", "LINCE_AGENT_ID={agent_id}", "<binary>"]
 | File | Purpose | Section form |
 |------|---------|--------------|
 | `~/.agent-sandbox/config.toml` | Sandbox config + per-user agent overrides | `[agents.<key>]` |
-| `~/.config/lince-dashboard/agents-defaults.toml` | User-side dashboard agent overrides | `[agents.<key>]` |
-| `~/.config/lince-dashboard/config.toml` | Dashboard UI settings | `[dashboard]` etc. |
+| `~/.config/lince-dashboard/agents-defaults.toml` | Installed shipped defaults — always overwritten on update, **do not edit** | `[agents.<key>]` |
+| `~/.config/lince-dashboard/config.toml` | Dashboard UI settings + custom agent definitions | `[dashboard]`, `[agents.<key>]` |
 | `lince-dashboard/agents-defaults.toml` (repo) | Shipped defaults — **do not edit from this skill** | `[agents.<key>]` |
