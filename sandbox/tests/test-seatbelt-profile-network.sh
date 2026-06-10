@@ -2,8 +2,15 @@
 # test-seatbelt-profile-network.sh — Seatbelt paranoid network containment (#196)
 #
 # Enforced rules:
-#   1. generate_seatbelt_profile(paranoid) emits (deny network*) + loopback-only
-#      allows and does NOT emit the broad (allow network*).
+#   1. The loopback-only network section is keyed on the merged
+#      [security] unshare_net flag (NOT the level name) — the exact same
+#      predicate as the run-path guard and the proxy allowlist. With
+#      unshare_net=true the profile emits (deny network*) + loopback-only
+#      allows and no broad (allow network*), for the "paranoid" level AND
+#      for derived/custom level names (extends = "paranoid"). With
+#      unshare_net=false the profile keeps (allow network*) even when the
+#      level is literally named "paranoid" (guard stays silent → no silent
+#      zero-egress launch).
 #   2. Base (normal) and permissive profiles keep (allow network*) and contain
 #      no (deny network*).
 #   3. The seatbelt run path computes enforce_allowlist with the exact same
@@ -45,21 +52,49 @@ m = module_from_spec(spec)
 spec.loader.exec_module(m)
 
 # --- Profile generation -------------------------------------------------
-para, _ = m.generate_seatbelt_profile("claude", {}, {}, sandbox_level="paranoid")
+# Network containment must be keyed on the merged [security] unshare_net
+# flag (shipped paranoid fragments set it; cmd_run passes the level-merged
+# config), NOT on the level name.
+UN = {"security": {"unshare_net": True}}
+
+para, _ = m.generate_seatbelt_profile("claude", {}, UN, sandbox_level="paranoid")
+# Derived level (extends = "paranoid"): inherits unshare_net=true but has a
+# different level name — must get the same loopback-only containment.
+derived, _ = m.generate_seatbelt_profile("claude", {}, UN, sandbox_level="paranoid-with-ssh")
 base, _ = m.generate_seatbelt_profile("claude", {}, {})
 perm, _ = m.generate_seatbelt_profile("claude", {}, {}, sandbox_level="permissive")
+# Level named "paranoid" but unshare_net=false: profile must NOT be
+# loopback-only (matches the guard, which would stay silent → otherwise a
+# silent zero-egress launch).
+para_no_un, _ = m.generate_seatbelt_profile(
+    "claude", {}, {"security": {"unshare_net": False}}, sandbox_level="paranoid"
+)
 
-assert "(deny network*)" in para, "paranoid profile missing (deny network*)"
-assert "(allow network*)" not in para, "paranoid profile must not contain broad (allow network*)"
-assert '(allow network-outbound (remote ip "localhost:*"))' in para, "paranoid missing loopback outbound allow"
-assert '(allow network-inbound (local ip "localhost:*"))' in para, "paranoid missing loopback inbound allow"
-assert '(allow network-bind (local ip "localhost:*"))' in para, "paranoid missing loopback bind allow"
-print("ok: paranoid profile is loopback-only (deny network* + loopback allows)")
+for name, text in (("paranoid", para), ("derived paranoid-with-ssh", derived)):
+    assert "(deny network*)" in text, f"{name} profile missing (deny network*)"
+    assert "(allow network*)" not in text, f"{name} profile must not contain broad (allow network*)"
+    assert '(allow network-outbound (remote ip "localhost:*"))' in text, f"{name} missing loopback outbound allow"
+    assert '(allow network-inbound (local ip "localhost:*"))' in text, f"{name} missing loopback inbound allow"
+    assert '(allow network-bind (local ip "localhost:*"))' in text, f"{name} missing loopback bind allow"
+print("ok: unshare_net=true profiles are loopback-only (paranoid AND derived level name)")
 
-for name, text in (("base", base), ("permissive", perm)):
+for name, text in (("base", base), ("permissive", perm), ("paranoid+unshare_net=false", para_no_un)):
     assert "(allow network*)" in text, f"{name} profile missing (allow network*)"
     assert "(deny network*)" not in text, f"{name} profile must not contain (deny network*)"
-print("ok: base and permissive profiles keep broad (allow network*)")
+print("ok: base, permissive, and unshare_net=false profiles keep broad (allow network*)")
+
+# The generated profile must disclose the shared-host-loopback residual risk.
+assert "RESIDUAL RISK" in para, "loopback-only profile must document the shared host loopback residual risk"
+print("ok: loopback-only profile documents the 127.0.0.1 residual risk")
+
+# Runtime warnings must use the same predicate and disclose the residual risk.
+w = m.check_seatbelt_level_warnings("seatbelt", "paranoid-with-ssh", UN)
+assert any("RESIDUAL RISK" in x for x in w), "derived unshare_net level must warn about shared loopback"
+w = m.check_seatbelt_level_warnings("seatbelt", "paranoid", {"security": {"unshare_net": False}})
+assert any("unshare_net = false" in x for x in w), "paranoid without unshare_net must warn that network is NOT contained"
+assert m.check_seatbelt_level_warnings("seatbelt", None, {}) == []
+assert m.check_seatbelt_level_warnings("agent-sandbox", "paranoid", UN) == []
+print("ok: check_seatbelt_level_warnings keyed on unshare_net with residual-risk disclosure")
 
 # --- CredentialProxy enforce_allowlist behavior -------------------------
 # Keep the proxy PID file out of ~/.agent-sandbox during the test.

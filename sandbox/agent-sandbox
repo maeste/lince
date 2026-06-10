@@ -1985,13 +1985,22 @@ def check_seatbelt_level_warnings(
 ) -> list[str]:
     """Return warning strings when a Seatbelt backend cannot fully enforce a level.
 
-    Currently only *paranoid* produces warnings, because Seatbelt lacks the
-    kernel-level PID namespace isolation that bwrap provides. Network at
-    paranoid is loopback-only (Seatbelt ``(deny network*)`` + loopback
-    allows) with egress only via the allowlist-enforcing credential proxy —
-    parity with bwrap ``--unshare-net``.
+    *config* must be the level-merged config. The network warning is keyed
+    on the merged ``[security] unshare_net`` flag — the same predicate that
+    drives the generated profile, the run-path guard, and the proxy
+    ``enforce_allowlist`` — so derived levels (``extends = "paranoid"``)
+    and custom fragments are reported accurately. When ``unshare_net`` is
+    true the profile is loopback-only (Seatbelt ``(deny network*)`` +
+    loopback allows) with egress only via the allowlist-enforcing
+    credential proxy. Seatbelt has no network namespace, so that loopback
+    is the host's shared loopback (residual risk reported below), and no
+    PID namespace either.
     """
-    if backend != "seatbelt" or sandbox_level != "paranoid":
+    if backend != "seatbelt":
+        return []
+
+    unshare_net = bool(config.get("security", {}).get("unshare_net", False))
+    if sandbox_level != "paranoid" and not unshare_net:
         return []
 
     warnings: list[str] = []
@@ -2001,12 +2010,26 @@ def check_seatbelt_level_warnings(
         "The agent will be able to see and signal host processes."
     )
 
-    warnings.append(
-        "Seatbelt paranoid denies all non-loopback network: the profile is "
-        "loopback-only and egress is possible only through the credential "
-        "proxy on 127.0.0.1, which enforces the domain allowlist. Remaining "
-        "gap vs bwrap paranoid is the missing PID namespace."
-    )
+    if unshare_net:
+        warnings.append(
+            "Seatbelt unshare_net denies all non-loopback network: the "
+            "profile is loopback-only and egress is possible only through "
+            "the credential proxy on 127.0.0.1, which enforces the domain "
+            "allowlist. RESIDUAL RISK: Seatbelt has no network namespace, "
+            "so this is the HOST's shared loopback — the agent can reach "
+            "ANY service listening on 127.0.0.1 (other lince agents' "
+            "credential proxies, local databases, dev servers, Docker TCP "
+            "APIs, ...), not only its own proxy. bwrap paranoid gives the "
+            "sandbox a private loopback instead. Remaining gaps vs bwrap "
+            "paranoid: shared host loopback and missing PID namespace."
+        )
+    else:
+        warnings.append(
+            "This paranoid-level config resolved with [security] "
+            "unshare_net = false: the Seatbelt profile keeps FULL network "
+            "access (no loopback-only containment). Set unshare_net = true "
+            "in the level fragment to contain the network."
+        )
 
     return warnings
 
@@ -2026,14 +2049,23 @@ def generate_seatbelt_profile(
       - ``"normal"`` / ``None``: baseline profile (default).
       - ``"permissive"``: baseline + extra ``(allow file-read* ...)`` from the
         permissive config fragment (e.g. ``~/.config/gh``, ``~/.cache``).
-      - ``"paranoid"``: loopback-only network (``(deny network*)`` plus
-        loopback allows) so all egress goes through the host-side credential
-        proxy on 127.0.0.1, which enforces the domain allowlist. Also adds an
-        explanatory comment block documenting the remaining Seatbelt
-        limitations vs the bwrap backend (no PID namespace).
+      - ``"paranoid"``: adds an explanatory comment block documenting the
+        remaining Seatbelt limitations vs the bwrap backend (no PID
+        namespace).
+
+    Network containment is keyed on the merged ``[security] unshare_net``
+    flag in *config* — NOT on the level name — exactly like the bwrap
+    backend, the run-path guard, and the proxy ``enforce_allowlist``.
+    Callers must pass the level-merged config (cmd_run does; seatbelt-sync
+    merges the level fragment per variant). The shipped paranoid fragments
+    set ``unshare_net = true``, and levels that ``extends`` them inherit
+    it. When true, the profile is loopback-only (``(deny network*)`` plus
+    loopback allows) so all egress goes through the host-side credential
+    proxy on 127.0.0.1, which enforces the domain allowlist.
     """
     warnings: list[str] = []
     sandbox_conf = config.get("sandbox", {})
+    unshare_net = bool(config.get("security", {}).get("unshare_net", False))
     home = Path.home()
     lines: list[str] = []
 
@@ -2141,10 +2173,18 @@ def generate_seatbelt_profile(
     lines.append("")
 
     # --- Network ---
+    # Keyed on the merged [security] unshare_net flag (NOT the level name)
+    # so derived levels (`extends = "paranoid"`) and custom fragments get
+    # the exact same containment the guard and proxy allowlist assume.
     lines.append("; Network")
-    if sandbox_level == "paranoid":
-        lines.append("; Paranoid: loopback only — all egress must go through the")
+    if unshare_net:
+        lines.append("; unshare_net: loopback only — all egress must go through the")
         lines.append("; credential proxy on 127.0.0.1 (which enforces the domain allowlist).")
+        lines.append("; RESIDUAL RISK: Seatbelt has no network namespace, so this is the")
+        lines.append("; HOST's shared loopback — the agent can reach ANY service listening")
+        lines.append("; on 127.0.0.1 (other lince agents' credential proxies, local")
+        lines.append("; databases, dev servers, Docker TCP APIs, ...), not only its own")
+        lines.append("; proxy port. bwrap paranoid gives the sandbox a PRIVATE loopback.")
         lines.append("(deny network*)")
         lines.append('(allow network-outbound (remote ip "localhost:*"))')
         lines.append('(allow network-inbound (local ip "localhost:*"))')
@@ -2191,10 +2231,17 @@ def generate_seatbelt_profile(
         lines.append("; === PARANOID LEVEL (Seatbelt) ===")
         lines.append("; NOTE: The following bwrap paranoid features are NOT available:")
         lines.append(";   - PID namespace: agent can see/kill host processes")
+        lines.append(";   - Network namespace: loopback below is the HOST's shared loopback,")
+        lines.append(";     so any service listening on 127.0.0.1 stays reachable")
         lines.append(";   - strace/learn mode: not available on macOS")
         lines.append(";")
         lines.append("; What IS enforced:")
-        lines.append(";   - Network: loopback-only (deny network*), egress via credential proxy allowlist")
+        if unshare_net:
+            lines.append(";   - Network: loopback-only (deny network*), egress via credential proxy allowlist")
+            lines.append(";     (residual risk: ALL host 127.0.0.1 services reachable, see above)")
+        else:
+            lines.append(";   - Network: NOT contained — this level resolved with unshare_net = false,")
+            lines.append(";     so the profile keeps the broad (allow network*)")
         lines.append(";   - Filesystem write isolation (deny file-write* + allowlist)")
         lines.append(";   - Environment variable clearing (via env -i wrapper)")
         lines.append(";   - Credential proxy (host-side, allowlist-enforcing)")
@@ -2334,10 +2381,17 @@ def cmd_seatbelt_sync(args) -> None:
         # Emit the base profile plus per-level variants so users can inspect
         # what each level enforces (e.g. the paranoid loopback-only network
         # section). Enforcement itself uses the runtime profile regenerated
-        # by build_seatbelt_cmd at launch.
+        # by build_seatbelt_cmd at launch. The level fragment is merged the
+        # same way cmd_run does, so flags like [security] unshare_net (which
+        # keys the network section) resolve identically in both paths.
         for level in (None, "permissive", "paranoid"):
+            level_config = config
+            if level:
+                fragment = load_sandbox_level_fragment(level, agent=agent_name)
+                if fragment is not None:
+                    level_config = merge_sandbox_level(config, fragment)
             profile_text, warnings = generate_seatbelt_profile(
-                agent_name, agent_cfg, config,
+                agent_name, agent_cfg, level_config,
                 sandbox_level=level,
             )
             all_warnings.extend(warnings)
@@ -3458,9 +3512,9 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             if not sb_proxy_enabled:
                 print(
                     "Error: [security] unshare_net = true requires "
-                    "[security] credential_proxy = true. Without the "
-                    "proxy the loopback-only (paranoid) Seatbelt sandbox "
-                    "has no path out.",
+                    "[security] credential_proxy = true. With unshare_net "
+                    "the Seatbelt profile is loopback-only, so without "
+                    "the proxy the sandbox has no path out.",
                     file=sys.stderr,
                 )
             else:
@@ -3563,7 +3617,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             print(f"  provider    {provider}{desc}")
         print(f"  project     {project_dir}")
         print(f"  isolation   Apple Seatbelt (sandbox-exec)")
-        print(f"  network     {'loopback-only (paranoid)' if sandbox_level == 'paranoid' else 'enabled'}")
+        print(f"  network     {'loopback-only (host loopback shared — egress via proxy)' if sb_unshare_net else 'enabled'}")
         if sb_proxy:
             print(f"  cred proxy  127.0.0.1:{sb_proxy_port} (direct TCP)")
         print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")

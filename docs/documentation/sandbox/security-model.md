@@ -208,7 +208,7 @@ Build tools work with minimal friction because system directories are read-only 
 
 ## Seatbelt Backend (macOS)
 
-On macOS the Seatbelt backend (`sandbox-exec`) replaces bubblewrap. Seatbelt is Apple's built-in mandatory access control framework; it operates at the filesystem and process level but does **not** provide kernel-level namespace isolation (network containment at paranoid is achieved instead via a loopback-only Seatbelt profile that forces all egress through the credential proxy).
+On macOS the Seatbelt backend (`sandbox-exec`) replaces bubblewrap. Seatbelt is Apple's built-in mandatory access control framework; it operates at the filesystem and process level but does **not** provide kernel-level namespace isolation. Network containment at paranoid is achieved instead via a loopback-only Seatbelt profile that forces internet egress through the credential proxy — but that loopback is the **host's shared loopback** (there is no network namespace), so any service listening on `127.0.0.1` remains reachable from inside the sandbox.
 
 ### Limitation Matrix
 
@@ -218,9 +218,9 @@ The table below compares each defense layer between bwrap (Linux) and Seatbelt (
 |---|---|---|---|
 | Filesystem write isolation | `--ro-bind / /` + allowlist | `(deny file-write*)` + allowlist | Equivalent enforcement |
 | PID namespace | `--unshare-pid` | **Not available** | Agent can see and signal host processes |
-| Network containment (paranoid) | `--unshare-net` (netns) | Loopback-only profile: `(deny network*)` + loopback allows | Both force all egress through the host-side credential proxy, which enforces the domain allowlist |
+| Network containment (paranoid) | `--unshare-net` (netns, private loopback) | Loopback-only profile: `(deny network*)` + loopback allows — **shared host loopback** | Internet egress goes through the allowlist-enforcing credential proxy on both, but on Seatbelt any other `127.0.0.1` service (local databases, dev servers, Docker TCP API, other agents' proxies) stays reachable |
 | Env var clearing | `--clearenv` + `--setenv` | `env -i` wrapper | Equivalent enforcement |
-| Credential proxy | Host-side, kernel-netns-gated | Host-side, Seatbelt-gated (loopback-only at paranoid) | Proxy is the only egress path at paranoid on both backends |
+| Credential proxy | Host-side, kernel-netns-gated | Host-side, Seatbelt-gated (loopback-only at paranoid) | Proxy is the only *internet* egress path at paranoid on both backends; on Seatbelt other `127.0.0.1` listeners remain reachable |
 | Git push blocking | PATH wrapper | PATH wrapper | Equivalent enforcement |
 | Config snapshots | rsync hardlinks | rsync hardlinks | Equivalent enforcement |
 | Learn mode (strace) | `strace -f -e trace=...` | **Not available** | macOS lacks strace; use DTrace or cross-platform profile porting |
@@ -229,14 +229,14 @@ The table below compares each defense layer between bwrap (Linux) and Seatbelt (
 
 ### Paranoid on macOS vs Linux
 
-Paranoid level on the Seatbelt backend provides a **near-parity** isolation envelope:
+Paranoid level on the Seatbelt backend provides a **strong but not equivalent** isolation envelope:
 
-- **What works**: loopback-only network (`(deny network*)` + loopback allows — all egress goes through the allowlist-enforcing credential proxy on `127.0.0.1`), filesystem write isolation, environment variable clearing, git push blocking, config snapshots.
-- **What does not work**: PID namespace isolation (host processes stay visible), strace-based learn mode.
+- **What works**: loopback-only network (`(deny network*)` + loopback allows — internet egress goes through the allowlist-enforcing credential proxy on `127.0.0.1`), filesystem write isolation, environment variable clearing, git push blocking, config snapshots.
+- **What does not work**: a private loopback / network namespace — the loopback the profile allows is the **host's shared loopback**, so the agent can reach **any** service listening on `127.0.0.1` (local databases, dev servers, Ollama, Docker's TCP API, and other concurrently running lince agents' credential proxies, which accept any local client and inject their credentials; the profile also allows loopback bind/inbound, so the agent can serve to other host processes). Also unavailable: PID namespace isolation (host processes stay visible) and strace-based learn mode.
 
 When paranoid is selected with the Seatbelt backend, `agent-sandbox` prints clear warnings listing exactly which features are unavailable and then proceeds -- the user explicitly requested paranoid and the remaining defenses still provide real value.
 
-**Additional network hardening for macOS** (optional): on top of the Seatbelt loopback-only profile, you can use `pfctl` (Packet Filter) to restrict outbound traffic at the host level as defense in depth. Example:
+**Additional network hardening for macOS** (optional): on top of the Seatbelt loopback-only profile, you can use `pfctl` (Packet Filter) to restrict outbound traffic at the host level as defense in depth. This is also the natural mitigation for the shared-loopback residual risk above: a localhost service that proxies traffic onward (an open HTTP proxy, `ssh -D` SOCKS, etc.) would otherwise let the agent re-open internet egress, and `pfctl` rules can cap what those onward connections may reach. Stopping other lince agents (or any sensitive `127.0.0.1` listener) while a paranoid seatbelt agent runs also shrinks the exposure. Example:
 
 ```bash
 # Create an anchor that blocks all outbound except the Anthropic API
