@@ -78,6 +78,21 @@ def merge_defaults(user: Mapping, defaults: Mapping, prefix: str = "") -> tuple[
     return added, orphans
 
 
+def _unique_backup_path(path: Path) -> Path:
+    """Return ``<name>.bak.<timestamp>`` that does not exist yet.
+
+    Same-second reruns would otherwise silently overwrite the previous backup
+    (shutil.copy2 clobbers); collisions get a ``-1``, ``-2``, ... suffix.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    candidate = path.with_name(f"{path.name}.bak.{timestamp}")
+    counter = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}.bak.{timestamp}-{counter}")
+        counter += 1
+    return candidate
+
+
 def _load_doc(path: Path, label: str) -> tuple[str, "tomlkit.TOMLDocument"]:
     """Read and parse a TOML file. Raises SystemExit(2) with a clear message."""
     try:
@@ -146,8 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if user_exists:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = user_path.with_name(f"{user_path.name}.bak.{timestamp}")
+        backup_path = _unique_backup_path(user_path)
         shutil.copy2(user_path, backup_path)
         print(f"backup: {backup_path}")
 

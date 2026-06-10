@@ -108,7 +108,7 @@ home_ro_dirs = ["~/.config/my-agent/"]
 
 Installed and updated by `install.sh` / `update.sh`. Contains preset agent type definitions. This file is overwritten on updates -- put your customizations in `config.toml` instead.
 
-> **Migration note**: older LINCE versions preserved this file across updates, so some users defined custom agents directly in it. Custom `[agents.*]` blocks must now move to `config.toml`. `update.sh` detects non-shipped agent keys in the old file, backs it up as `agents-defaults.toml.bak.<timestamp>`, and prints a warning listing the keys to move.
+> **Migration note**: older LINCE versions preserved this file across updates, so some users defined custom agents directly in it. Custom `[agents.*]` blocks must now move to `config.toml`. If the old installed file differs from the shipped one in any way (custom agents, edited values, even a malformed file), `update.sh` backs it up as `agents-defaults.toml.bak.<timestamp>` before overwriting, and prints a warning listing any non-shipped agent keys to move. Known side effect: older `quickstart.sh` installs wrote a *filtered* `agents-defaults.toml` containing only the agents selected during setup; after this update the wizard's agent picker again lists **all** shipped agent types. This is an accepted regression of the always-overwrite policy — there is currently no supported way to hide shipped entries.
 
 Each agent type is defined as a `[agents.<name>]` TOML table.
 

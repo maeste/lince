@@ -10,6 +10,7 @@ import io
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -148,6 +149,23 @@ class ConfigMergeTestCase(unittest.TestCase):
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), USER, "backup must hold the pre-merge content")
         self.assertIn("backup:", out)
+
+    def test_backup_collision_same_second_keeps_both(self):
+        """Two merges within the same second must NOT clobber the first backup."""
+        self.user_file.write_text(USER, encoding="utf-8")
+        with unittest.mock.patch("config_merge.datetime") as mock_dt:
+            mock_dt.datetime.now.return_value.strftime.return_value = "20260101-120000"
+            code1, _ = self.run_merge()
+            # Second run with evolved defaults so the user file changes again.
+            self.defaults_file.write_text(DEFAULTS + '\n[extra]\nk = 1\n', encoding="utf-8")
+            code2, _ = self.run_merge()
+        self.assertEqual(code1, 0)
+        self.assertEqual(code2, 0)
+        backups = self.backups()
+        self.assertEqual(len(backups), 2, "collision must produce a suffixed second backup")
+        self.assertEqual(backups[0].name, "config.toml.bak.20260101-120000")
+        self.assertEqual(backups[1].name, "config.toml.bak.20260101-120000-1")
+        self.assertEqual(backups[0].read_text(), USER, "first backup (pre-first-merge) must survive")
 
     # ── Failure modes ──────────────────────────────────────────────────
 

@@ -9,6 +9,20 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Pick a backup path that never clobbers an earlier backup, even when two
+# updates run within the same second (timestamp collision → -1, -2, ... suffix).
+unique_backup_path() {
+    local base candidate n
+    base="$1.bak.$(date +%Y%m%d-%H%M%S)"
+    candidate="$base"
+    n=1
+    while [ -e "$candidate" ]; do
+        candidate="$base-$n"
+        n=$((n + 1))
+    done
+    printf '%s' "$candidate"
+}
+
 echo -e "${BLUE}================================================${NC}"
 echo -e "${BLUE}   LINCE Dashboard — Update${NC}"
 echo -e "${BLUE}================================================${NC}"
@@ -56,7 +70,7 @@ if [ ! -f "$CONFIG_DST" ]; then
     cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
     echo -e "${GREEN}  ✓ Config installed${NC}"
 elif [ "${LINCE_RESET_CONFIG:-0}" = "1" ]; then
-    CONFIG_BAK="$CONFIG_DST.bak.$(date +%Y%m%d-%H%M%S)"
+    CONFIG_BAK="$(unique_backup_path "$CONFIG_DST")"
     cp "$CONFIG_DST" "$CONFIG_BAK"
     cp "$SCRIPT_DIR/config.toml" "$CONFIG_DST"
     echo -e "${YELLOW}  LINCE_RESET_CONFIG=1 — config reset to shipped defaults${NC}"
@@ -107,10 +121,16 @@ AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
 
 if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
     # agents-defaults.toml is fully shipped data (#199) — always overwritten.
-    # One-time migration: if the old installed file carries non-shipped
-    # [agents.*] keys (custom agents), back it up and tell the user to move
-    # those blocks to config.toml before we overwrite.
-    if [ -f "$AGENTS_DEFAULTS_DST" ]; then
+    # Fail-safe migration: if the old installed file differs from the shipped
+    # one IN ANY WAY (custom [agents.*] keys, edited values of shipped entries,
+    # quickstart-filtered subsets, even a malformed hand-edited file that no
+    # parser can read), back it up before the unconditional overwrite below.
+    # After the first overwrite DST == SRC, so later updates skip the backup.
+    if [ -f "$AGENTS_DEFAULTS_DST" ] && ! cmp -s "$AGENTS_DEFAULTS_DST" "$AGENTS_DEFAULTS_SRC"; then
+        AGENTS_BAK="$(unique_backup_path "$AGENTS_DEFAULTS_DST")"
+        cp "$AGENTS_DEFAULTS_DST" "$AGENTS_BAK"
+        # Best-effort detection of non-shipped agent keys for a targeted
+        # warning; a parse failure just means we fall back to the generic one.
         EXTRA_KEYS="$(python3 - "$AGENTS_DEFAULTS_DST" "$AGENTS_DEFAULTS_SRC" << 'PYEOF'
 import sys
 import tomllib
@@ -128,13 +148,16 @@ print(" ".join(sorted(agent_keys(sys.argv[1]) - agent_keys(sys.argv[2]))))
 PYEOF
 )"
         if [ -n "$EXTRA_KEYS" ]; then
-            AGENTS_BAK="$AGENTS_DEFAULTS_DST.bak.$(date +%Y%m%d-%H%M%S)"
-            cp "$AGENTS_DEFAULTS_DST" "$AGENTS_BAK"
             echo -e "${YELLOW}  ⚠ Custom agents detected in agents-defaults.toml: $EXTRA_KEYS${NC}"
             echo -e "${YELLOW}    This file is shipped data and is now always overwritten on update.${NC}"
             echo -e "${YELLOW}    Backup saved → $(basename "$AGENTS_BAK")${NC}"
             echo -e "${YELLOW}    Move those [agents.<key>] blocks into $CONFIG_DIR/config.toml${NC}"
             echo -e "${YELLOW}    (each entry must be a COMPLETE definition — entries fully replace, no per-field merge).${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ Your agents-defaults.toml differed from the shipped file and is now overwritten.${NC}"
+            echo -e "${YELLOW}    Backup saved → $(basename "$AGENTS_BAK")${NC}"
+            echo -e "${YELLOW}    If you had edited values of shipped entries, re-apply them as complete${NC}"
+            echo -e "${YELLOW}    [agents.<key>] blocks in $CONFIG_DIR/config.toml (entries fully replace).${NC}"
         fi
     fi
     cp "$AGENTS_DEFAULTS_SRC" "$AGENTS_DEFAULTS_DST"
