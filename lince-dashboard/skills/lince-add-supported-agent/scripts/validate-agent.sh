@@ -144,7 +144,13 @@ else
             exists=false; command=""; has_native_hooks="missing"; event_map=""
             eval "$parsed"
             if [[ "${exists:-false}" != "true" ]]; then
-                err "[agents.$KEY] section not present"
+                # A shipped agent is defined by agents-defaults.toml and needs no
+                # config.toml override — report that, not a misleading error.
+                if [[ -f "$LEGACY_DEFAULTS" ]] && [[ "$(parse_toml "$LEGACY_DEFAULTS" "$KEY")" == exists=true* ]]; then
+                    ok "[agents.$KEY] defined by shipped defaults — no config.toml override needed"
+                else
+                    err "[agents.$KEY] section not present"
+                fi
             else
                 ok "[agents.$KEY] section found"
                 dash_has_native_hooks="${has_native_hooks:-missing}"

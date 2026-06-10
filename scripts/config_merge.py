@@ -26,6 +26,7 @@ Environment variables are deliberately NOT consulted here: reset semantics
 
 import argparse
 import datetime
+import os
 import shutil
 import sys
 from collections.abc import Mapping
@@ -166,7 +167,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"backup: {backup_path}")
 
     user_path.parent.mkdir(parents=True, exist_ok=True)
-    user_path.write_text(merged_text, encoding="utf-8")
+    # Atomic swap: write to a sibling temp file then os.replace() so an
+    # interrupted run can never leave a truncated config (the .bak above is the
+    # recovery path, but the live file is never momentarily corrupt).
+    tmp_path = user_path.with_name(f".{user_path.name}.tmp")
+    tmp_path.write_text(merged_text, encoding="utf-8")
+    os.replace(tmp_path, user_path)
     print(f"merged: {user_path} ({len(added)} key(s) added, {len(orphans)} user-only key(s) preserved)")
     return 0
 
