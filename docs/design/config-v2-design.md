@@ -32,6 +32,7 @@ merge out of scope this wave (deferred to #204).
 | I4 | Secrets never cross the resolver boundary: provider/env-var **names** only. | redaction, tested |
 | I5 | Escape hatches void the guarantee **visibly**: `[experimental]` flips `guarantee` in resolved output + spawn banner. | resolver (§2.5) |
 | I6 | Every validation error names the fix (command or exact line edit). | all CLI surfaces |
+| I7 | **paranoid never degrades silently**: if a requested boundary cannot be enforced, the launch fails closed with the missing boundary named; degraded operation only via explicit opt-in, and the effective-policy record (§4.3.1) names exactly which boundary was not enforced. Consistent with the #196 Seatbelt pre-launch guard already shipped. | launch guards (§2.2) + record (§4.3.1), tested (§4.4) |
 
 ## 1. File layout
 
@@ -399,6 +400,8 @@ policy slice feeding the artifact. The run path computes the hash first; miss �
 regenerate, hit ⇒ reuse — a policy edit can never launch an agent with stale
 `.args`/`.sb` files. Orphaned hashes are garbage-collected on resolve (keep latest 3
 per agent/level). No user-facing `generate` step; `--regenerate` forces rebuild.
+One runtime output is *not* a resolver artifact: the per-launch effective-policy
+record (§4.3.1), written by the runner next to the dashboard `.state` file.
 
 ### 4.3 `lince config resolve --json` — the single resolution point
 
@@ -449,6 +452,28 @@ Contract details:
 | filtering | `--agent <name>` for cheap dashboard polling; deterministic key order |
 | secrets | the most a consumer learns about an env var is its name and `"available": true/false` |
 
+### 4.3.1 Effective-policy record — requested vs enforced (review feedback, #211)
+
+`resolve --json` is the **requested** view. The **enforced** view is a per-launch
+effective-policy record the runner writes next to the dashboard `.state` file,
+consumed by the dashboard (same `run_command` polling) to show the exact boundary
+the kernel actually enforced for that run — a badge/column beyond "sandbox enabled".
+Production implementation tracked as issue #221; first prototype ships in the #211
+spike shim.
+
+| Field | Meaning |
+|---|---|
+| `backend` | enforcing backend used for this launch (bwrap / seatbelt / nono / landlock) |
+| `requested` | isolation level + filesystem/network policy refs (the `<hash8>` slices, §4.2) |
+| `landlock_abi` | Landlock ABI detected at launch (0 = unavailable) |
+| `fs_enforced` / `net_enforced` | whether the requested fs / net rules were actually applied |
+| `net_limitation` | `"port-only"` \| `"host-unaware"` \| `"unavailable"` \| absent — what the net layer cannot express (e.g. ABI v4 must never pretend to enforce host allowlists, §2.2) |
+| `bwrap_args_digest` | digest of the `.args` artifact fed to bwrap |
+| `helper_version` / `helper_digest` | Landlock helper version + binary digest |
+| `applied_before_exec` | rules in place before the agent process exec'd |
+| `inherited_by_subprocesses` | **verified** (child-process probe), not assumed |
+| `degraded_reason` | why enforcement dropped; required whenever any `*_enforced` is false (I7) — never absent on the degraded path |
+
 ### 4.4 Golden tests — I1 as a test, not prose
 
 The repo ships golden tests (local suite now; CI when m-14 adds workflows) asserting,
@@ -464,6 +489,12 @@ per backend, that with `[network]` absent the canonical artifact contains:
 
 …and that `allowed_hosts` mutates **only** the proxy artifact, never kernel rules.
 A companion test asserts every `[experimental]` hatch flips `guarantee` to `void:*`.
+Two more (review feedback): a **one-fixture cross-backend golden** — the same source
+intent compiles into BOTH bwrap mounts AND Landlock rules (and Seatbelt rules),
+asserted from a single policy fixture, so the compilers can never drift apart; and a
+**degraded-record test** — the old-kernel/no-Landlock path produces an effective-policy
+record (§4.3.1) with `degraded_reason` set, never a silent launch (I7; paranoid on
+that path fails closed instead, per the §2.2 guard).
 These tests also run against migrated fixtures, so migration (§5) cannot silently
 regress I1.
 
@@ -656,7 +687,10 @@ https://pypi.org` dies at the kernel on every backend.
    per-capability acks (`allow_hosts`, `allow_level`)? Is level-tighten-only too strict
    for monorepo teams standardizing on permissive?
 3. **Landlock UDP/DNS pairing** (spike #211): netns vs seccomp pairing to cut UDP 53
-   decides the final Landlock column of §2.2 and the `landlock-*.json` format.
+   decides the final Landlock column of §2.2 and the `landlock-*.json` format. (No
+   longer open: whether paranoid may degrade when a boundary can't be enforced —
+   decided fail-closed, I7; whatever pairing wins, its residual gap is reported as
+   `net_limitation` in the effective-policy record, §4.3.1.)
 4. **Registry read location** (m-14 interaction): mirror to
    `~/.local/share/lince/registry.d/` (this doc's assumption) vs reading straight from
    the npm install dir — affects update.sh and offline behavior.
