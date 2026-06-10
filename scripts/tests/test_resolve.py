@@ -111,6 +111,38 @@ class ResolveTestCase(unittest.TestCase):
         self.assertEqual(vertex["env"]["ANTHROPIC_API_KEY"], "$ANTHROPIC_API_KEY")
         self.assertEqual(vertex["env"]["CLOUD_ML_REGION"], "us-east5")
         self.assertTrue(vertex["available"])  # literal non-secret value configured
+
+    def test_provider_with_only_a_literal_secret_is_available(self):
+        """#222 review: availability is judged on the RAW value (pre-redaction),
+        so a provider configured only with a literal API key — and nothing in
+        the host env — still resolves as available (was wrongly hidden)."""
+        import os
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        self.sandbox_cfg.write_text(
+            '[providers.direct]\n'
+            'env = { ANTHROPIC_API_KEY = "sk-ant-onlyliteral0000000000" }\n',
+            encoding="utf-8",
+        )
+        view = self.resolve()
+        direct = view["providers"]["direct"]
+        self.assertTrue(direct["available"], "literal-configured provider hidden")
+        # but the value is still redacted out of the JSON (I4)
+        self.assertEqual(direct["env"]["ANTHROPIC_API_KEY"], "$ANTHROPIC_API_KEY")
+
+    def test_nonstandard_secret_key_is_redacted(self):
+        """#222 review: a secret under a non-standard key name (no API_KEY/
+        TOKEN substring) must not leak its literal value into resolve --json."""
+        self.sandbox_cfg.write_text(
+            '[providers.gw]\n'
+            'env = { LLM_GATEWAY_CRED = "k8f3p9q2x7m1w5v0n4", '
+            'GATEWAY_REGION = "eu-west" }\n',
+            encoding="utf-8",
+        )
+        view = self.resolve()
+        env = view["providers"]["gw"]["env"]
+        self.assertEqual(env["LLM_GATEWAY_CRED"], "$LLM_GATEWAY_CRED")  # redacted
+        self.assertEqual(env["GATEWAY_REGION"], "eu-west")  # non-secret kept
+        self.assertNotIn("k8f3p9q2", json.dumps(view))
         self.assertNotIn("LITERALSECRET", json.dumps(view))
 
     def test_legacy_dashboard_custom_agent_and_level(self):

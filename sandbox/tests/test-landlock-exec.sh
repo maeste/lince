@@ -72,9 +72,13 @@ try:
     b.bind(("127.0.0.1", 0)); print("BIND_OK")
 except PermissionError: print("BIND_EACCES")
 """
+# --restrict-bind (no --bind-port) requests a deny-all bind fence alongside the
+# connect allowlist — paranoid's posture, and the explicit form since CONNECT
+# and BIND are now restricted independently (#222 review).
 print(subprocess.run(
     ["python3", sandbox, "__landlock-exec", "--rw", "/tmp",
-     "--connect-port", str(allowed), "--", "python3", "-c", code],
+     "--connect-port", str(allowed), "--restrict-bind",
+     "--", "python3", "-c", code],
     capture_output=True, text=True).stdout)
 EOF
 )
@@ -82,8 +86,32 @@ EOF
                                               || bad "net: connect to allowed port failed ($OUT)"
     echo "$OUT" | grep -q CONNECT_DENIED_EACCES && ok "net: connect to other port denied" \
                                                  || bad "net: connect to other port NOT denied ($OUT)"
-    echo "$OUT" | grep -q BIND_EACCES && ok "net: bind denied (no bind rule)" \
+    echo "$OUT" | grep -q BIND_EACCES && ok "net: bind denied (--restrict-bind, no bind rule)" \
                                        || bad "net: bind NOT denied ($OUT)"
+
+    # Independence: restricting CONNECT alone must leave BIND open (the #222
+    # review bug — old all-or-nothing coupling denied bind whenever connect
+    # was restricted, silently dropping allow_bind_ports semantics).
+    OUT2=$(python3 - "$SANDBOX" <<'EOF'
+import socket, subprocess, sys
+sandbox = sys.argv[1]
+l = socket.socket(); l.bind(("127.0.0.1", 0)); l.listen(1)
+allowed = l.getsockname()[1]
+code = """
+import socket
+b = socket.socket()
+try:
+    b.bind(("127.0.0.1", 0)); print("BIND_OPEN_OK")
+except PermissionError: print("BIND_OPEN_EACCES")
+"""
+print(subprocess.run(
+    ["python3", sandbox, "__landlock-exec", "--rw", "/tmp",
+     "--connect-port", str(allowed), "--", "python3", "-c", code],
+    capture_output=True, text=True).stdout)
+EOF
+)
+    echo "$OUT2" | grep -q BIND_OPEN_OK && ok "net: restrict-connect alone leaves bind open (independent axes)" \
+                                         || bad "net: connect restriction wrongly denied bind ($OUT2)"
 else
     echo "  [SKIP] net checks (ABI $ABI < 4)"
 fi

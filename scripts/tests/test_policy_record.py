@@ -97,6 +97,48 @@ class TestParanoidFailClosed(unittest.TestCase):
         MOD.enforce_paranoid_fail_closed(None, self.make(fs=False))  # no exit
 
 
+class TestRecordHonesty(unittest.TestCase):
+    """#222 review: the record's *_enforced must reflect reality, not be
+    hardcoded — otherwise the I7 gate can't catch a missing net boundary."""
+
+    def test_landlock_plan_keeps_bind_ports_without_proxy(self):
+        plan = MOD.landlock_plan(
+            {"security": {"allow_bind_ports": [3000]}},
+            "normal", unshare_net=False, proxy_port=None,
+        )
+        self.assertEqual(plan["bind_ports"], [3000])
+        self.assertTrue(plan["restrict_bind"])
+        self.assertFalse(plan["restrict_connect"])  # connect stays open
+
+    def test_landlock_plan_normal_open_has_no_net_rules(self):
+        plan = MOD.landlock_plan({"security": {}}, "normal", unshare_net=False, proxy_port=None)
+        self.assertFalse(plan["restrict_connect"])
+        self.assertFalse(plan["restrict_bind"])
+
+    def test_landlock_plan_paranoid_denies_bind_allows_bridge(self):
+        plan = MOD.landlock_plan({"security": {}}, "paranoid", unshare_net=True, proxy_port=None)
+        self.assertEqual(plan["connect_ports"], [MOD.PARANOID_BRIDGE_PORT])
+        self.assertTrue(plan["restrict_connect"] and plan["restrict_bind"])
+        self.assertEqual(plan["bind_ports"], [])  # deny all bind
+
+    def test_record_carries_experimental_override(self):
+        rec = MOD.build_policy_record(
+            backend="bwrap", agent_name="claude", agent_id="c1", level="normal",
+            requested_fs="x", requested_net="y", fs_enforced=True, net_enforced=True,
+            experimental=["raw_bwrap_args"],
+        )
+        self.assertTrue(rec["policy_overridden"])
+        self.assertEqual(rec["experimental"], ["raw_bwrap_args"])
+
+    def test_record_clean_when_no_override(self):
+        rec = MOD.build_policy_record(
+            backend="bwrap", agent_name="claude", agent_id="c1", level="normal",
+            requested_fs="x", requested_net="y", fs_enforced=True, net_enforced=True,
+        )
+        self.assertFalse(rec["policy_overridden"])
+        self.assertEqual(rec["experimental"], [])
+
+
 class TestRecordWrite(unittest.TestCase):
     def test_write_next_to_state_files(self):
         with tempfile.TemporaryDirectory() as tmp:

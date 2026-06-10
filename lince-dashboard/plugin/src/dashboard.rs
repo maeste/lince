@@ -718,6 +718,12 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
             if let Some(ref reason) = p.degraded_reason {
                 extra.push_str(&format!(" \x1b[1;33m{}\x1b[0m", reason));
             }
+            if !p.experimental.is_empty() {
+                extra.push_str(&format!(
+                    " \x1b[1;33moverride: {}\x1b[0m",
+                    p.experimental.join(", ")
+                ));
+            }
             let line = format!(
                 " {}Enforced:{} {}{}{} [{}]{}",
                 CYAN, RESET, color, p.badge(), RESET, p.backend, extra,

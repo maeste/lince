@@ -1375,11 +1375,21 @@ def cmd_check(args) -> int:
     return 1 if any(i["level"] == "error" for i in issues) else 0
 
 
-_SENSITIVE_KEY_KEYWORDS = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "ACCESS_KEY", "PRIVATE_KEY")
+# Substrings (matched against the UPPERCASE key name) that mark a value as a
+# credential. Broadened past the obvious *_API_KEY forms so a non-standard key
+# (LLM_GATEWAY_CRED, *_AUTH, *_BEARER) does not leak its literal value through
+# resolve --json (I4, #222 review). These substrings do not appear in the
+# common non-secret config var names (REGION, PROJECT, LOCATION, BASE_URL,
+# ENDPOINT, ACCOUNT_ID), so over-redaction of legit literals stays unlikely.
+_SENSITIVE_KEY_KEYWORDS = (
+    "API_KEY", "APIKEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "PASSPHRASE",
+    "ACCESS_KEY", "PRIVATE_KEY", "AUTH", "BEARER", "CRED", "SIGNING_KEY",
+    "SESSION_KEY",
+)
 
-# Regexes for credentials that are recognizable from the value alone, regardless
-# of the key name. Conservative — only matches well-known prefixes/structures to
-# avoid flagging arbitrary strings.
+# Regexes for credentials recognizable from the value alone, regardless of the
+# key name. Conservative — well-known prefixes plus a long-opaque-token catch
+# for raw tokens under innocuous key names.
 _SENSITIVE_VALUE_PATTERNS = (
     re.compile(r"^sk-[A-Za-z0-9_\-]{16,}"),         # Anthropic / OpenAI style
     re.compile(r"^xai-[A-Za-z0-9_\-]{16,}"),        # xAI
@@ -1389,6 +1399,11 @@ _SENSITIVE_VALUE_PATTERNS = (
     re.compile(r"^AKIA[0-9A-Z]{16}"),               # AWS access key
     re.compile(r"^AIza[0-9A-Za-z_\-]{20,}"),        # Google API key
     re.compile(r"^-----BEGIN [A-Z ]*PRIVATE KEY"),  # PEM private key
+    # Long opaque token (>=32 chars, only token chars, mixes letters+digits):
+    # almost never a config literal (regions/projects/URLs are shorter and use
+    # ./:/spaces), so the false-positive cost is low while it catches raw
+    # bearer-style secrets under non-obvious key names.
+    re.compile(r"^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9_\-]{32,}$"),
 )
 
 
@@ -2077,9 +2092,21 @@ def build_resolved_view(
                 for pname, ptbl in provs.items():
                     if not isinstance(ptbl, dict):
                         continue
+                    raw_env = ptbl.get("env", {}) or {}
+                    # Availability must be judged on the RAW value, before
+                    # redaction rewrites literals to "$NAME" (#222 review): a
+                    # provider configured with a literal key counts as ready
+                    # even with nothing in the host env.
+                    configured = any(
+                        str(v).strip()
+                        and not _is_env_self_ref(k, str(v))
+                        and not str(v).startswith("$")
+                        for k, v in raw_env.items()
+                    )
                     user_provider_details[pname] = {
-                        "env": _redact_env(ptbl.get("env", {}) or {}),
+                        "env": _redact_env(raw_env),
                         "env_unset": list(ptbl.get("env_unset", []) or []),
+                        "configured": configured,
                     }
 
         # User [agents.*] overrides: sandbox config first (jail keys), then
@@ -2249,10 +2276,10 @@ def build_resolved_view(
         details = user_provider_details.get(pname, {})
         env_map = dict(details.get("env", {}))
         env_keys = sorted(set(shipped.get("env", [])) | set(env_map))
-        available = any(_env_available(k) for k in env_keys) or any(
-            not _is_env_self_ref(k, str(v)) and not str(v).startswith("$")
-            for k, v in env_map.items()
-        )
+        # A provider is available if any of its env NAMES is set in the host
+        # env, or it was configured with a literal value (judged pre-redaction
+        # at collection time — the redacted env_map here is names-only, I4).
+        available = any(_env_available(k) for k in env_keys) or details.get("configured", False)
         providers_out[pname] = {
             "env_keys": env_keys,
             "hosts": list(shipped.get("hosts", [])),

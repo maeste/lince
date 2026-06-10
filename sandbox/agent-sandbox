@@ -3352,6 +3352,12 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
             shim += ["--connect-port", str(port)]
         for port in landlock.get("bind_ports", []):
             shim += ["--bind-port", str(port)]
+        # Pass the restrict-axis intent explicitly so a deny-all (empty port
+        # list) is distinguishable from "leave this axis open" (#222 review).
+        if landlock.get("restrict_connect"):
+            shim += ["--restrict-connect"]
+        if landlock.get("restrict_bind"):
+            shim += ["--restrict-bind"]
         if landlock.get("fail_closed"):
             shim += ["--fail-closed"]
         shim += ["--"]
@@ -3592,13 +3598,23 @@ def build_policy_record(
     applied_before_exec: bool = True,
     inherited_by_subprocesses: str = "by-design (kernel namespaces)",
     degraded_reason: str | None = None,
+    experimental: list[str] | None = None,
 ) -> dict:
     """Assemble the §4.3.1 record. degraded_reason is REQUIRED whenever any
     *_enforced is false — asserted here so the degraded path can never be
-    silent (I7)."""
+    silent (I7).
+
+    ``experimental`` lists active [experimental] hatches (#210): they can
+    widen the boundary in ways the mechanism layer can't attest, so the
+    record carries ``policy_overridden`` and the dashboard badges it as
+    custom-policy instead of trusting a green fs/net result.
+    """
     if (not fs_enforced or not net_enforced) and not degraded_reason:
         raise ValueError("degraded_reason required when a boundary is not enforced (I7)")
+    experimental = experimental or []
     return {
+        "policy_overridden": bool(experimental),
+        "experimental": list(experimental),
         "schema": 1,
         "agent": agent_name,
         "agent_id": agent_id,
@@ -3812,13 +3828,24 @@ def _landlock_probe_capped() -> int:
 
 
 def apply_landlock_ruleset(abi: int, rw_paths: list[str], ro_paths: list[str],
-                           connect_ports: list[int], bind_ports: list[int]) -> None:
+                           connect_ports: list[int], bind_ports: list[int],
+                           restrict_connect: bool | None = None,
+                           restrict_bind: bool | None = None) -> None:
     """Self-restrict the current process (inherited across fork+execve).
 
-    The net mask is handled only when port rules were requested (spike
-    recommendation: proxy off at normal => net unrestricted, mask = 0).
+    CONNECT and BIND are handled INDEPENDENTLY: ``restrict_connect`` /
+    ``restrict_bind`` say which axes to enforce; the port lists are the
+    allowlists for each. Restricting one axis leaves the other unrestricted
+    (mask bit unset) — so allow_bind_ports at an open level fences BIND
+    without cutting CONNECT (#222 review). When unset, each defaults to
+    "restrict iff its port list is non-empty" (back-compat for direct calls).
     """
     import ctypes
+
+    if restrict_connect is None:
+        restrict_connect = bool(connect_ports)
+    if restrict_bind is None:
+        restrict_bind = bool(bind_ports)
 
     class RulesetAttr(ctypes.Structure):
         _fields_ = [
@@ -3850,13 +3877,17 @@ def apply_landlock_ruleset(abi: int, rw_paths: list[str], ro_paths: list[str],
         return res
 
     handled_fs = _landlock_fs_rights_for_abi(abi)
-    net_requested = bool(connect_ports or bind_ports)
+    net_handled = restrict_connect or restrict_bind
     attr = RulesetAttr(handled_access_fs=handled_fs, handled_access_net=0, scoped=0)
     size = 8  # ABI 1-3: fs field only
     if abi >= 4:
         size = 16
-        if net_requested:
-            attr.handled_access_net = _LANDLOCK_NET_BIND_TCP | _LANDLOCK_NET_CONNECT_TCP
+        net_mask = 0
+        if restrict_connect:
+            net_mask |= _LANDLOCK_NET_CONNECT_TCP
+        if restrict_bind:
+            net_mask |= _LANDLOCK_NET_BIND_TCP
+        attr.handled_access_net = net_mask
 
     ruleset_fd = check(
         libc.syscall(_SYS_LANDLOCK_CREATE_RULESET, ctypes.byref(attr),
@@ -3881,9 +3912,13 @@ def apply_landlock_ruleset(abi: int, rw_paths: list[str], ro_paths: list[str],
                     ctypes.c_uint32(0)), f"landlock_add_rule({path})")
             finally:
                 os.close(dir_fd)
-        if abi >= 4 and net_requested:
-            for access, ports in ((_LANDLOCK_NET_CONNECT_TCP, connect_ports),
-                                  (_LANDLOCK_NET_BIND_TCP, bind_ports)):
+        if abi >= 4 and net_handled:
+            rules: list[tuple[int, list[int]]] = []
+            if restrict_connect:
+                rules.append((_LANDLOCK_NET_CONNECT_TCP, connect_ports))
+            if restrict_bind:
+                rules.append((_LANDLOCK_NET_BIND_TCP, bind_ports))
+            for access, ports in rules:
                 for port in ports:
                     np = NetPortAttr(allowed_access=access, port=port)
                     check(libc.syscall(
@@ -3897,25 +3932,40 @@ def apply_landlock_ruleset(abi: int, rw_paths: list[str], ro_paths: list[str],
         os.close(ruleset_fd)
 
 
+# Writable bwrap mount destinations (2-token: SRC DEST). The `-try` variants
+# behave identically for fencing purposes — missing them left an expert's
+# raw_bwrap_args (#210) writable mount unfenced (#222 review).
+_BWRAP_RW_2ARG = ("--bind", "--dev-bind", "--bind-try", "--dev-bind-try")
+_BWRAP_RO_2ARG = ("--ro-bind", "--ro-bind-try")
+_BWRAP_RW_1ARG = ("--tmpfs", "--dev", "--proc", "--mqueue")
+
+
 def bwrap_rw_targets(cmd: list[str]) -> list[str]:
     """Derive the Landlock rw allow-list mechanically from the bwrap argv:
-    every writable mount destination (--bind/--dev-bind dst, --tmpfs, --dev,
-    --proc). 'Rule list = mirror of the bind list' (spike gotcha #4) — the
-    two mechanisms express ONE intent and can never drift."""
+    every writable mount destination (--bind/--dev-bind[-try] dst, --tmpfs,
+    --dev, --proc, --mqueue). 'Rule list = mirror of the bind list' (spike
+    gotcha #4) — the two mechanisms express ONE intent and can never drift.
+
+    Only the writable-mount families are matched explicitly; every other
+    token (flag values, single flags, the trailing agent argv) advances one
+    position, which can miss-but-never-mis-skip — a missed match would only
+    under-fence, never shift the parser onto a value and corrupt the list.
+    """
     targets: list[str] = []
     i = 0
-    while i < len(cmd):
+    n = len(cmd)
+    while i < n:
         arg = cmd[i]
-        if arg in ("--bind", "--dev-bind"):
-            if i + 2 < len(cmd):
+        if arg in _BWRAP_RW_2ARG:
+            if i + 2 < n:
                 targets.append(cmd[i + 2])
             i += 3
-        elif arg in ("--tmpfs", "--dev", "--proc"):
-            if i + 1 < len(cmd):
+        elif arg in _BWRAP_RO_2ARG:
+            i += 3
+        elif arg in _BWRAP_RW_1ARG:
+            if i + 1 < n:
                 targets.append(cmd[i + 1])
             i += 2
-        elif arg in ("--ro-bind", "--ro-bind-try"):
-            i += 3
         else:
             i += 1
     return list(dict.fromkeys(targets))
@@ -3961,9 +4011,15 @@ def cmd_landlock_exec(argv: list[str]) -> int:
     parser.add_argument("--ro", action="append", default=[], metavar="PATH")
     parser.add_argument("--connect-port", action="append", type=int, default=[], metavar="N")
     parser.add_argument("--bind-port", action="append", type=int, default=[], metavar="N")
+    # Restrict an axis even with an empty port list (deny-all): paranoid binds
+    # nothing, so --restrict-bind with no --bind-port denies all listeners.
+    parser.add_argument("--restrict-connect", action="store_true")
+    parser.add_argument("--restrict-bind", action="store_true")
     parser.add_argument("--fail-closed", action="store_true")
     args = parser.parse_args(shim_argv)
 
+    restrict_connect = args.restrict_connect or bool(args.connect_port)
+    restrict_bind = args.restrict_bind or bool(args.bind_port)
     ro_paths = args.ro if args.ro else ["/"]
     abi = _landlock_probe_capped()
     record_path = os.environ.get("LINCE_POLICY_RECORD_PATH")
@@ -3991,11 +4047,13 @@ def cmd_landlock_exec(argv: list[str]) -> int:
               file=sys.stderr)
         os.execvp(agent_argv[0], agent_argv)
 
-    net_requested = bool(args.connect_port or args.bind_port)
+    net_requested = restrict_connect or restrict_bind
     try:
         apply_landlock_ruleset(abi, rw_paths=args.rw, ro_paths=ro_paths,
                                connect_ports=args.connect_port,
-                               bind_ports=args.bind_port)
+                               bind_ports=args.bind_port,
+                               restrict_connect=restrict_connect,
+                               restrict_bind=restrict_bind)
     except OSError as exc:
         if record_path:
             landlock_update_record(
@@ -4051,18 +4109,30 @@ def landlock_plan(config: dict, sandbox_level: str | None,
         return None
     if sys.platform != "linux":
         return None
-    connect_ports: list[int] = []
     bind_ports: list[int] = [int(p) for p in sec.get("allow_bind_ports", [])]
+    connect_ports: list[int] = []
+    # The proxy/connect path is "active" at paranoid (unshare_net) and at any
+    # level with a live credential proxy; only then do we restrict CONNECT
+    # (to the bridge/proxy + extras). With no proxy, connect stays open
+    # (spike: "proxy off → net unrestricted") — but a user-set allow_bind_ports
+    # must STILL be honored, restricting BIND independently (#222 review:
+    # the old `if not connect_ports: bind_ports = []` silently dropped it).
+    net_active = bool(unshare_net or proxy_port)
     if unshare_net:
         connect_ports.append(PARANOID_BRIDGE_PORT)
     elif proxy_port:
         connect_ports.append(int(proxy_port))
     connect_ports += [int(p) for p in sec.get("allow_connect_ports", [])]
-    if not connect_ports:
-        bind_ports = []  # net mask only handled when the proxy path is active
+    restrict_connect = net_active
+    # Restrict BIND when the net layer is active (deny-all unless allow_bind_ports
+    # widens it) OR when the user opted in via allow_bind_ports at an otherwise
+    # open level. CONNECT stays open in the latter case.
+    restrict_bind = net_active or bool(bind_ports)
     return {
         "connect_ports": list(dict.fromkeys(connect_ports)),
         "bind_ports": list(dict.fromkeys(bind_ports)),
+        "restrict_connect": restrict_connect,
+        "restrict_bind": restrict_bind,
         "fail_closed": sandbox_level == "paranoid",
     }
 
@@ -4504,6 +4574,18 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             ).hexdigest()
         except OSError:
             sb_profile_digest = None
+        # net_enforced must reflect REALITY, not be hardcoded (#222 review):
+        # paranoid demands a net boundary by definition; seatbelt delivers it
+        # only via the loopback-only profile (sb_unshare_net). If paranoid is
+        # requested but no restriction is in force, the record says so and
+        # enforce_paranoid_fail_closed refuses the launch (I7).
+        sb_net_requested = (sandbox_level == "paranoid") or sb_unshare_net
+        sb_net_enforced = sb_unshare_net
+        sb_net_degraded = (
+            None if (not sb_net_requested or sb_net_enforced)
+            else "network boundary requested but Seatbelt applied no egress "
+                 "restriction (unshare_net is off)"
+        )
         sb_record = build_policy_record(
             backend="seatbelt",
             agent_name=agent_name,
@@ -4515,9 +4597,11 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                 if sb_unshare_net else "shared (no kernel restriction requested)"
             ),
             fs_enforced=True,
-            net_enforced=True,
+            net_enforced=(not sb_net_requested) or sb_net_enforced,
             profile_digest=sb_profile_digest,
             inherited_by_subprocesses="by-design (Seatbelt process tree)",
+            degraded_reason=sb_net_degraded,
+            experimental=sb_experimental["active"],
         )
         enforce_paranoid_fail_closed(sandbox_level, sb_record)
         write_policy_record(args.id, sb_record)
@@ -5005,6 +5089,25 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             ).hexdigest()
         except OSError:
             helper_digest = None
+    # net_enforced must reflect REALITY, not be hardcoded (#222 review): a net
+    # boundary is actually enforced by the netns (unshare_net) or by Landlock
+    # TCP rules (ABI >= 4 with a restricted axis). paranoid demands one by
+    # definition, so if it is requested but no mechanism delivers it, the
+    # record says so and enforce_paranoid_fail_closed refuses the launch (I7).
+    landlock_net_enforced = bool(
+        landlock_active and landlock_abi >= 4
+        and landlock is not None
+        and (landlock.get("restrict_connect") or landlock.get("restrict_bind"))
+    )
+    bwrap_net_enforced = bwrap_unshare_net or landlock_net_enforced
+    bwrap_net_requested = (
+        sandbox_level == "paranoid" or bwrap_unshare_net or landlock_net_enforced
+    )
+    bwrap_net_degraded = (
+        None if (not bwrap_net_requested or bwrap_net_enforced)
+        else "network boundary requested but neither a network namespace "
+             "(unshare_net) nor Landlock TCP rules are in force"
+    )
     bwrap_record = build_policy_record(
         backend="bwrap",
         agent_name=agent_name,
@@ -5013,11 +5116,13 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         requested_fs=requested_fs,
         requested_net=requested_net,
         fs_enforced=True,
-        net_enforced=True,
+        net_enforced=(not bwrap_net_requested) or bwrap_net_enforced,
         net_limitation=net_limitation,
         helper_version=helper_version,
         helper_digest=helper_digest,
         bwrap_args_digest=_argv_digest(cmd),
+        degraded_reason=bwrap_net_degraded,
+        experimental=experimental["active"],
     )
     enforce_paranoid_fail_closed(sandbox_level, bwrap_record)
     write_policy_record(args.id, bwrap_record)

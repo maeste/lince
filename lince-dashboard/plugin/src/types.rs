@@ -393,17 +393,34 @@ pub struct EnforcedPolicy {
     pub net_limitation: Option<String>,
     #[serde(default)]
     pub degraded_reason: Option<String>,
+    /// True when an [experimental] hatch (raw_bwrap_args / seatbelt_extra) is
+    /// active for this launch (#210): the boundary may be widened in ways the
+    /// mechanism layer can't attest, so fs/net ticks must NOT be trusted as a
+    /// clean "fully enforced" result.
+    #[serde(default)]
+    pub policy_overridden: bool,
+    #[serde(default)]
+    pub experimental: Vec<String>,
 }
 
 impl EnforcedPolicy {
+    /// Fully enforced ONLY when both axes hold AND no experimental override is
+    /// in force (an override voids the validated-policy guarantee, §2.5).
     pub fn fully_enforced(&self) -> bool {
-        self.fs_enforced && self.net_enforced
+        self.fs_enforced && self.net_enforced && !self.policy_overridden
     }
 
-    /// Compact badge: which boundary the kernel actually enforced.
+    /// Compact badge: which boundary the kernel actually enforced. An active
+    /// [experimental] override appends a custom-policy marker (#210) so a
+    /// widened boundary never reads as a clean fs✓ net✓.
     pub fn badge(&self) -> String {
         let tick = |ok: bool| if ok { "\u{2713}" } else { "\u{2717}" };
-        format!("fs{} net{}", tick(self.fs_enforced), tick(self.net_enforced))
+        let base = format!("fs{} net{}", tick(self.fs_enforced), tick(self.net_enforced));
+        if self.policy_overridden {
+            format!("{} \u{26a0}custom", base)
+        } else {
+            base
+        }
     }
 }
 
@@ -698,6 +715,18 @@ mod tests {
         assert!(!p.fully_enforced());
         assert_eq!(p.badge(), "fs\u{2717} net\u{2717}");
         assert_eq!(p.degraded_reason.as_deref(), Some("delegated to nono"));
+    }
+
+    /// An [experimental] override (#210) voids the clean fully_enforced result
+    /// even when both axes tick, and the badge shows a custom-policy marker.
+    #[test]
+    fn enforced_policy_experimental_override_voids_clean_result() {
+        let json = r#"{"backend":"bwrap","fs_enforced":true,"net_enforced":true,
+            "policy_overridden":true,"experimental":["raw_bwrap_args"]}"#;
+        let p: EnforcedPolicy = serde_json::from_str(json).unwrap();
+        assert!(!p.fully_enforced());
+        assert!(p.badge().contains("custom"));
+        assert_eq!(p.experimental, vec!["raw_bwrap_args".to_string()]);
     }
 
     fn make_agent(status: AgentStatus, exit_code: Option<i32>) -> AgentInfo {
