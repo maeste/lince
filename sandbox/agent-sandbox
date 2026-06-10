@@ -54,6 +54,9 @@ DEFAULT_PROJECT_EXCLUDES = [
     "build", "dist",
 ]
 
+# Single-sourced with sandbox/config.toml.example (#205): the two must be
+# byte-identical — guarded by scripts/tests/test_default_config.py.
+# Edit the example and copy it here (or vice versa), never just one.
 _DEFAULT_CONFIG = """\
 # agent-sandbox configuration
 # Docs: agent-sandbox --help
@@ -68,21 +71,30 @@ ro_dirs = ["~/project"]
 # Persist build tool caches between sessions
 persist_toolchains = true
 
-# Auto-detect PATH entries under $HOME and expose read-only
+# Auto-detect PATH entries under $HOME and expose read-only.
+# Top-level dirs are mounted, and any deeper subdirectories explicitly
+# in the host PATH are also added to the sandbox PATH (e.g.
+# ~/Applications/apache-maven-3.9.14/bin).
 auto_expose_path = true
 
 # Extra home subdirectories to expose read-only (relative to $HOME)
 # .config/gcloud is needed for Vertex AI / Google Cloud authentication
 home_ro_dirs = [".config/gcloud"]
 
-# Default provider profile (used when -P is not specified).
-# Set to a profile name defined in [profiles.*] below.
-# Leave empty to run without a profile.
-default_profile = ""
+# Default provider — env-var bundle used when -P / --provider is not given.
+# Set to a name defined in [providers.*] / [<agent>.providers.*] below.
+# Leave empty to run without a provider.
+#
+# Note: a "provider" (env-var bundle) is a separate concept from a "sandbox
+# profile" (the isolation level — paranoid/normal/permissive — selected with
+# `--sandbox-level`). The two axes are independent: you can run e.g.
+# `paranoid + zai`. The legacy key `default_profile` is still accepted and
+# `agent-sandbox migrate-providers` rewrites your config to the new spelling.
+default_provider = ""
 
-# Sandbox backend: "agent-sandbox" (bubblewrap), "seatbelt" (macOS sandbox-exec),
-#   "nono" (Landlock/Seatbelt, DEPRECATED), or "auto"
-# auto: prefers agent-sandbox on Linux, seatbelt on macOS, falls back to nono
+# Sandbox backend: "agent-sandbox" (bubblewrap, Linux), "seatbelt" (macOS
+# sandbox-exec), "nono" (Landlock/Seatbelt, DEPRECATED), or "auto".
+# auto: prefers agent-sandbox on Linux, seatbelt on macOS, falls back to nono.
 backend = "auto"
 
 [claude]
@@ -98,6 +110,32 @@ config_dir = "~/.agent-sandbox/claude-config"
 # Disables diff/merge commands (no separate copy to compare against).
 use_real_config = false
 
+# --- Agent configurations ---
+# Each [agents.<name>] section configures how to run an agent.
+# Defaults are loaded from agents-defaults.toml; values here override.
+# Run with: agent-sandbox run --agent <name>
+
+# [agents.claude]
+# command = "claude"
+# default_args = ["--dangerously-skip-permissions"]
+# env = {}
+# home_ro_dirs = []
+# home_rw_dirs = []
+# bwrap_conflict = false
+# disable_inner_sandbox_args = []
+
+# [agents.codex]
+# command = "codex"
+# default_args = ["--full-auto"]
+# home_ro_dirs = [".codex"]
+# bwrap_conflict = true
+# disable_inner_sandbox_args = ["--sandbox", "danger-full-access"]
+
+# [agents.gemini]
+# command = "gemini"
+# default_args = []
+# home_ro_dirs = [".gemini"]
+
 [git]
 # Section name patterns to strip from .gitconfig (regex on section header)
 strip_sections = ['credential', 'url ".*"']
@@ -108,7 +146,7 @@ strip_sections = ['credential', 'url ".*"']
 
 [env]
 # Environment variables passed through FROM THE HOST SHELL.
-# API keys and provider settings go in [profiles.*] sections below.
+# API keys and provider settings go in [providers.*] sections below.
 passthrough = [
     "TERM",
     "COLORTERM",
@@ -123,9 +161,14 @@ passthrough = [
     "LINCE_AGENT_ID",
 ]
 
-# Additional environment variables to set inside the sandbox
+# Additional environment variables to set inside the sandbox.
+# Values support $VAR / ${VAR} expansion against the host environment
+# (shell semantics — unset vars resolve to empty strings, never to the
+# literal $VAR text). Same expansion applies to [agents.*.env] and
+# [<agent>.providers.*.env] values.
 [env.extra]
 # CUSTOM_VAR = "value"
+# FROM_HOST = "$SOME_HOST_VAR"
 
 [logging]
 # Enable transcript logging by default (toggle with --log / --no-log)
@@ -135,11 +178,16 @@ dir = "~/.agent-sandbox/logs"
 [snapshot]
 # Auto-snapshot the project directory before each sandbox run
 auto_project = false
+
 # Auto-snapshot the agent config directory before each sandbox run
 auto_config = true
-# Maximum number of snapshots to keep (oldest pruned first)
+
+# Maximum number of project snapshots to keep (oldest pruned first)
 max_project_snapshots = 3
+
+# Maximum number of config snapshots to keep (oldest pruned first)
 max_config_snapshots = 5
+
 # Directories to exclude from project snapshots
 project_exclude = [".git", "node_modules", "target", "__pycache__", ".venv", "build", "dist"]
 
@@ -157,42 +205,71 @@ block_git_push = true
 # Credential proxy: intercept API calls and inject credentials so that
 # API keys never enter the sandbox environment.  The proxy runs on the
 # host and forwards requests to the real API with the correct headers.
-# Requires API keys to be configured in a [*.profiles.*.env] section.
+# Requires API keys to be configured in a [*.providers.*.env] section.
 credential_proxy = false
 
 # [credential_proxy]
-# # Extra hosts to block (cloud metadata endpoints are always blocked)
-# blocked_hosts = ["169.254.169.254", "metadata.google.internal"]
+# # Extra hosts to block (cloud metadata endpoints are always blocked).
+# blocked_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]
 
-# --- Provider profiles ---
-# Profiles are namespaced by agent type: [<agent>.profiles.<name>]
-# Legacy [profiles.<name>] is still supported and maps to "claude".
-# API keys live here, NOT in your shell environment.
+# --- Providers (env-var bundles) ---
+# A *provider* is a named env-var bundle that switches model provider/account
+# (Anthropic vs Vertex vs Z.ai vs Minimax, etc.). Pick one at runtime with
+# `-P <name>` / `--provider <name>`, or set [sandbox].default_provider above.
+#
+# Providers are namespaced by agent type: [<agent>.providers.<name>].
+# Top-level [providers.<name>] (and the legacy [profiles.<name>] form) maps
+# to "claude" for back-compat. The wizard only shows providers matching the
+# selected agent type. API keys live here, NOT in your shell environment.
+#
+# Sandbox isolation level (paranoid / normal / permissive) is a SEPARATE axis
+# — see `--sandbox-level` and sandbox/profiles/<agent>-<level>.toml.
 
-# --- Claude profiles ---
+# --- Claude providers ---
 
-# [claude.profiles.vertex]
+# [claude.providers.vertex]
 # description = "Vertex AI"
-# [claude.profiles.vertex.env]
+# [claude.providers.vertex.env]
 # CLAUDE_CODE_USE_VERTEX = "1"
 # CLOUD_ML_REGION = "us-east5"
 # ANTHROPIC_VERTEX_PROJECT_ID = "my-gcp-project"
 # env_unset = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]
 
-# [claude.profiles.anthropic]
+# [claude.providers.anthropic]
 # description = "Direct Anthropic API"
-# [claude.profiles.anthropic.env]
+# [claude.providers.anthropic.env]
 # ANTHROPIC_API_KEY = "sk-ant-..."
 # env_unset = ["CLAUDE_CODE_USE_VERTEX", "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_PROJECT_ID"]
 
-# --- Codex profiles ---
+# [claude.providers.zai]
+# description = "Zai GLM"
+# [claude.providers.zai.env]
+# ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic"
+# ANTHROPIC_AUTH_TOKEN = "XXXX"
 
-# [codex.profiles.default]
+# [claude.providers.mm]
+# description = "Minimax Anthropic API"
+# [claude.providers.mm.env]
+# ANTHROPIC_BASE_URL = "https://api.minimax.io/anthropic"
+# ANTHROPIC_AUTH_TOKEN = "XXXX"
+
+# --- Codex providers ---
+
+# [codex.providers.default]
 # description = "Default OpenAI key"
-# [codex.profiles.default.env]
+# [codex.providers.default.env]
 # OPENAI_API_KEY = "sk-..."
 
+# --- Gemini providers ---
+
+# [gemini.providers.default]
+# description = "Default Gemini key"
+# [gemini.providers.default.env]
+# GEMINI_API_KEY = "..."
+
 # --- Legacy format (still works, mapped to claude) ---
+# Pre-#81 spelling. New configs should use [providers.*] / [<agent>.providers.*].
+# Run `agent-sandbox migrate-providers` to rewrite an existing config in place.
 # [profiles.vertex]
 # description = "Vertex AI"
 # [profiles.vertex.env]
