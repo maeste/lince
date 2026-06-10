@@ -172,6 +172,15 @@ rules, strip = collect({"ANTHROPIC_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": ""})
 check("no rules", rules == [])
 check("no strip_vars", strip == [])
 
+# (h) every injectable credential header name is dropped from client headers
+# before injection (#194): the strip set must cover all rule header names.
+print("case h: credential-header strip set covers all rules")
+expected = {r["header_name"].lower() for r in mod.CREDENTIAL_PROXY_RULES.values()}
+check("strip set == all rule headers", set(mod._CREDENTIAL_HEADER_NAMES) == expected,
+      f"{set(mod._CREDENTIAL_HEADER_NAMES)} vs {expected}")
+check("anthropic headers covered",
+      {"x-api-key", "authorization"} <= set(mod._CREDENTIAL_HEADER_NAMES))
+
 print()
 if failures:
     print(f"FAIL: {len(failures)} assertion(s) failed, {passed} passed")

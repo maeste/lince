@@ -325,6 +325,14 @@ _PROXY_SKIP_HEADERS = frozenset({
     "date", "server", "content-length",
 })
 
+# Every header name the proxy may inject a credential into. Any client-supplied
+# instance of these is dropped before injection so only the proxy's credential
+# reaches upstream (e.g. a stale x-api-key from the agent's config dir must not
+# ride alongside the injected Authorization: Bearer — see #194).
+_CREDENTIAL_HEADER_NAMES = frozenset(
+    rule["header_name"].lower() for rule in CREDENTIAL_PROXY_RULES.values()
+)
+
 
 # ---------------------------------------------------------------------------
 # Credential Proxy
@@ -637,11 +645,14 @@ class _ProxyRequestHandler(BaseHTTPRequestHandler):
             self.rfile.read(content_length) if content_length > 0 else None
         )
 
-        # Build headers dict for the upstream request.
+        # Build headers dict for the upstream request. Drop any client-supplied
+        # credential header so only the injected one reaches upstream (#194).
         fwd_headers: dict[str, str] = {}
         for hdr, val in self.headers.items():
-            if hdr.lower() not in _PROXY_SKIP_HEADERS:
-                fwd_headers[hdr] = val
+            low = hdr.lower()
+            if low in _PROXY_SKIP_HEADERS or low in _CREDENTIAL_HEADER_NAMES:
+                continue
+            fwd_headers[hdr] = val
 
         # Inject credential header.
         prefix = rule.get("header_prefix", "")
