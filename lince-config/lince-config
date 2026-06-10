@@ -12,7 +12,8 @@ Usage:
     lince-config unset <dotted.key> [--target sandbox|dashboard]
     lince-config list [section] [--target sandbox|dashboard] [--json]
     lince-config check [--target sandbox|dashboard] [--json]
-    lince-config validate [--target sandbox|dashboard] [--json]
+    lince-config validate [--target sandbox|dashboard|lince|registry] [--file PATH] [--overlay] [--json]
+    lince-config schema [<name>] [--write DIR]
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ except ImportError:
     sys.exit(1)
 
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -66,100 +67,467 @@ AGENTS_DEFAULTS_SEARCH = [
     Path(__file__).resolve().parent.parent / "sandbox" / "agents-defaults.toml",
 ]
 
-# All known top-level sections and their schemas for validation.
-# Format: section -> {key: (type, required, description)}
-SANDBOX_SCHEMA = {
-    "sandbox": {
-        "extra_rw": (list, False, "Extra directories the agent can write to"),
-        "ro_dirs": (list, False, "Directories the agent can read but not write"),
-        "persist_toolchains": (bool, False, "Persist build-tool caches between sessions"),
-        "auto_expose_path": (bool, False, "Auto-detect $PATH entries under $HOME"),
-        "home_ro_dirs": (list, False, "Additional home subdirectories to expose read-only"),
-        "default_provider": (str, False, "Default provider when -P is not specified"),
-        "backend": (str, False, "Sandbox backend: agent-sandbox, nono, or auto"),
-    },
-    "security": {
-        "unshare_pid": (bool, False, "PID namespace: hide host processes"),
-        "new_session": (bool, False, "New terminal session"),
-        "block_git_push": (bool, False, "Block git push via wrapper script"),
-        "credential_proxy": (bool, False, "Intercept API calls and inject credentials on host"),
-        "unshare_net": (bool, False, "Network namespace isolation"),
-        "allow_domains": (list, False, "Extra hosts the credential proxy allows"),
-    },
-    "credential_proxy": {
-        "blocked_hosts": (list, False, "Extra hosts to block"),
-    },
-    "git": {
-        "strip_sections": (list, False, "Regex patterns for .gitconfig section stripping"),
-    },
-    "env": {
-        "passthrough": (list, False, "Host environment variables to pass into sandbox"),
-    },
-    "logging": {
-        "enabled": (bool, False, "Enable transcript logging by default"),
-        "dir": (str, False, "Directory for log files"),
-    },
-    "snapshot": {
-        "auto_project": (bool, False, "Auto-snapshot project before each run"),
-        "auto_config": (bool, False, "Auto-snapshot agent config before each run"),
-        "max_project_snapshots": (int, False, "Max project snapshots to keep"),
-        "max_config_snapshots": (int, False, "Max config snapshots to keep"),
-        "project_exclude": (list, False, "Directories excluded from snapshots"),
-    },
-    "claude": {
-        "config_dir": (str, False, "Sandbox isolated copy of Claude config directory"),
-        "use_real_config": (bool, False, "Use real ~/.claude directly"),
+# ── Schemas (JSON Schema, draft-07 subset) ───────────────────────────────
+#
+# Single source of truth for all LINCE config validation (#203, design:
+# docs/design/config-v2-design.md §2/§3). The files under schemas/ in the
+# repo are generated from these via `lince-config schema --write schemas/`
+# and are Taplo-compatible — point your TOML editor/LSP at them for
+# autocomplete and inline validation. A repo test asserts no drift.
+#
+# Validation policy (§2.1 forward-compat): unknown keys under known tables
+# are WARNINGS (warn-and-ignore); type mismatches and missing required keys
+# are ERRORS. Keys under [experimental] are never errors.
+
+# Native lince.toml schema version "2.N" (§2.1 semver contract).
+SCHEMA_VERSION_NATIVE = (2, 0)
+
+LINCE_CONFIG_PATH = Path.home() / ".config" / "lince" / "lince.toml"
+LINCE_REGISTRY_DIRS = [
+    Path.home() / ".local" / "share" / "lince" / "registry.d",
+    Path(__file__).resolve().parent.parent / "registry.d",
+]
+
+_STR = {"type": "string"}
+_BOOL = {"type": "boolean"}
+_INT = {"type": "integer"}
+_STR_LIST = {"type": "array", "items": {"type": "string"}}
+_STR_MAP = {"type": "object", "additionalProperties": {"type": "string"}}
+
+# Canonical agent status values (LINCE-118/122 5-state model; "-" is the
+# pre-launch placeholder and never appears in an event_map).
+_EVENT_MAP = {
+    "type": "object",
+    "additionalProperties": {
+        "type": "string",
+        "enum": ["running", "input", "permission", "stopped"],
     },
 }
 
-DASHBOARD_SCHEMA = {
-    "dashboard": {
-        "default_provider": (str, False, "Default provider for new agents"),
-        "sandbox_config_path": (str, False, "Path to sandbox config"),
-        "default_project_dir": (str, False, "Default working directory for new agents"),
-        "sandbox_command": (str, False, "Path to agent-sandbox binary"),
-        "agent_layout": (str, False, "How agent panes are created (floating/tiled)"),
-        "focus_mode": (str, False, "How focusing works (floating/replace)"),
-        "status_method": (str, False, "Status detection method (pipe/file)"),
-        "status_file_dir": (str, False, "Directory for status files when status_method = file"),
-        "max_agents": (int, False, "Maximum concurrent agents"),
-        "sandbox_backend": (str, False, "Sandbox backend preference"),
-        "default_agent_type": (str, False, "Default agent type for new agents"),
+_BACKEND = {"type": "string", "enum": ["auto", "agent-sandbox", "bwrap", "nono", "seatbelt", "landlock"]}
+
+# [sandbox.levels.<level>] in registry.d/<agent>.toml (absorbed profile fragments).
+_LEVEL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scratch_home_dirs": _STR_LIST,
+        "scratch_home_files": _STR_LIST,
+        "unshare_net": _BOOL,
+        "credential_proxy": _BOOL,
+        "block_git_push": _BOOL,
+        "allow_domains": _STR_LIST,
+        "home_ro_dirs": _STR_LIST,
+        "passthrough": _STR_LIST,
+        "env_extra": _STR_MAP,
+    },
+    "additionalProperties": False,
+}
+
+_REGISTRY_SANDBOX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "backend": _BACKEND,
+        "default_level": _STR,
+        "allowed_levels": _STR_LIST,
+        "home_subdir": _STR,
+        "bwrap_conflict": _BOOL,
+        "disable_inner_sandbox_args": _STR_LIST,
+        "home_ro_dirs": _STR_LIST,
+        "home_rw_dirs": _STR_LIST,
+        "levels": {"type": "object", "additionalProperties": _LEVEL_SCHEMA},
+    },
+    "additionalProperties": False,
+}
+
+_REGISTRY_DASHBOARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status_pipe_name": _STR,
+        "pane_title_pattern": _STR,
+        "has_native_hooks": _BOOL,
+        "providers": _STR_LIST,
+    },
+    "additionalProperties": False,
+}
+
+_VARIANTS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": {
+        "type": "object",
+        "properties": {
+            "command": _STR_LIST,
+            "bwrap_conflict": _BOOL,
+            "display_name": _STR,
+            "short_label": _STR,
+            "color": _STR,
+            "pane_title_pattern": _STR,
+        },
+        "additionalProperties": False,
     },
 }
 
-# Agent fields (shared between sandbox agents.* and dashboard agents.*)
-AGENT_FIELDS = {
-    "command": (str, True, "Binary name to execute"),
-    "default_args": (list, False, "Default CLI arguments"),
-    "env": (dict, False, "Extra environment variables"),
-    "home_ro_dirs": (list, False, "Home subdirs to bind read-only"),
-    "home_rw_dirs": (list, False, "Home subdirs to bind read-write"),
-    "bwrap_conflict": (bool, False, "Agent uses bwrap internally"),
-    "disable_inner_sandbox_args": (list, False, "Args to disable agent's own sandbox"),
+REGISTRY_AGENT_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "LINCE registry.d agent definition",
+    "description": "One shipped agent (registry.d/<agent>.toml). Shipped data, "
+                   "always overwritten on update — design config-v2 §3.",
+    "type": "object",
+    "properties": {
+        "agent": {
+            "type": "object",
+            "properties": {
+                "name": _STR,
+                "display_name": _STR,
+                "short_label": _STR,
+                "color": _STR,
+                "binary": _STR,
+                "default_args": _STR_LIST,
+            },
+            "required": ["binary", "display_name", "short_label", "color"],
+            "additionalProperties": False,
+        },
+        "sandbox": _REGISTRY_SANDBOX_SCHEMA,
+        "dashboard": _REGISTRY_DASHBOARD_SCHEMA,
+        "variants": _VARIANTS_SCHEMA,
+        "env": _STR_MAP,
+        "event_map": _EVENT_MAP,
+    },
+    "required": ["agent"],
+    "additionalProperties": False,
 }
 
-DASHBOARD_AGENT_FIELDS = {
-    "command": (list, True, "Command template with placeholders"),
-    "pane_title_pattern": (str, True, "Pattern to match Zellij pane titles"),
-    "status_pipe_name": (str, True, "Zellij pipe name for status messages"),
-    "display_name": (str, True, "Full name shown in UI"),
-    "short_label": (str, True, "3-char label for table column"),
-    "color": (str, True, "ANSI color name"),
-    "sandboxed": (bool, True, "Whether agent runs inside sandbox"),
-    "has_native_hooks": (bool, False, "Agent sends its own status events"),
-    "providers": (list, False, "Provider discovery mode"),
-    "sandbox_backend": (str, False, "Per-agent sandbox backend override"),
-    "sandbox_level": (str, False, "Sandbox isolation level"),
-    "env_vars": (dict, False, "Environment variables for the agent"),
-    "event_map": (dict, False, "Custom event-to-status mapping"),
+REGISTRY_PROVIDERS_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "LINCE registry.d provider table",
+    "description": "Provider env-var bundles (NAMES, never values) + API hosts "
+                   "— design config-v2 §3.4.",
+    "type": "object",
+    "properties": {
+        "providers": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {"env": _STR_LIST, "hosts": _STR_LIST},
+                "required": ["env"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["providers"],
+    "additionalProperties": False,
 }
 
-PROVIDER_FIELDS = {
-    "description": (str, False, "Human-readable label"),
-    "env": (dict, False, "Environment variables injected via --setenv"),
-    "env_unset": (list, False, "Environment variables to explicitly unset"),
-    "default_args": (list, False, "Override agent default_args when active"),
+# [agents.<name>] in lince.toml — §2.3 lifting rule: registry [agent]-table
+# keys sit flat next to the policy-only keys; other registry tables keep
+# their sub-table form.
+_LINCE_AGENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        # lifted [agent] keys
+        "binary": _STR,
+        "display_name": _STR,
+        "short_label": _STR,
+        "color": _STR,
+        "default_args": _STR_LIST,
+        # policy-only keys
+        "level": _STR,
+        "provider": _STR,
+        "allowed_hosts": _STR_LIST,
+        # registry sub-tables
+        "sandbox": _REGISTRY_SANDBOX_SCHEMA,
+        "dashboard": _REGISTRY_DASHBOARD_SCHEMA,
+        "variants": _VARIANTS_SCHEMA,
+        "env": _STR_MAP,
+        "event_map": _EVENT_MAP,
+    },
+    "additionalProperties": False,
+}
+
+LINCE_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "LINCE policy configuration (lince.toml)",
+    "description": "User intent, versioned, default-deny — design config-v2 §2. "
+                   "Project overlays (<project>/.lince/lince.toml) use the same "
+                   "schema without the version key (§2.4).",
+    "type": "object",
+    "properties": {
+        "version": {"type": "string", "pattern": r"^\d+\.\d+$"},
+        "network": {
+            "type": "object",
+            "properties": {
+                "default": {"type": "string", "enum": ["deny", "allow"]},
+                "allowed_hosts": _STR_LIST,
+                # ADDITIVE only — appended to the built-in metadata blocklist,
+                # which can never be removed (§2.2).
+                "blocked_hosts": _STR_LIST,
+            },
+            "additionalProperties": False,
+        },
+        "providers": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "object",
+                "properties": {"env": _STR_LIST, "hosts": _STR_LIST},
+                "additionalProperties": False,
+            },
+        },
+        "agents": {"type": "object", "additionalProperties": _LINCE_AGENT_SCHEMA},
+        # [filesystem] + [sandbox]: split of the v1 [sandbox] table (§5.1).
+        "filesystem": {
+            "type": "object",
+            "properties": {
+                "extra_rw": _STR_LIST,
+                "ro_dirs": _STR_LIST,
+                "home_ro_dirs": _STR_LIST,
+                "home_rw_dirs": _STR_LIST,
+            },
+            "additionalProperties": False,
+        },
+        "sandbox": {
+            "type": "object",
+            "properties": {
+                "backend": _BACKEND,
+                "default_provider": _STR,
+                "persist_toolchains": _BOOL,
+                "auto_expose_path": _BOOL,
+            },
+            "additionalProperties": False,
+        },
+        # absorbed from ~/.config/lince-dashboard/config.toml (§2).
+        "dashboard": {
+            "type": "object",
+            "properties": {
+                "max_agents": _INT,
+                "agent_layout": {"type": "string", "enum": ["tiled", "floating"]},
+                "focus_mode": {"type": "string", "enum": ["replace", "floating"]},
+                "enabled_agents": _STR_LIST,
+                "default_agent_type": _STR,
+                "default_project_dir": _STR,
+                "default_provider": _STR,
+                "sandbox_command": _STR,
+                "status_file_dir": _STR,
+                "sandbox_colors": _STR_MAP,
+                "project_search_roots": _STR_LIST,
+                "project_search_max_depth": _INT,
+                "instance_icons": _STR_LIST,
+            },
+            "additionalProperties": False,
+        },
+        # escape hatches — OUTSIDE the version contract; warn only (§2.5).
+        "experimental": {
+            "type": "object",
+            "properties": {
+                "landlock": _BOOL,
+                "raw_bwrap_args": _STR_LIST,
+                "seatbelt_extra": _STR,
+                "permissive_network": _BOOL,
+            },
+            "additionalProperties": True,
+        },
+        # carried over from v1 sandbox config 1:1 (non-security, §2).
+        "logging": {
+            "type": "object",
+            "properties": {"enabled": _BOOL, "dir": _STR},
+            "additionalProperties": False,
+        },
+        "snapshot": {
+            "type": "object",
+            "properties": {
+                "auto_project": _BOOL,
+                "auto_config": _BOOL,
+                "max_project_snapshots": _INT,
+                "max_config_snapshots": _INT,
+                "project_exclude": _STR_LIST,
+            },
+            "additionalProperties": False,
+        },
+        "git": {
+            "type": "object",
+            "properties": {
+                "strip_sections": _STR_LIST,
+                "overrides": _STR_MAP,
+            },
+            "additionalProperties": False,
+        },
+        "trust": {
+            "type": "object",
+            "properties": {
+                "projects": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "properties": {"allow_loosening": _BOOL},
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    "required": ["version"],
+    "additionalProperties": False,
+}
+
+# Legacy v1 provider entry ([providers.*] in the sandbox config — env holds
+# NAME = VALUE pairs there, unlike v2's list of names).
+_V1_PROVIDER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "description": _STR,
+        "env": _STR_MAP,
+        "env_unset": _STR_LIST,
+        "default_args": _STR_LIST,
+    },
+    # nested extension sub-tables stay allowed without warnings
+    "additionalProperties": {"type": "object"},
+}
+
+_V1_PROVIDERS_TABLE = {"type": "object", "additionalProperties": _V1_PROVIDER_SCHEMA}
+
+SANDBOX_CONFIG_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "agent-sandbox configuration (legacy v1, ~/.agent-sandbox/config.toml)",
+    "type": "object",
+    "properties": {
+        # level fragments (~/.agent-sandbox/profiles/*.toml) share this schema
+        "extends": _STR,
+        "sandbox": {
+            "type": "object",
+            "properties": {
+                "extra_rw": _STR_LIST,
+                "ro_dirs": _STR_LIST,
+                "persist_toolchains": _BOOL,
+                "auto_expose_path": _BOOL,
+                "home_ro_dirs": _STR_LIST,
+                "default_provider": _STR,
+                "default_profile": _STR,
+                "backend": _STR,
+            },
+            "additionalProperties": False,
+        },
+        "security": {
+            "type": "object",
+            "properties": {
+                "unshare_pid": _BOOL,
+                "new_session": _BOOL,
+                "block_git_push": _BOOL,
+                "credential_proxy": _BOOL,
+                "unshare_net": _BOOL,
+                "allow_domains": _STR_LIST,
+            },
+            "additionalProperties": False,
+        },
+        "credential_proxy": {
+            "type": "object",
+            "properties": {"blocked_hosts": _STR_LIST},
+            "additionalProperties": False,
+        },
+        "git": {
+            "type": "object",
+            "properties": {"strip_sections": _STR_LIST, "overrides": _STR_MAP},
+            "additionalProperties": False,
+        },
+        "env": {
+            "type": "object",
+            "properties": {"passthrough": _STR_LIST, "extra": _STR_MAP},
+            "additionalProperties": False,
+        },
+        "logging": {
+            "type": "object",
+            "properties": {"enabled": _BOOL, "dir": _STR},
+            "additionalProperties": False,
+        },
+        "snapshot": {
+            "type": "object",
+            "properties": {
+                "auto_project": _BOOL,
+                "auto_config": _BOOL,
+                "max_project_snapshots": _INT,
+                "max_config_snapshots": _INT,
+                "project_exclude": _STR_LIST,
+            },
+            "additionalProperties": False,
+        },
+        "claude": {
+            "type": "object",
+            "properties": {"config_dir": _STR, "use_real_config": _BOOL},
+            # legacy [claude.providers] / [claude.profiles] sub-tables
+            "additionalProperties": {"type": "object"},
+        },
+        "providers": _V1_PROVIDERS_TABLE,
+        "profiles": _V1_PROVIDERS_TABLE,
+        "agents": {"type": "object", "additionalProperties": {"type": "object"}},
+    },
+    # other top-level tables are agent sections ([codex.providers] etc.)
+    "additionalProperties": {"type": "object"},
+}
+
+_V1_DASHBOARD_AGENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "command": _STR_LIST,
+        "pane_title_pattern": _STR,
+        "status_pipe_name": _STR,
+        "display_name": _STR,
+        "short_label": _STR,
+        "color": _STR,
+        "sandboxed": _BOOL,
+        "has_native_hooks": _BOOL,
+        "home_ro_dirs": _STR_LIST,
+        "home_rw_dirs": _STR_LIST,
+        "bwrap_conflict": _BOOL,
+        "disable_inner_sandbox_args": _STR_LIST,
+        "providers": _STR_LIST,
+        "profiles": _STR_LIST,
+        "sandbox_backend": _STR,
+        "sandbox_level": _STR,
+        "sandbox_levels": _STR_LIST,
+        "sandbox_home_subdir": _STR,
+        "env_vars": _STR_MAP,
+        "event_map": _EVENT_MAP,
+    },
+    "additionalProperties": False,
+}
+
+DASHBOARD_CONFIG_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "lince-dashboard configuration (legacy v1, ~/.config/lince-dashboard/config.toml)",
+    "type": "object",
+    "properties": {
+        "dashboard": {
+            "type": "object",
+            "properties": {
+                "default_provider": _STR,
+                "default_profile": _STR,
+                "sandbox_config_path": _STR,
+                "default_project_dir": _STR,
+                "default_agent_type": _STR,
+                "sandbox_command": _STR,
+                "agent_layout": {"type": "string", "enum": ["tiled", "floating"]},
+                "focus_mode": {"type": "string", "enum": ["replace", "floating"]},
+                "status_method": {"type": "string", "enum": ["pipe", "file"]},
+                "status_file_dir": _STR,
+                "max_agents": _INT,
+                "sandbox_backend": _STR,
+                "sandbox_colors": _STR_MAP,
+                "project_search_roots": _STR_LIST,
+                "project_search_max_depth": _INT,
+                "instance_icons": _STR_LIST,
+            },
+            "additionalProperties": False,
+        },
+        "agents": {"type": "object", "additionalProperties": _V1_DASHBOARD_AGENT_SCHEMA},
+    },
+    "additionalProperties": {"type": "object"},
+}
+
+# Published schema set: name → (JSON Schema document, generated filename).
+SCHEMAS = {
+    "lince": LINCE_SCHEMA,
+    "registry-agent": REGISTRY_AGENT_SCHEMA,
+    "registry-providers": REGISTRY_PROVIDERS_SCHEMA,
+    "sandbox-config": SANDBOX_CONFIG_SCHEMA,
+    "dashboard-config": DASHBOARD_CONFIG_SCHEMA,
 }
 
 
@@ -361,12 +729,153 @@ def _format_value(val, indent: int = 0) -> str:
     return str(val)
 
 
-def _find_schema_section(key: str, target: str) -> dict | None:
-    """Find the schema definition for a dotted key's parent section."""
-    parts = key.split(".")
-    schema = SANDBOX_SCHEMA if target == "sandbox" else DASHBOARD_SCHEMA
-    if parts[0] in schema:
-        return schema[parts[0]]
+# ── Schema validation engine (draft-07 subset) ──────────────────────────
+
+def _type_ok(value, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return True
+
+
+def schema_validate(value, schema: dict, path: str = "", issues: list | None = None) -> list:
+    """Validate a parsed TOML value against a JSON Schema (draft-07 subset:
+    type, enum, pattern, properties, required, additionalProperties, items).
+
+    Policy (design config-v2 §2.1, I6): type mismatches and missing required
+    keys are ERRORS; unknown keys under known tables are WARNINGS
+    (warn-and-ignore forward-compat) — except under [experimental], whose
+    schema allows them outright.
+    """
+    if issues is None:
+        issues = []
+    label = path or "(root)"
+
+    expected = schema.get("type")
+    if expected and not _type_ok(value, expected):
+        issues.append({
+            "level": "error",
+            "message": f"{label} should be a {expected}, got {type(value).__name__}",
+        })
+        return issues
+
+    if "enum" in schema and value not in schema["enum"]:
+        allowed = ", ".join(repr(v) for v in schema["enum"])
+        issues.append({
+            "level": "error",
+            "message": f"{label} must be one of: {allowed} (got {value!r})",
+        })
+
+    if "pattern" in schema and isinstance(value, str):
+        if not re.fullmatch(schema["pattern"], value):
+            issues.append({
+                "level": "error",
+                "message": f"{label} = {value!r} does not match pattern {schema['pattern']!r}",
+            })
+
+    if expected == "object" and isinstance(value, dict):
+        props = schema.get("properties", {})
+        additional = schema.get("additionalProperties", True)
+        for key, sub in value.items():
+            sub_path = f"{path}.{key}" if path else key
+            if key in props:
+                schema_validate(sub, props[key], sub_path, issues)
+            elif isinstance(additional, dict):
+                schema_validate(sub, additional, sub_path, issues)
+            elif additional is False:
+                issues.append({
+                    "level": "warn",
+                    "message": f"{sub_path} is not a recognized config key (ignored)",
+                })
+        for req in schema.get("required", []):
+            if req not in value:
+                issues.append({
+                    "level": "error",
+                    "message": f"{label} is missing the required key '{req}'",
+                })
+
+    if expected == "array" and isinstance(value, list):
+        item_schema = schema.get("items")
+        if item_schema:
+            for idx, item in enumerate(value):
+                schema_validate(item, item_schema, f"{path}[{idx}]", issues)
+
+    return issues
+
+
+def check_version_contract(version, file_label: str, required: bool = True) -> list:
+    """Apply the §2.1 semver contract to a lince.toml `version` value.
+
+    Returns a list of issues; every error names the fixing command (I6).
+    """
+    native_major, native_minor = SCHEMA_VERSION_NATIVE
+    native = f"{native_major}.{native_minor}"
+    issues: list[dict] = []
+
+    if version is None:
+        if required:
+            issues.append({
+                "level": "error",
+                "message": f'{file_label} is missing the required version key. '
+                           f'Add: version = "{native}"',
+            })
+        return issues
+
+    m = re.fullmatch(r"(\d+)\.(\d+)", str(version))
+    if m is None:
+        issues.append({
+            "level": "error",
+            "message": f'invalid version {version!r} — expected MAJOR.MINOR (e.g. "{native}")',
+        })
+        return issues
+
+    major, minor = int(m.group(1)), int(m.group(2))
+    if major != native_major:
+        issues.append({
+            "level": "error",
+            "message": f"config schema {version} has a different major version than "
+                       f"supported ({native}). See docs/migration-v2-users.md",
+        })
+    elif minor == native_minor:
+        pass
+    elif minor == native_minor - 1:
+        issues.append({
+            "level": "warn",
+            "message": f"config schema {version} is one minor behind {native} "
+                       f"(dual-read window). Run: lince config migrate",
+        })
+    elif minor < native_minor:
+        issues.append({
+            "level": "error",
+            "message": f"config schema {version} is older than the supported window "
+                       f"({native_major}.{native_minor - 1}). Run: lince config migrate",
+        })
+    else:
+        issues.append({
+            "level": "error",
+            "message": f"config written by a newer lince (schema {version} > native {native}). "
+                       f"Run: lince update  (or pin: npx @risorseartificiali/lince-cli@<ver>)",
+        })
+    return issues
+
+
+def find_registry_dir() -> Path | None:
+    """Return the first registry.d/ directory that contains agent files."""
+    for d in LINCE_REGISTRY_DIRS:
+        try:
+            if d.is_dir() and any(d.glob("*.toml")):
+                return d
+        except OSError:
+            continue
     return None
 
 
@@ -719,7 +1228,7 @@ def cmd_check(args) -> int:
         if issues:
             print(f"  {len(issues)} issue(s) found.")
         else:
-            print(f"  All checks passed.")
+            print("  All checks passed.")
 
     return 1 if any(i["level"] == "error" for i in issues) else 0
 
@@ -928,158 +1437,127 @@ def _find_agents_defaults_path() -> Path | None:
     return None
 
 
+def _load_toml_for_validation(path: Path, issues: list) -> dict | None:
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        issues.append({"level": "error", "message": f"{path}: TOML parse error: {exc}"})
+    except OSError as exc:
+        issues.append({"level": "error", "message": f"{path}: {exc}"})
+    return None
+
+
+def _validate_lince_file(path: Path, issues: list, overlay: bool = False) -> None:
+    """Validate a v2 lince.toml: §2.1 version contract first, then schema."""
+    parsed = _load_toml_for_validation(path, issues)
+    if parsed is None:
+        return
+    issues.extend(check_version_contract(
+        parsed.get("version"), str(path), required=not overlay,
+    ))
+    if overlay and "experimental" in parsed:
+        issues.append({
+            "level": "warn",
+            "message": f"{path}: [experimental] is not honored in project overlays (§2.4)",
+        })
+    # Hard version errors mean the file may follow a different schema —
+    # skip key-level validation to avoid misleading diagnostics.
+    if any(i["level"] == "error" for i in issues):
+        return
+    schema_validate(parsed, LINCE_SCHEMA, "", issues)
+
+
+def _validate_registry(registry_dir: Path, issues: list) -> None:
+    for path in sorted(registry_dir.glob("*.toml")):
+        parsed = _load_toml_for_validation(path, issues)
+        if parsed is None:
+            continue
+        schema = REGISTRY_PROVIDERS_SCHEMA if path.name == "providers.toml" else REGISTRY_AGENT_SCHEMA
+        before = len(issues)
+        schema_validate(parsed, schema, "", issues)
+        for issue in issues[before:]:
+            issue["message"] = f"{path.name}: {issue['message']}"
+
+
 def cmd_validate(args) -> int:
-    """Validate config structure and semantics."""
+    """Validate config structure against the published JSON Schemas (#203),
+    including the lince.toml version contract (design config-v2 §2.1)."""
     target = args.target
     issues: list[dict] = []
+    validated: list[str] = []
 
-    config_path = _resolve_config_path(target)
-    if config_path is None:
-        msg = f"No {target} config file found."
-        if args.json:
-            print(json.dumps({"valid": False, "issues": [{"level": "error", "message": msg}]}))
-        else:
-            print(f"✗ {msg}")
-        return 1
+    explicit_file = Path(args.file).expanduser() if getattr(args, "file", None) else None
 
-    # Parse check
-    try:
-        with open(config_path, "rb") as fh:
-            parsed = tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
-        msg = f"TOML parse error: {exc}"
-        if args.json:
-            print(json.dumps({"valid": False, "issues": [{"level": "error", "message": msg}]}))
-        else:
-            print(f"✗ {msg}")
-        return 1
-
-    # Schema check
-    schema = SANDBOX_SCHEMA if target == "sandbox" else DASHBOARD_SCHEMA
-    for section_name, fields in schema.items():
-        section = parsed.get(section_name)
-        if section is None:
-            continue
-        if not isinstance(section, dict):
+    if target == "lince":
+        path = explicit_file or LINCE_CONFIG_PATH
+        if not path.is_file():
             issues.append({
                 "level": "error",
-                "message": f"[{section_name}] is not a table (found {type(section).__name__})",
+                "message": f"No lince config found at {path}. "
+                           f"Create it (version = \"2.0\") or run: lince config migrate",
             })
-            continue
-        for key, (expected_type, required, desc) in fields.items():
-            if key not in section:
-                if required:
-                    issues.append({
-                        "level": "error",
-                        "message": f"[{section_name}].{key} is required but missing. {desc}",
-                    })
-                continue
-            val = section[key]
-            if expected_type == bool and not isinstance(val, bool):
-                issues.append({
-                    "level": "error",
-                    "message": f"[{section_name}].{key} should be a boolean, got {type(val).__name__}",
-                })
-            elif expected_type == int and not isinstance(val, int):
-                issues.append({
-                    "level": "error",
-                    "message": f"[{section_name}].{key} should be an integer, got {type(val).__name__}",
-                })
-            elif expected_type == str and not isinstance(val, str):
-                issues.append({
-                    "level": "error",
-                    "message": f"[{section_name}].{key} should be a string, got {type(val).__name__}",
-                })
-            elif expected_type == list and not isinstance(val, list):
-                issues.append({
-                    "level": "error",
-                    "message": f"[{section_name}].{key} should be a list, got {type(val).__name__}",
-                })
+        else:
+            validated.append(str(path))
+            _validate_lince_file(path, issues, overlay=getattr(args, "overlay", False))
+    elif target == "registry":
+        registry_dir = explicit_file or find_registry_dir()
+        if registry_dir is None or not Path(registry_dir).is_dir():
+            issues.append({
+                "level": "error",
+                "message": "No registry.d/ directory found "
+                           "(searched ~/.local/share/lince/registry.d and the repo layout).",
+            })
+        else:
+            validated.append(str(registry_dir))
+            _validate_registry(Path(registry_dir), issues)
+    else:
+        # legacy v1 targets: sandbox / dashboard
+        path = explicit_file or _resolve_config_path(target)
+        if path is None or not Path(path).is_file():
+            issues.append({"level": "error", "message": f"No {target} config file found."})
+        else:
+            validated.append(str(path))
+            parsed = _load_toml_for_validation(Path(path), issues)
+            if parsed is not None:
+                schema = SANDBOX_CONFIG_SCHEMA if target == "sandbox" else DASHBOARD_CONFIG_SCHEMA
+                schema_validate(parsed, schema, "", issues)
 
-    # Check for unknown keys in known sections
-    # Dynamic sub-keys that are valid in any section (providers, profiles, env, etc.)
-    _DYNAMIC_KEYS = {"providers", "profiles", "env", "extra", "overrides", "env_vars"}
-
-    for section_name, fields in schema.items():
-        section = parsed.get(section_name)
-        if not isinstance(section, dict):
-            continue
-        known_keys = set(fields.keys()) | _DYNAMIC_KEYS
-        for key in section:
-            if key not in known_keys and not _is_agent_or_provider_section(key, parsed):
-                issues.append({
-                    "level": "warn",
-                    "message": f"[{section_name}].{key} is not a recognized config key",
-                })
-
-    # Validate provider sections — top-level and agent-specific
-    _PROVIDER_FIELDS = set(PROVIDER_FIELDS.keys())
-    provider_sections: list[tuple[str, dict]] = []
-    for section_name in ("providers", "profiles"):
-        section = parsed.get(section_name)
-        if isinstance(section, dict):
-            provider_sections.append((section_name, section))
-    # Agent-specific [<agent>.providers.*] / [<agent>.profiles.*]
-    for top_key, top_val in parsed.items():
-        if not isinstance(top_val, dict):
-            continue
-        for sub in ("providers", "profiles"):
-            nested = top_val.get(sub)
-            if isinstance(nested, dict):
-                provider_sections.append((f"{top_key}.{sub}", nested))
-
-    for section_label, section in provider_sections:
-        for prov_name, prov_val in section.items():
-            if not isinstance(prov_val, dict):
-                continue
-            for key, val in prov_val.items():
-                if key in _PROVIDER_FIELDS:
-                    continue
-                # Allow nested sub-tables (e.g. extension fields) without warning
-                if isinstance(val, dict):
-                    continue
-                issues.append({
-                    "level": "warn",
-                    "message": f"[{section_label}.{prov_name}].{key} is not a recognized provider field",
-                })
-
-    # Output
+    errors = [i for i in issues if i["level"] == "error"]
     if args.json:
         print(json.dumps({
-            "valid": len([i for i in issues if i["level"] == "error"]) == 0,
+            "valid": not errors,
             "issues": issues,
-            "config_file": str(config_path),
+            "validated": validated,
         }, indent=2))
     else:
         if issues:
             for i in issues:
                 icon = "✗" if i["level"] == "error" else "⚠"
                 print(f"  {icon} {i['message']}")
-            errors = len([i for i in issues if i["level"] == "error"])
-            print(f"\n  {errors} error(s), {len(issues) - errors} warning(s).")
-        else:
-            print(f"  ✓ {config_path} is valid.")
+            print(f"\n  {len(errors)} error(s), {len(issues) - len(errors)} warning(s).")
+        elif validated:
+            for v in validated:
+                print(f"  ✓ {v} is valid.")
+    return 1 if errors else 0
 
-    return 1 if any(i["level"] == "error" for i in issues) else 0
 
-
-def _is_agent_or_provider_section(key: str, parsed: dict) -> bool:
-    """Detect whether a top-level key is an agent override section.
-
-    Structural detection (no hardcoded list): a top-level key is treated as an
-    agent section when it is itself a table containing nested `providers` or
-    `profiles` sub-tables, or when it appears in `[agents.<name>]` (dashboard
-    style). This lets users define custom agents without false-positive
-    "unrecognized config key" warnings.
-    """
-    val = parsed.get(key)
-    if isinstance(val, dict):
-        if any(isinstance(val.get(sub), dict) for sub in ("providers", "profiles")):
-            return True
-    agents = parsed.get("agents")
-    if isinstance(agents, dict) and key in agents:
-        return True
-    return False
+def cmd_schema(args) -> int:
+    """Print or write the published JSON Schemas (#203)."""
+    if args.write:
+        out_dir = Path(args.write)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for name, schema in SCHEMAS.items():
+            path = out_dir / f"{name}.schema.json"
+            path.write_text(json.dumps(schema, indent=2) + "\n", encoding="utf-8")
+            print(f"wrote {path}")
+        return 0
+    if args.name not in SCHEMAS:
+        print(f"Error: unknown schema '{args.name}'. "
+              f"Available: {', '.join(SCHEMAS)}", file=sys.stderr)
+        return 1
+    print(json.dumps(SCHEMAS[args.name], indent=2))
+    return 0
 
 
 def _check_permissions(path: Path, quiet: bool = False) -> None:
@@ -1186,10 +1664,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.set_defaults(func=cmd_check)
 
     # ── validate ────────────────────────────────────────────────
-    p_validate = sub.add_parser("validate", help="Validate config structure")
-    _add_target_flag(p_validate)
+    p_validate = sub.add_parser(
+        "validate",
+        help="Validate config against the published JSON Schemas (incl. version contract)",
+    )
+    p_validate.add_argument(
+        "--target", "-t",
+        choices=["sandbox", "dashboard", "lince", "registry"],
+        default="sandbox",
+        help="Which config to validate (default: sandbox)",
+    )
+    p_validate.add_argument(
+        "--file", "-f",
+        help="Validate this file (or directory, for --target registry) instead of the installed one",
+    )
+    p_validate.add_argument(
+        "--overlay",
+        action="store_true",
+        help="Treat the file as a project overlay (lince target: version key not required, §2.4)",
+    )
     _add_json_flag(p_validate)
     p_validate.set_defaults(func=cmd_validate)
+
+    # ── schema ──────────────────────────────────────────────────
+    p_schema = sub.add_parser("schema", help="Print or write the published JSON Schemas")
+    p_schema.add_argument("name", nargs="?", help=f"Schema to print ({', '.join(SCHEMAS)})")
+    p_schema.add_argument("--write", metavar="DIR", help="Write all schemas as <name>.schema.json into DIR")
+    p_schema.set_defaults(func=cmd_schema)
 
     return parser
 

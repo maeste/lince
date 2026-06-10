@@ -31,8 +31,20 @@ lince-config unset <dotted.key>          [--target sandbox|dashboard] [-q]
 
 # Diagnostics
 lince-config check    [--target sandbox|dashboard] [--json]
-lince-config validate [--target sandbox|dashboard] [--json]
+lince-config validate [--target sandbox|dashboard|lince|registry] [--file PATH] [--overlay] [--json]
+
+# JSON Schemas (Taplo-compatible — see schemas/ in the repo)
+lince-config schema <lince|registry-agent|registry-providers|sandbox-config|dashboard-config>
+lince-config schema --write schemas/
 ```
+
+`validate` is schema-driven (#203): type mismatches and missing required keys
+are errors; unknown keys under known tables are warnings (forward-compat).
+For `--target lince` (the Config v2 `~/.config/lince/lince.toml`) it also
+enforces the version contract — explicit "config older/newer than supported"
+errors with the fixing command named. `--target registry` validates every
+`registry.d/*.toml`. `--overlay` validates a project overlay
+(`<project>/.lince/lince.toml`, no `version` key required).
 
 ## Examples
 

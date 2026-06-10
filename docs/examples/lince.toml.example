@@ -1,0 +1,22 @@
+# Example LINCE v2 policy file — ~/.config/lince/lince.toml
+#
+# User intent only: everything not set here comes from the shipped registry
+# (~/.local/share/lince/registry.d/). Design: docs/design/config-v2-design.md.
+# Validate with:  lince-config validate --target lince
+# Editor support: point your TOML LSP (Taplo) at schemas/lince.schema.json.
+
+version = "2.0"
+
+[network]
+# "deny" is the shipped and documented guarantee: no egress beyond the
+# credential proxy. allowed_hosts only widens the proxy allowlist — it never
+# touches kernel rules.
+default = "deny"
+allowed_hosts = []
+
+# Paranoid claude with two extra allowed hosts (design §7.3): pypi reachable
+# ONLY through the proxy — direct connections die at the kernel.
+[agents.claude]
+level = "paranoid"
+provider = "anthropic"   # expects ANTHROPIC_API_KEY (or OAuth token) in your host env
+allowed_hosts = ["pypi.org", "files.pythonhosted.org"]
