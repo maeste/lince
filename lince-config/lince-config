@@ -92,6 +92,16 @@ LINCE_REGISTRY_DIRS = [
     Path(__file__).resolve().parent.parent / "registry.d",
 ]
 
+def _d(base: dict, desc: str, default=None) -> dict:
+    """Attach a description (+ default) to a schema fragment — the generation
+    source for the config reference (#212): scripts/gen_config_reference.py
+    renders these into the skill reference files and the docs site."""
+    out = {**base, "description": desc}
+    if default is not None:
+        out["default"] = default
+    return out
+
+
 _STR = {"type": "string"}
 _BOOL = {"type": "boolean"}
 _INT = {"type": "integer"}
@@ -320,11 +330,28 @@ LINCE_SCHEMA = {
         # escape hatches — OUTSIDE the version contract; warn only (§2.5).
         "experimental": {
             "type": "object",
+            "description": "Raw mechanism passthroughs (#210). Each active key "
+                           "voids the validated default-deny guarantee VISIBLY: "
+                           "spawn banner + resolve guarantee = 'void:<key>'. "
+                           "Never offered by guided flows.",
             "properties": {
-                "landlock": _BOOL,
-                "raw_bwrap_args": _STR_LIST,
-                "seatbelt_extra": _STR,
-                "permissive_network": _BOOL,
+                "landlock": _d(_BOOL, "Pre-#222 opt-in flag (Landlock now ships "
+                                      "enabled by default via [security].landlock)"),
+                "raw_bwrap_args": _d(_STR_LIST, "Extra bwrap arguments appended LAST "
+                                                "to the generated command (expert "
+                                                "valve — e.g. one extra --bind)"),
+                "seatbelt_extra": _d(_STR, "Seatbelt profile snippet appended "
+                                           "verbatim to the generated .sb"),
+                "permissive_network": _d(_BOOL, "Required to set [network].default "
+                                               "= 'allow'"),
+                "agents": _d({"type": "object", "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                        "raw_bwrap_args": _STR_LIST,
+                        "seatbelt_extra": _STR,
+                    },
+                    "additionalProperties": True,
+                }}, "Per-agent overrides — appended after the global ones"),
             },
             "additionalProperties": True,
         },
@@ -374,16 +401,6 @@ LINCE_SCHEMA = {
 
 # Legacy v1 provider entry ([providers.*] in the sandbox config — env holds
 # NAME = VALUE pairs there, unlike v2's list of names).
-def _d(base: dict, desc: str, default=None) -> dict:
-    """Attach a description (+ default) to a schema fragment — the generation
-    source for the config reference (#212): scripts/gen_config_reference.py
-    renders these into the skill reference files and the docs site."""
-    out = {**base, "description": desc}
-    if default is not None:
-        out["default"] = default
-    return out
-
-
 _V1_PROVIDER_SCHEMA = {
     "type": "object",
     "description": "A provider: named env-var bundle switching model "
@@ -1586,6 +1603,13 @@ def _validate_lince_file(path: Path, issues: list, overlay: bool = False) -> Non
             "level": "warn",
             "message": f"{path}: [experimental] is not honored in project overlays (§2.4)",
         })
+    if not overlay:
+        for key in _active_experimental_keys(parsed.get("experimental", {})):
+            issues.append({
+                "level": "warn",
+                "message": f"policy-overridden: [experimental].{key} is active — "
+                           f"the validated default-deny guarantee is void (§2.5)",
+            })
     # Hard version errors mean the file may follow a different schema —
     # skip key-level validation to avoid misleading diagnostics.
     if any(i["level"] == "error" for i in issues):
@@ -1895,6 +1919,24 @@ def _expand_provider_env_all(env: dict, providers: dict) -> dict:
     return out
 
 
+def _active_experimental_keys(experimental: dict) -> list[str]:
+    """Names of [experimental] keys that are actually ACTIVE (truthy),
+    including per-agent ones as 'agents.<name>.<key>' (#210)."""
+    if not isinstance(experimental, dict):
+        return []
+    active: list[str] = []
+    for key, val in experimental.items():
+        if key == "agents" and isinstance(val, dict):
+            for agent, table in val.items():
+                if isinstance(table, dict):
+                    for sub, sub_val in table.items():
+                        if sub_val not in (False, "", [], {}, None):
+                            active.append(f"agents.{agent}.{sub}")
+        elif val not in (False, "", [], {}, None):
+            active.append(key)
+    return active
+
+
 def build_resolved_view(
     project_dir: Path | None = None,
     agent_filter: str | None = None,
@@ -1926,6 +1968,7 @@ def build_resolved_view(
     guarantee = "default-deny"
     network: dict = {"default": "deny", "allowed_hosts": []}
     agent_policy: dict[str, dict] = {}     # name -> policy keys (level/provider/allowed_hosts)
+    active_experimental: list[str] = []    # [experimental] hatches in force (#210)
     agent_origin: dict[str, dict] = {}     # name -> {key: origin}
     user_provider_names_by_agent: dict[str, list] = {}
     user_provider_details: dict[str, dict] = {}  # name -> {env, env_unset}
@@ -1975,9 +2018,9 @@ def build_resolved_view(
             agent_policy[name] = policy
             agent_origin[name] = {k: "user" for k in policy}
         experimental = lince.get("experimental", {})
-        active = [k for k, v in experimental.items() if v not in (False, "", [], {}, None)]
-        if active:
-            guarantee = f"void:{active[0]}"
+        active_experimental = _active_experimental_keys(experimental)
+        if active_experimental:
+            guarantee = f"void:{active_experimental[0]}"
         sb = lince.get("sandbox", {})
         default_provider = sb.get("default_provider") or None
         enabled = lince.get("dashboard", {}).get("enabled_agents")
@@ -2318,6 +2361,13 @@ def build_resolved_view(
             },
             "variants": {"unsandboxed": _derive_unsandboxed(name, entry, env)},
             "allowed_hosts_effective": allowed_hosts,
+            # active [experimental] hatches affecting this agent (#210):
+            # globals + its own [experimental.agents.<name>] entries — lets
+            # the dashboard badge "custom policy" agents.
+            "experimental": [
+                k for k in active_experimental
+                if not k.startswith("agents.") or k.startswith(f"agents.{name}.")
+            ],
             "origin": origin,
         }
 

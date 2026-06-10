@@ -2977,7 +2977,8 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                     agent_name: str = "claude",
                     proxy_env: dict[str, str] | None = None,
                     scratch_binds: list[tuple[str, str]] | None = None,
-                    landlock: dict | None = None) -> list[str]:
+                    landlock: dict | None = None,
+                    raw_bwrap_args: list[str] | None = None) -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
@@ -3308,6 +3309,15 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                 args_source.append(da)
 
     agent_cmd = [agent_cfg["command"]] + args_source + list(agent_extra_args)
+
+    # --- [experimental].raw_bwrap_args (#210) ---------------------------------
+    # Appended LAST (mxc profileOverride precedent): the expert's args win
+    # over every generated option. Before the trailing `--` like all options.
+    if raw_bwrap_args:
+        if cmd and cmd[-1] == "--":
+            cmd[-1:-1] = list(raw_bwrap_args)
+        else:
+            cmd += list(raw_bwrap_args)
 
     # --- Landlock hardening shim (#222) ---------------------------------------
     # Injected as the LAST bwrap argv element so its rule FDs open in the
@@ -3651,6 +3661,66 @@ def enforce_paranoid_fail_closed(level: str | None, record: dict) -> None:
 
 def _argv_digest(cmd: list[str]) -> str:
     return hashlib.sha256("\0".join(cmd).encode("utf-8", "replace")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# [experimental] escape hatches (#210, design config-v2 §2.5)
+#
+# Raw mechanism passthroughs from the USER policy file (lince.toml) — the
+# policy layer must not trap experts. Contract: overrides are appended LAST,
+# survive updates (they live in user-owned lince.toml), void the validated-
+# policy guarantee VISIBLY (spawn banner + resolve "guarantee": "void:<key>",
+# I5), and are never offered by guided flows.
+# ---------------------------------------------------------------------------
+
+LINCE_POLICY_PATH = Path.home() / ".config" / "lince" / "lince.toml"
+
+
+def load_experimental_overrides(agent_name: str) -> dict:
+    """Read [experimental] (+ [experimental.agents.<name>]) from lince.toml.
+
+    Returns {"raw_bwrap_args": [...], "seatbelt_extra": str, "active": [keys]}.
+    Per-agent values append after (bwrap args) / below (seatbelt) the global
+    ones. Missing/malformed lince.toml -> empty overrides.
+    """
+    out = {"raw_bwrap_args": [], "seatbelt_extra": "", "active": []}
+    try:
+        with open(LINCE_POLICY_PATH, "rb") as fh:
+            experimental = tomllib.load(fh).get("experimental", {})
+    except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
+        return out
+    if not isinstance(experimental, dict):
+        return out
+
+    def absorb(table: dict, scope: str) -> None:
+        args = table.get("raw_bwrap_args")
+        if isinstance(args, list) and args:
+            out["raw_bwrap_args"] += [str(a) for a in args]
+            out["active"].append(f"raw_bwrap_args{scope}")
+        extra = table.get("seatbelt_extra")
+        if isinstance(extra, str) and extra.strip():
+            out["seatbelt_extra"] += ("\n" if out["seatbelt_extra"] else "") + extra
+            out["active"].append(f"seatbelt_extra{scope}")
+
+    absorb(experimental, "")
+    per_agent = experimental.get("agents", {})
+    if isinstance(per_agent, dict):
+        agent_tbl = per_agent.get(agent_name, {})
+        if isinstance(agent_tbl, dict):
+            absorb(agent_tbl, f" (agents.{agent_name})")
+    return out
+
+
+def print_experimental_banner(active: list[str]) -> None:
+    """I5: escape hatches void the guarantee VISIBLY, at spawn."""
+    if not active:
+        return
+    print(
+        f"\033[1;31m⚠  EXPERIMENTAL policy override active: {', '.join(active)}\n"
+        f"   The validated default-deny guarantee is VOID for this launch "
+        f"(lince.toml [experimental], design §2.5).\033[0m",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4357,6 +4427,9 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         sb_combined_env.update(sb_proxy_env)
         sb_combined_env.update(sb_git_env)
 
+        # [experimental] escape hatches (#210).
+        sb_experimental = load_experimental_overrides(agent_name)
+
         # Build the seatbelt command (generates a runtime profile with the
         # real project dir injected)
         cmd, runtime_profile = build_seatbelt_cmd(
@@ -4383,6 +4456,18 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             except OSError:
                 pass
             return
+
+        # [experimental].seatbelt_extra (#210): appended VERBATIM, last, to the
+        # generated runtime profile — later Seatbelt rules win.
+        if sb_experimental["seatbelt_extra"]:
+            try:
+                with open(runtime_profile, "a", encoding="utf-8") as fh:
+                    fh.write("\n;; [experimental].seatbelt_extra (lince.toml, #210)\n")
+                    fh.write(sb_experimental["seatbelt_extra"] + "\n")
+            except OSError as exc:
+                print(f"agent-sandbox: warning: could not append seatbelt_extra: {exc}",
+                      file=sys.stderr)
+        print_experimental_banner(sb_experimental["active"])
 
         # Print level-specific warnings (e.g. paranoid limitations on Seatbelt)
         level_warnings = check_seatbelt_level_warnings(backend, sandbox_level, config)
@@ -4731,6 +4816,9 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             sys.exit(1)
         # normal: graceful — the shim logs and continues bwrap-only.
 
+    # [experimental] escape hatches (#210) — read from the user policy file.
+    experimental = load_experimental_overrides(agent_name)
+
     # Build command
     cmd = build_bwrap_cmd(config, project_dir, agent_extra, log_file,
                           profile=profile, safe_mode=args.safe,
@@ -4739,7 +4827,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                           agent_name=agent_name,
                           proxy_env=proxy_env if proxy_env else None,
                           scratch_binds=scratch_binds or None,
-                          landlock=landlock)
+                          landlock=landlock,
+                          raw_bwrap_args=experimental["raw_bwrap_args"] or None)
 
     # Paranoid wrap: create a userns + fresh netns OUTSIDE bwrap so we can
     # bring up loopback (needs CAP_NET_ADMIN, which non-setuid bwrap drops
@@ -4825,6 +4914,7 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     claude_scratched = any(
         target == str(Path.home() / ".claude") for _, target in scratch_binds
     )
+    print_experimental_banner(experimental["active"])
     print("agent-sandbox")
     print(f"  config      {config_path}")
     print(f"  backend     agent-sandbox (bubblewrap)")

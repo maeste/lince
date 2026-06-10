@@ -215,6 +215,28 @@ class ResolveTestCase(unittest.TestCase):
         view = self.resolve()
         self.assertEqual(view["guarantee"], "void:permissive_network")
 
+    def test_experimental_reported_per_agent(self):
+        """#210: per-agent hatches surface on that agent only; globals on all."""
+        self.write_lince(
+            'version = "2.0"\n'
+            '[experimental]\nseatbelt_extra = "(allow file-write* (subpath \\"/opt\\"))"\n'
+            '[experimental.agents.codex]\nraw_bwrap_args = ["--hostname", "x"]\n'
+        )
+        view = self.resolve()
+        self.assertTrue(view["guarantee"].startswith("void:"))
+        self.assertIn("seatbelt_extra", view["agents"]["claude"]["experimental"])
+        self.assertNotIn("agents.codex.raw_bwrap_args",
+                         view["agents"]["claude"]["experimental"])
+        self.assertIn("agents.codex.raw_bwrap_args",
+                      view["agents"]["codex"]["experimental"])
+
+    def test_experimental_validate_warns_not_blocks(self):
+        self.write_lince('version = "2.0"\n[experimental]\nraw_bwrap_args = ["--dev-bind", "/x", "/x"]\n')
+        issues = []
+        self.lc._validate_lince_file(self.lince_cfg, issues)
+        self.assertTrue(any("policy-overridden" in i["message"] for i in issues))
+        self.assertFalse(any(i["level"] == "error" for i in issues))
+
     def test_custom_agent_in_lince_toml(self):
         self.write_lince(
             'version = "2.0"\n'

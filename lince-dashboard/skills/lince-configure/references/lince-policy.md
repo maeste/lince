@@ -84,12 +84,15 @@ Key reference for `~/.config/lince/lince.toml` (and the project overlay `<projec
 
 ## `[experimental]`
 
+Raw mechanism passthroughs (#210). Each active key voids the validated default-deny guarantee VISIBLY: spawn banner + resolve guarantee = 'void:<key>'. Never offered by guided flows.
+
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `landlock` | bool | — | — |
-| `raw_bwrap_args` | list[string] | — | — |
-| `seatbelt_extra` | str | — | — |
-| `permissive_network` | bool | — | — |
+| `landlock` | bool | — | Pre-#222 opt-in flag (Landlock now ships enabled by default via [security].landlock) |
+| `raw_bwrap_args` | list[string] | — | Extra bwrap arguments appended LAST to the generated command (expert valve — e.g. one extra --bind) |
+| `seatbelt_extra` | str | — | Seatbelt profile snippet appended verbatim to the generated .sb |
+| `permissive_network` | bool | — | Required to set [network].default = 'allow' |
+| `agents` | table | — | Per-agent overrides — appended after the global ones |
 
 ## `[logging]`
 
