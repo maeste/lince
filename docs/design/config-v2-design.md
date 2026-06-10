@@ -464,11 +464,12 @@ spike shim.
 | Field | Meaning |
 |---|---|
 | `backend` | enforcing backend used for this launch (bwrap / seatbelt / nono / landlock) |
-| `requested` | isolation level + filesystem/network policy refs (the `<hash8>` slices, §4.2) |
+| `requested` | isolation level + filesystem/network policy refs (symbolic descriptions until the §4.2 generated-artifacts pipeline lands, then the `<hash8>` slices) |
 | `landlock_abi` | Landlock ABI detected at launch (0 = unavailable) |
 | `fs_enforced` / `net_enforced` | whether the requested fs / net rules were actually applied |
 | `net_limitation` | `"port-only"` \| `"host-unaware"` \| `"unavailable"` \| absent — what the net layer cannot express (e.g. ABI v4 must never pretend to enforce host allowlists, §2.2) |
 | `bwrap_args_digest` | digest of the `.args` artifact fed to bwrap |
+| `profile_digest` | digest of the backend profile content (Seatbelt runtime `.sb`), where the launch vector is a profile rather than args |
 | `helper_version` / `helper_digest` | Landlock helper version + binary digest |
 | `applied_before_exec` | rules in place before the agent process exec'd |
 | `inherited_by_subprocesses` | **verified** (child-process probe), not assumed |

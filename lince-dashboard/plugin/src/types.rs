@@ -377,6 +377,36 @@ impl WizardState {
     }
 }
 
+/// Enforced-boundary summary from the per-launch effective-policy record
+/// (#221, design config-v2 §4.3.1): `lince config resolve --json` is the
+/// REQUESTED view; this is the ENFORCED view, parsed from the
+/// `<id>.policy.json` agent-sandbox writes next to the `.state` files.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct EnforcedPolicy {
+    #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub fs_enforced: bool,
+    #[serde(default)]
+    pub net_enforced: bool,
+    #[serde(default)]
+    pub net_limitation: Option<String>,
+    #[serde(default)]
+    pub degraded_reason: Option<String>,
+}
+
+impl EnforcedPolicy {
+    pub fn fully_enforced(&self) -> bool {
+        self.fs_enforced && self.net_enforced
+    }
+
+    /// Compact badge: which boundary the kernel actually enforced.
+    pub fn badge(&self) -> String {
+        let tick = |ok: bool| if ok { "\u{2713}" } else { "\u{2717}" };
+        format!("fs{} net{}", tick(self.fs_enforced), tick(self.net_enforced))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentInfo {
     pub id: String,
@@ -407,6 +437,10 @@ pub struct AgentInfo {
     /// empty. Runtime-only — not persisted to the state file (the spawn path
     /// re-derives it on restore).
     pub icon: String,
+    /// Effective-policy record for this launch (#221). None until the
+    /// `.policy.json` written by agent-sandbox is polled. Runtime-only —
+    /// re-read from disk after a restore.
+    pub enforced: Option<EnforcedPolicy>,
 }
 
 impl AgentInfo {
@@ -640,6 +674,32 @@ mod tests {
         assert_eq!(AgentStatus::Stopped.color(), "\x1b[2m");
     }
 
+    /// Effective-policy records (#221) arrive as single-line JSON written by
+    /// agent-sandbox; unknown fields must be ignored, badge must reflect the
+    /// enforced boundaries.
+    #[test]
+    fn enforced_policy_parses_record_json() {
+        let json = r#"{"schema":1,"agent":"claude","agent_id":"claude-1",
+            "backend":"bwrap","requested":{"level":"paranoid"},
+            "landlock_abi":7,"fs_enforced":true,"net_enforced":true,
+            "net_limitation":null,"bwrap_args_digest":"abc",
+            "degraded_reason":null,"written_at":"2026-06-10T10:00:00+02:00"}"#;
+        let p: EnforcedPolicy = serde_json::from_str(json).unwrap();
+        assert!(p.fully_enforced());
+        assert_eq!(p.backend, "bwrap");
+        assert_eq!(p.badge(), "fs\u{2713} net\u{2713}");
+    }
+
+    #[test]
+    fn enforced_policy_degraded_badge() {
+        let json = r#"{"backend":"nono","fs_enforced":false,"net_enforced":false,
+            "net_limitation":"unavailable","degraded_reason":"delegated to nono"}"#;
+        let p: EnforcedPolicy = serde_json::from_str(json).unwrap();
+        assert!(!p.fully_enforced());
+        assert_eq!(p.badge(), "fs\u{2717} net\u{2717}");
+        assert_eq!(p.degraded_reason.as_deref(), Some("delegated to nono"));
+    }
+
     fn make_agent(status: AgentStatus, exit_code: Option<i32>) -> AgentInfo {
         AgentInfo {
             id: "agent-1".to_string(),
@@ -657,6 +717,7 @@ mod tests {
             sandbox_level: None,
             sandbox_backend: None,
             transcript_path: None,
+            enforced: None,
             icon: String::new(),
         }
     }
@@ -717,6 +778,7 @@ mod tests {
             sandbox_level: Some("paranoid".to_string()),
             sandbox_backend: Some(crate::sandbox_backend::SandboxBackend::Nono),
             transcript_path: None,
+            enforced: None,
             icon: String::new(), // not persisted
         };
 

@@ -523,7 +523,17 @@ fn render_agent_table(
                             pad_left("NOSB", col_sandbox)
                         } else {
                             let backend = agent.sandbox_backend.as_ref().unwrap_or(&cfg.sandbox_backend);
-                            pad_left(backend.display_name(), col_sandbox)
+                            // '!' = the effective-policy record (#221) says a
+                            // requested boundary was NOT enforced for this run.
+                            let degraded = agent
+                                .enforced
+                                .as_ref()
+                                .map_or(false, |p| !p.fully_enforced());
+                            if degraded {
+                                pad_left(&format!("{}!", backend.display_name()), col_sandbox)
+                            } else {
+                                pad_left(backend.display_name(), col_sandbox)
+                            }
                         }
                     } else {
                         pad_left("-", col_sandbox)
@@ -693,6 +703,28 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
         let profile = agent.sandbox_level.as_deref().unwrap_or("(default)");
         println!(" {}Profile:{} {}", CYAN, RESET, profile);
         row += 1;
+    }
+    // Effective-policy badge (#221): the boundary the kernel actually
+    // enforced for THIS run (requested view = `lince config resolve`).
+    if row < max_rows {
+        if let Some(ref p) = agent.enforced {
+            let color = if p.fully_enforced() { "\x1b[32m" } else { "\x1b[1;33m" };
+            let mut extra = String::new();
+            if let Some(ref lim) = p.net_limitation {
+                if lim != "unavailable" {
+                    extra.push_str(&format!(" net:{}", lim));
+                }
+            }
+            if let Some(ref reason) = p.degraded_reason {
+                extra.push_str(&format!(" \x1b[1;33m{}\x1b[0m", reason));
+            }
+            let line = format!(
+                " {}Enforced:{} {}{}{} [{}]{}",
+                CYAN, RESET, color, p.badge(), RESET, p.backend, extra,
+            );
+            println!("{}", truncate(&line, cols));
+            row += 1;
+        }
     }
     if row < max_rows {
         let provider = agent.provider.as_deref().unwrap_or("(default)");

@@ -487,11 +487,18 @@ pub const CMD_POLL_STATUS: &str = "poll_status";
 /// `Event::RunCommandResult` with context `type=poll_status`.
 pub fn poll_status_files_async(status_dir: &str) {
     let dir = shell_escape(status_dir);
+    // Two line shapes share one poll (one fork per tick, not two):
+    //   `<basename>\t<event>`            — agent status from .state files
+    //   `POLICY\t<id>\t<json>`           — effective-policy record (#221)
+    //                                      from <id>.policy.json
     let script = format!(
-        "for f in '{}'/*.state; do [ -f \"$f\" ] || continue; \
+        "for f in '{dir}'/*.state; do [ -f \"$f\" ] || continue; \
          printf '%s\\t%s\\n' \"$(basename \"$f\" .state)\" \
+         \"$(tr -d '\\n' < \"$f\" 2>/dev/null)\"; done; \
+         for f in '{dir}'/*.policy.json; do [ -f \"$f\" ] || continue; \
+         printf 'POLICY\\t%s\\t%s\\n' \"$(basename \"$f\" .policy.json)\" \
          \"$(tr -d '\\n' < \"$f\" 2>/dev/null)\"; done",
-        dir
+        dir = dir
     );
     run_typed_command(&["sh", "-c", &script], CMD_POLL_STATUS);
 }
