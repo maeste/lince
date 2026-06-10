@@ -79,6 +79,13 @@ agent-sandbox builds a [bubblewrap](https://github.com/containers/bubblewrap) co
 
 **Install bubblewrap:** `sudo dnf install bubblewrap` (Fedora) | `sudo apt install bubblewrap` (Ubuntu/Debian) | `sudo pacman -S bubblewrap` (Arch)
 
+> **Ubuntu 24.04+ note**: unprivileged user namespaces are AppArmor-restricted
+> by default, so bwrap-based sandboxing can fail with
+> `write failed /proc/self/uid_map: Operation not permitted`. Installing
+> bubblewrap **from apt** ships the AppArmor profile that allows it; if you
+> installed bwrap another way, either add a profile or set
+> `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
+
 ## Quick start
 
 ```bash

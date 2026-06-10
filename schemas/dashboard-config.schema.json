@@ -5,75 +5,100 @@
   "properties": {
     "dashboard": {
       "type": "object",
+      "description": "Dashboard behavior and defaults.",
       "properties": {
         "default_provider": {
-          "type": "string"
+          "type": "string",
+          "description": "Default provider for new agents"
         },
         "default_profile": {
-          "type": "string"
+          "type": "string",
+          "description": "LEGACY alias of default_provider (pre-#81)"
         },
         "sandbox_config_path": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the sandbox config",
+          "default": "~/.agent-sandbox/config.toml"
         },
         "default_project_dir": {
-          "type": "string"
+          "type": "string",
+          "description": "Default working directory for new agents"
         },
         "default_agent_type": {
-          "type": "string"
+          "type": "string",
+          "description": "Agent type preselected by the n shortcut and the N wizard"
         },
         "sandbox_command": {
-          "type": "string"
+          "type": "string",
+          "description": "Path to the agent-sandbox binary",
+          "default": "agent-sandbox"
         },
         "agent_layout": {
           "type": "string",
           "enum": [
             "tiled",
             "floating"
-          ]
+          ],
+          "description": "How agent panes are created",
+          "default": "tiled"
         },
         "focus_mode": {
           "type": "string",
           "enum": [
             "replace",
             "floating"
-          ]
+          ],
+          "description": "How focusing an agent works",
+          "default": "floating"
         },
         "status_method": {
           "type": "string",
           "enum": [
             "pipe",
             "file"
-          ]
+          ],
+          "description": "Status detection method (file polling always runs; pipe is a fast-path)",
+          "default": "pipe"
         },
         "status_file_dir": {
-          "type": "string"
+          "type": "string",
+          "description": "Directory for per-agent .state files",
+          "default": "/tmp/lince-dashboard"
         },
         "max_agents": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Maximum concurrent agents",
+          "default": 9
         },
         "sandbox_backend": {
-          "type": "string"
+          "type": "string",
+          "description": "Global backend preference"
         },
         "sandbox_colors": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          }
+          },
+          "description": "Color per sandbox level (paranoid/normal/permissive/default)"
         },
         "project_search_roots": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Roots scanned recursively by the wizard's Tab completion"
         },
         "project_search_max_depth": {
-          "type": "integer"
+          "type": "integer",
+          "description": "find -maxdepth for project_search_roots",
+          "default": 3
         },
         "instance_icons": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Pool of per-instance marker glyphs (#166); empty disables markers"
         }
       },
       "additionalProperties": false
@@ -82,87 +107,110 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
+        "description": "An agent-type override; entries here overlay the resolved registry defaults (per-field since #202).",
         "properties": {
           "command": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Legacy fallback command template ({agent_id}, {project_dir}, {provider}); ignored when sandbox_level is set"
           },
           "pane_title_pattern": {
-            "type": "string"
+            "type": "string",
+            "description": "Pattern matching Zellij pane titles for reconciliation"
           },
           "status_pipe_name": {
-            "type": "string"
+            "type": "string",
+            "description": "Zellij pipe name for status messages",
+            "default": "lince-status"
           },
           "display_name": {
-            "type": "string"
+            "type": "string",
+            "description": "Full name shown in the UI"
           },
           "short_label": {
-            "type": "string"
+            "type": "string",
+            "description": "3-char label for the table column"
           },
           "color": {
-            "type": "string"
+            "type": "string",
+            "description": "ANSI color name"
           },
           "sandboxed": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether the agent runs inside the sandbox"
           },
           "has_native_hooks": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Agent emits its own status events (no wrapper needed)",
+            "default": false
           },
           "home_ro_dirs": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "UNUSED by the plugin \u2014 the sandbox copy is authoritative"
           },
           "home_rw_dirs": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "UNUSED by the plugin \u2014 the sandbox copy is authoritative"
           },
           "bwrap_conflict": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Agent uses bwrap internally (conflicts with the outer sandbox)",
+            "default": false
           },
           "disable_inner_sandbox_args": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Args disabling the agent's own sandbox"
           },
           "providers": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "[\"__discover__\"] = all discovered providers; [] = skip the provider step; or an explicit list"
           },
           "profiles": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "LEGACY alias of providers (pre-#81)"
           },
           "sandbox_backend": {
-            "type": "string"
+            "type": "string",
+            "description": "Per-agent backend override (agent-sandbox/seatbelt/nono)"
           },
           "sandbox_level": {
-            "type": "string"
+            "type": "string",
+            "description": "Default isolation level in the wizard (paranoid/normal/permissive or custom)"
           },
           "sandbox_levels": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Pin the wizard level picker to this set (shells use [\"normal\"])"
           },
           "sandbox_home_subdir": {
-            "type": "string"
+            "type": "string",
+            "description": "$HOME subdir rsynced to scratch by the paranoid nono wrapper"
           },
           "env_vars": {
             "type": "object",
             "additionalProperties": {
               "type": "string"
-            }
+            },
+            "description": "Env vars exported at spawn ($VAR self-references inherit from the host env)"
           },
           "event_map": {
             "type": "object",
@@ -174,11 +222,13 @@
                 "permission",
                 "stopped"
               ]
-            }
+            },
+            "description": "Agent event name -> canonical status (running/input/permission/stopped)"
           }
         },
         "additionalProperties": false
-      }
+      },
+      "description": "Agent-type overrides / custom agents (overlay the registry)"
     }
   },
   "additionalProperties": {

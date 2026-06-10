@@ -370,13 +370,26 @@ LINCE_SCHEMA = {
 
 # Legacy v1 provider entry ([providers.*] in the sandbox config — env holds
 # NAME = VALUE pairs there, unlike v2's list of names).
+def _d(base: dict, desc: str, default=None) -> dict:
+    """Attach a description (+ default) to a schema fragment — the generation
+    source for the config reference (#212): scripts/gen_config_reference.py
+    renders these into the skill reference files and the docs site."""
+    out = {**base, "description": desc}
+    if default is not None:
+        out["default"] = default
+    return out
+
+
 _V1_PROVIDER_SCHEMA = {
     "type": "object",
+    "description": "A provider: named env-var bundle switching model "
+                   "provider/account (anthropic, vertex, zai, ...).",
     "properties": {
-        "description": _STR,
-        "env": _STR_MAP,
-        "env_unset": _STR_LIST,
-        "default_args": _STR_LIST,
+        "description": _d(_STR, "Human-readable label shown by the wizard"),
+        "env": _d(_STR_MAP, "Env vars set when this provider is active "
+                            "($VAR values expand against the host env)"),
+        "env_unset": _d(_STR_LIST, "Env vars explicitly unset when active"),
+        "default_args": _d(_STR_LIST, "Override the agent default_args when active"),
     },
     # nested extension sub-tables stay allowed without warnings
     "additionalProperties": {"type": "object"},
@@ -389,79 +402,140 @@ SANDBOX_CONFIG_SCHEMA = {
     "title": "agent-sandbox configuration (legacy v1, ~/.agent-sandbox/config.toml)",
     "type": "object",
     "properties": {
-        # level fragments (~/.agent-sandbox/profiles/*.toml) share this schema
-        "extends": _STR,
+        "extends": _d(_STR, "Level fragments only (~/.agent-sandbox/profiles/*.toml): "
+                            "name of the parent fragment to deep-merge on top of"),
         "sandbox": {
             "type": "object",
+            "description": "Filesystem exposure and backend selection.",
             "properties": {
-                "extra_rw": _STR_LIST,
-                "ro_dirs": _STR_LIST,
-                "persist_toolchains": _BOOL,
-                "auto_expose_path": _BOOL,
-                "home_ro_dirs": _STR_LIST,
-                "default_provider": _STR,
-                "default_profile": _STR,
-                "backend": _STR,
+                "extra_rw": _d(_STR_LIST, "Extra directories with read-write access "
+                                          "besides the project", []),
+                "ro_dirs": _d(_STR_LIST, "Directories with read-only access",
+                              ["~/project"]),
+                "persist_toolchains": _d(_BOOL, "Persist cargo/npm/go/uv caches "
+                                                "between sessions", True),
+                "auto_expose_path": _d(_BOOL, "Auto-detect $PATH entries under $HOME "
+                                              "and expose them read-only", True),
+                "home_ro_dirs": _d(_STR_LIST, "Extra home subdirectories to expose "
+                                              "read-only (relative to $HOME)",
+                                   [".config/gcloud"]),
+                "default_provider": _d(_STR, "Provider used when -P / --provider is "
+                                             "not given; empty = none", ""),
+                "default_profile": _d(_STR, "LEGACY alias of default_provider "
+                                            "(pre-#81); run migrate-providers"),
+                "backend": _d(_STR, '"agent-sandbox" (bwrap), "seatbelt" (macOS), '
+                                    '"nono" (deprecated), or "auto"', "auto"),
             },
             "additionalProperties": False,
         },
         "security": {
             "type": "object",
+            "description": "Isolation knobs (levels paranoid/normal/permissive "
+                           "preset these via the shipped fragments).",
             "properties": {
-                "unshare_pid": _BOOL,
-                "new_session": _BOOL,
-                "block_git_push": _BOOL,
-                "credential_proxy": _BOOL,
-                "unshare_net": _BOOL,
-                "allow_domains": _STR_LIST,
-                # Landlock hardening layer (#222); interim keys until the v2
-                # [filesystem]/[network] policy layer
-                "landlock": _BOOL,
-                "allow_connect_ports": {"type": "array", "items": {"type": "integer"}},
-                "allow_bind_ports": {"type": "array", "items": {"type": "integer"}},
+                "unshare_pid": _d(_BOOL, "PID namespace: hide host processes", True),
+                "new_session": _d(_BOOL, "New terminal session (anti terminal-escape; "
+                                         "may interfere with Ctrl+C)", False),
+                "block_git_push": _d(_BOOL, "Block git push via a PATH wrapper", True),
+                "credential_proxy": _d(_BOOL, "Inject API keys on the host side — "
+                                              "keys never enter the sandbox env", False),
+                "unshare_net": _d(_BOOL, "Kernel network-namespace isolation "
+                                         "(paranoid); egress only via the proxy "
+                                         "bridge", False),
+                "allow_domains": _d(_STR_LIST, "Extra hosts the credential proxy "
+                                               "forwards to (paranoid allowlist)", []),
+                "landlock": _d(_BOOL, "Landlock hardening layer (#222): kernel fence "
+                                      "mirroring the bwrap mounts; false = explicit "
+                                      "opt-out (paranoid may then degrade)", True),
+                "allow_connect_ports": _d(
+                    {"type": "array", "items": {"type": "integer"}},
+                    "Extra TCP ports the agent may connect to (Landlock "
+                    "CONNECT_TCP rules)", []),
+                "allow_bind_ports": _d(
+                    {"type": "array", "items": {"type": "integer"}},
+                    "TCP ports the agent may bind (Landlock BIND_TCP rules — "
+                    "local dev servers)", []),
             },
             "additionalProperties": False,
         },
         "credential_proxy": {
             "type": "object",
-            "properties": {"blocked_hosts": _STR_LIST},
+            "description": "Credential-proxy extras.",
+            "properties": {
+                "blocked_hosts": _d(_STR_LIST, "Extra hosts to block (cloud metadata "
+                                               "endpoints are always blocked)", []),
+            },
             "additionalProperties": False,
         },
         "git": {
             "type": "object",
-            "properties": {"strip_sections": _STR_LIST, "overrides": _STR_MAP},
+            "description": "Sanitized .gitconfig handed to the sandbox.",
+            "properties": {
+                "strip_sections": _d(_STR_LIST, "Regex patterns for .gitconfig "
+                                                "section headers to strip"),
+                "overrides": _d(_STR_MAP, "Values forced in the sanitized gitconfig "
+                                          "(dot-notation keys)"),
+            },
             "additionalProperties": False,
         },
         "env": {
             "type": "object",
-            "properties": {"passthrough": _STR_LIST, "extra": _STR_MAP},
+            "description": "Environment crossing into the sandbox (clearenv + "
+                           "whitelist model).",
+            "properties": {
+                "passthrough": _d(_STR_LIST, "Host env vars passed through "
+                                             "(TERM, ZELLIJ, LINCE_AGENT_ID, ...)"),
+                "extra": _d(_STR_MAP, "Extra env vars set inside the sandbox "
+                                      "($VAR values expand against the host env)"),
+            },
             "additionalProperties": False,
         },
         "logging": {
             "type": "object",
-            "properties": {"enabled": _BOOL, "dir": _STR},
+            "description": "Session transcript logging.",
+            "properties": {
+                "enabled": _d(_BOOL, "Log transcripts by default "
+                                     "(toggle with --log / --no-log)", False),
+                "dir": _d(_STR, "Log directory", "~/.agent-sandbox/logs"),
+            },
             "additionalProperties": False,
         },
         "snapshot": {
             "type": "object",
+            "description": "Pre-run snapshots for rollback/diff.",
             "properties": {
-                "auto_project": _BOOL,
-                "auto_config": _BOOL,
-                "max_project_snapshots": _INT,
-                "max_config_snapshots": _INT,
-                "project_exclude": _STR_LIST,
+                "auto_project": _d(_BOOL, "Snapshot the project dir before each run", False),
+                "auto_config": _d(_BOOL, "Snapshot the agent config dir before each run", True),
+                "max_project_snapshots": _d(_INT, "Project snapshots kept (oldest pruned)", 3),
+                "max_config_snapshots": _d(_INT, "Config snapshots kept (oldest pruned)", 5),
+                "project_exclude": _d(_STR_LIST, "Directories excluded from project snapshots"),
             },
             "additionalProperties": False,
         },
         "claude": {
             "type": "object",
-            "properties": {"config_dir": _STR, "use_real_config": _BOOL},
+            "description": "Claude-specific knobs (legacy section; prefer "
+                           "[agents.claude] for agent overrides).",
+            "properties": {
+                "config_dir": _d(_STR, "Sandbox-isolated copy of the Claude config "
+                                       "directory", "~/.agent-sandbox/claude-config"),
+                "use_real_config": _d(_BOOL, "Mount the real ~/.claude directly "
+                                             "(skips the isolated copy; disables "
+                                             "diff/merge)", False),
+            },
             # legacy [claude.providers] / [claude.profiles] sub-tables
             "additionalProperties": {"type": "object"},
         },
-        "providers": _V1_PROVIDERS_TABLE,
-        "profiles": _V1_PROVIDERS_TABLE,
-        "agents": {"type": "object", "additionalProperties": {"type": "object"}},
+        "providers": _d(_V1_PROVIDERS_TABLE,
+                        "Top-level providers (attributed to claude); prefer the "
+                        "namespaced [<agent>.providers.<name>] form"),
+        "profiles": _d(_V1_PROVIDERS_TABLE,
+                       "LEGACY spelling of [providers.*] (pre-#81); run "
+                       "migrate-providers"),
+        "agents": _d({"type": "object", "additionalProperties": {"type": "object"}},
+                     "Per-agent overrides of the registry defaults "
+                     "(command, default_args, env, home_ro_dirs, home_rw_dirs, "
+                     "bwrap_conflict, disable_inner_sandbox_args, scratch_*)"),
     },
     # other top-level tables are agent sections ([codex.providers] etc.)
     "additionalProperties": {"type": "object"},
@@ -469,27 +543,45 @@ SANDBOX_CONFIG_SCHEMA = {
 
 _V1_DASHBOARD_AGENT_SCHEMA = {
     "type": "object",
+    "description": "An agent-type override; entries here overlay the resolved "
+                   "registry defaults (per-field since #202).",
     "properties": {
-        "command": _STR_LIST,
-        "pane_title_pattern": _STR,
-        "status_pipe_name": _STR,
-        "display_name": _STR,
-        "short_label": _STR,
-        "color": _STR,
-        "sandboxed": _BOOL,
-        "has_native_hooks": _BOOL,
-        "home_ro_dirs": _STR_LIST,
-        "home_rw_dirs": _STR_LIST,
-        "bwrap_conflict": _BOOL,
-        "disable_inner_sandbox_args": _STR_LIST,
-        "providers": _STR_LIST,
-        "profiles": _STR_LIST,
-        "sandbox_backend": _STR,
-        "sandbox_level": _STR,
-        "sandbox_levels": _STR_LIST,
-        "sandbox_home_subdir": _STR,
-        "env_vars": _STR_MAP,
-        "event_map": _EVENT_MAP,
+        "command": _d(_STR_LIST, "Legacy fallback command template ({agent_id}, "
+                                 "{project_dir}, {provider}); ignored when "
+                                 "sandbox_level is set"),
+        "pane_title_pattern": _d(_STR, "Pattern matching Zellij pane titles for "
+                                       "reconciliation"),
+        "status_pipe_name": _d(_STR, "Zellij pipe name for status messages",
+                               "lince-status"),
+        "display_name": _d(_STR, "Full name shown in the UI"),
+        "short_label": _d(_STR, "3-char label for the table column"),
+        "color": _d(_STR, "ANSI color name"),
+        "sandboxed": _d(_BOOL, "Whether the agent runs inside the sandbox"),
+        "has_native_hooks": _d(_BOOL, "Agent emits its own status events (no "
+                                      "wrapper needed)", False),
+        "home_ro_dirs": _d(_STR_LIST, "UNUSED by the plugin — the sandbox copy is "
+                                      "authoritative"),
+        "home_rw_dirs": _d(_STR_LIST, "UNUSED by the plugin — the sandbox copy is "
+                                      "authoritative"),
+        "bwrap_conflict": _d(_BOOL, "Agent uses bwrap internally (conflicts with "
+                                    "the outer sandbox)", False),
+        "disable_inner_sandbox_args": _d(_STR_LIST, "Args disabling the agent's own "
+                                                    "sandbox"),
+        "providers": _d(_STR_LIST, '["__discover__"] = all discovered providers; '
+                                   "[] = skip the provider step; or an explicit list"),
+        "profiles": _d(_STR_LIST, "LEGACY alias of providers (pre-#81)"),
+        "sandbox_backend": _d(_STR, "Per-agent backend override "
+                                    "(agent-sandbox/seatbelt/nono)"),
+        "sandbox_level": _d(_STR, "Default isolation level in the wizard "
+                                  "(paranoid/normal/permissive or custom)"),
+        "sandbox_levels": _d(_STR_LIST, "Pin the wizard level picker to this set "
+                                        "(shells use [\"normal\"])"),
+        "sandbox_home_subdir": _d(_STR, "$HOME subdir rsynced to scratch by the "
+                                        "paranoid nono wrapper"),
+        "env_vars": _d(_STR_MAP, "Env vars exported at spawn ($VAR self-references "
+                                 "inherit from the host env)"),
+        "event_map": _d(_EVENT_MAP, "Agent event name -> canonical status "
+                                    "(running/input/permission/stopped)"),
     },
     "additionalProperties": False,
 }
@@ -501,27 +593,41 @@ DASHBOARD_CONFIG_SCHEMA = {
     "properties": {
         "dashboard": {
             "type": "object",
+            "description": "Dashboard behavior and defaults.",
             "properties": {
-                "default_provider": _STR,
-                "default_profile": _STR,
-                "sandbox_config_path": _STR,
-                "default_project_dir": _STR,
-                "default_agent_type": _STR,
-                "sandbox_command": _STR,
-                "agent_layout": {"type": "string", "enum": ["tiled", "floating"]},
-                "focus_mode": {"type": "string", "enum": ["replace", "floating"]},
-                "status_method": {"type": "string", "enum": ["pipe", "file"]},
-                "status_file_dir": _STR,
-                "max_agents": _INT,
-                "sandbox_backend": _STR,
-                "sandbox_colors": _STR_MAP,
-                "project_search_roots": _STR_LIST,
-                "project_search_max_depth": _INT,
-                "instance_icons": _STR_LIST,
+                "default_provider": _d(_STR, "Default provider for new agents"),
+                "default_profile": _d(_STR, "LEGACY alias of default_provider (pre-#81)"),
+                "sandbox_config_path": _d(_STR, "Path to the sandbox config",
+                                          "~/.agent-sandbox/config.toml"),
+                "default_project_dir": _d(_STR, "Default working directory for new agents"),
+                "default_agent_type": _d(_STR, "Agent type preselected by the n "
+                                               "shortcut and the N wizard"),
+                "sandbox_command": _d(_STR, "Path to the agent-sandbox binary",
+                                      "agent-sandbox"),
+                "agent_layout": _d({"type": "string", "enum": ["tiled", "floating"]},
+                                   "How agent panes are created", "tiled"),
+                "focus_mode": _d({"type": "string", "enum": ["replace", "floating"]},
+                                 "How focusing an agent works", "floating"),
+                "status_method": _d({"type": "string", "enum": ["pipe", "file"]},
+                                    "Status detection method (file polling always "
+                                    "runs; pipe is a fast-path)", "pipe"),
+                "status_file_dir": _d(_STR, "Directory for per-agent .state files",
+                                      "/tmp/lince-dashboard"),
+                "max_agents": _d(_INT, "Maximum concurrent agents", 9),
+                "sandbox_backend": _d(_STR, "Global backend preference"),
+                "sandbox_colors": _d(_STR_MAP, "Color per sandbox level "
+                                               "(paranoid/normal/permissive/default)"),
+                "project_search_roots": _d(_STR_LIST, "Roots scanned recursively by "
+                                                      "the wizard's Tab completion"),
+                "project_search_max_depth": _d(_INT, "find -maxdepth for "
+                                                     "project_search_roots", 3),
+                "instance_icons": _d(_STR_LIST, "Pool of per-instance marker glyphs "
+                                                "(#166); empty disables markers"),
             },
             "additionalProperties": False,
         },
-        "agents": {"type": "object", "additionalProperties": _V1_DASHBOARD_AGENT_SCHEMA},
+        "agents": _d({"type": "object", "additionalProperties": _V1_DASHBOARD_AGENT_SCHEMA},
+                     "Agent-type overrides / custom agents (overlay the registry)"),
     },
     "additionalProperties": {"type": "object"},
 }

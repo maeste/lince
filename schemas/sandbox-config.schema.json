@@ -4,181 +4,250 @@
   "type": "object",
   "properties": {
     "extends": {
-      "type": "string"
+      "type": "string",
+      "description": "Level fragments only (~/.agent-sandbox/profiles/*.toml): name of the parent fragment to deep-merge on top of"
     },
     "sandbox": {
       "type": "object",
+      "description": "Filesystem exposure and backend selection.",
       "properties": {
         "extra_rw": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Extra directories with read-write access besides the project",
+          "default": []
         },
         "ro_dirs": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Directories with read-only access",
+          "default": [
+            "~/project"
+          ]
         },
         "persist_toolchains": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Persist cargo/npm/go/uv caches between sessions",
+          "default": true
         },
         "auto_expose_path": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Auto-detect $PATH entries under $HOME and expose them read-only",
+          "default": true
         },
         "home_ro_dirs": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Extra home subdirectories to expose read-only (relative to $HOME)",
+          "default": [
+            ".config/gcloud"
+          ]
         },
         "default_provider": {
-          "type": "string"
+          "type": "string",
+          "description": "Provider used when -P / --provider is not given; empty = none",
+          "default": ""
         },
         "default_profile": {
-          "type": "string"
+          "type": "string",
+          "description": "LEGACY alias of default_provider (pre-#81); run migrate-providers"
         },
         "backend": {
-          "type": "string"
+          "type": "string",
+          "description": "\"agent-sandbox\" (bwrap), \"seatbelt\" (macOS), \"nono\" (deprecated), or \"auto\"",
+          "default": "auto"
         }
       },
       "additionalProperties": false
     },
     "security": {
       "type": "object",
+      "description": "Isolation knobs (levels paranoid/normal/permissive preset these via the shipped fragments).",
       "properties": {
         "unshare_pid": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "PID namespace: hide host processes",
+          "default": true
         },
         "new_session": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "New terminal session (anti terminal-escape; may interfere with Ctrl+C)",
+          "default": false
         },
         "block_git_push": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Block git push via a PATH wrapper",
+          "default": true
         },
         "credential_proxy": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Inject API keys on the host side \u2014 keys never enter the sandbox env",
+          "default": false
         },
         "unshare_net": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Kernel network-namespace isolation (paranoid); egress only via the proxy bridge",
+          "default": false
         },
         "allow_domains": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Extra hosts the credential proxy forwards to (paranoid allowlist)",
+          "default": []
         },
         "landlock": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Landlock hardening layer (#222): kernel fence mirroring the bwrap mounts; false = explicit opt-out (paranoid may then degrade)",
+          "default": true
         },
         "allow_connect_ports": {
           "type": "array",
           "items": {
             "type": "integer"
-          }
+          },
+          "description": "Extra TCP ports the agent may connect to (Landlock CONNECT_TCP rules)",
+          "default": []
         },
         "allow_bind_ports": {
           "type": "array",
           "items": {
             "type": "integer"
-          }
+          },
+          "description": "TCP ports the agent may bind (Landlock BIND_TCP rules \u2014 local dev servers)",
+          "default": []
         }
       },
       "additionalProperties": false
     },
     "credential_proxy": {
       "type": "object",
+      "description": "Credential-proxy extras.",
       "properties": {
         "blocked_hosts": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Extra hosts to block (cloud metadata endpoints are always blocked)",
+          "default": []
         }
       },
       "additionalProperties": false
     },
     "git": {
       "type": "object",
+      "description": "Sanitized .gitconfig handed to the sandbox.",
       "properties": {
         "strip_sections": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Regex patterns for .gitconfig section headers to strip"
         },
         "overrides": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          }
+          },
+          "description": "Values forced in the sanitized gitconfig (dot-notation keys)"
         }
       },
       "additionalProperties": false
     },
     "env": {
       "type": "object",
+      "description": "Environment crossing into the sandbox (clearenv + whitelist model).",
       "properties": {
         "passthrough": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Host env vars passed through (TERM, ZELLIJ, LINCE_AGENT_ID, ...)"
         },
         "extra": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          }
+          },
+          "description": "Extra env vars set inside the sandbox ($VAR values expand against the host env)"
         }
       },
       "additionalProperties": false
     },
     "logging": {
       "type": "object",
+      "description": "Session transcript logging.",
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Log transcripts by default (toggle with --log / --no-log)",
+          "default": false
         },
         "dir": {
-          "type": "string"
+          "type": "string",
+          "description": "Log directory",
+          "default": "~/.agent-sandbox/logs"
         }
       },
       "additionalProperties": false
     },
     "snapshot": {
       "type": "object",
+      "description": "Pre-run snapshots for rollback/diff.",
       "properties": {
         "auto_project": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Snapshot the project dir before each run",
+          "default": false
         },
         "auto_config": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Snapshot the agent config dir before each run",
+          "default": true
         },
         "max_project_snapshots": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Project snapshots kept (oldest pruned)",
+          "default": 3
         },
         "max_config_snapshots": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Config snapshots kept (oldest pruned)",
+          "default": 5
         },
         "project_exclude": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Directories excluded from project snapshots"
         }
       },
       "additionalProperties": false
     },
     "claude": {
       "type": "object",
+      "description": "Claude-specific knobs (legacy section; prefer [agents.claude] for agent overrides).",
       "properties": {
         "config_dir": {
-          "type": "string"
+          "type": "string",
+          "description": "Sandbox-isolated copy of the Claude config directory",
+          "default": "~/.agent-sandbox/claude-config"
         },
         "use_real_config": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Mount the real ~/.claude directly (skips the isolated copy; disables diff/merge)",
+          "default": false
         }
       },
       "additionalProperties": {
@@ -189,71 +258,84 @@
       "type": "object",
       "additionalProperties": {
         "type": "object",
+        "description": "A provider: named env-var bundle switching model provider/account (anthropic, vertex, zai, ...).",
         "properties": {
           "description": {
-            "type": "string"
+            "type": "string",
+            "description": "Human-readable label shown by the wizard"
           },
           "env": {
             "type": "object",
             "additionalProperties": {
               "type": "string"
-            }
+            },
+            "description": "Env vars set when this provider is active ($VAR values expand against the host env)"
           },
           "env_unset": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Env vars explicitly unset when active"
           },
           "default_args": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Override the agent default_args when active"
           }
         },
         "additionalProperties": {
           "type": "object"
         }
-      }
+      },
+      "description": "Top-level providers (attributed to claude); prefer the namespaced [<agent>.providers.<name>] form"
     },
     "profiles": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
+        "description": "A provider: named env-var bundle switching model provider/account (anthropic, vertex, zai, ...).",
         "properties": {
           "description": {
-            "type": "string"
+            "type": "string",
+            "description": "Human-readable label shown by the wizard"
           },
           "env": {
             "type": "object",
             "additionalProperties": {
               "type": "string"
-            }
+            },
+            "description": "Env vars set when this provider is active ($VAR values expand against the host env)"
           },
           "env_unset": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Env vars explicitly unset when active"
           },
           "default_args": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Override the agent default_args when active"
           }
         },
         "additionalProperties": {
           "type": "object"
         }
-      }
+      },
+      "description": "LEGACY spelling of [providers.*] (pre-#81); run migrate-providers"
     },
     "agents": {
       "type": "object",
       "additionalProperties": {
         "type": "object"
-      }
+      },
+      "description": "Per-agent overrides of the registry defaults (command, default_args, env, home_ro_dirs, home_rw_dirs, bwrap_conflict, disable_inner_sandbox_args, scratch_*)"
     }
   },
   "additionalProperties": {

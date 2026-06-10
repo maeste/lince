@@ -176,6 +176,13 @@ Option 2 — Via GUI: open **Terminator → Preferences → Keybindings**, find 
 | sandbox-exec (Seatbelt) | Sandbox (macOS) | Built into macOS; legacy nono backend is [deprecated](docs/documentation/sandbox/migration-nono-to-seatbelt.md) |
 | Python 3.11+ | Sandbox | Runtime |
 
+> **Ubuntu 24.04+ note**: unprivileged user namespaces are AppArmor-restricted
+> by default, so bwrap-based sandboxing can fail with
+> `write failed /proc/self/uid_map: Operation not permitted`. Installing
+> bubblewrap **from apt** ships the AppArmor profile that allows it; if you
+> installed bwrap another way, either add a profile or set
+> `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`.
+
 ---
 
 ## Quick Reference
