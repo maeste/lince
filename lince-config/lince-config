@@ -2573,6 +2573,139 @@ def cmd_apply(args) -> int:
     return 0
 
 
+# ── discover (#208 — propose instead of ask) ────────────────────────────
+
+# Preferred provider per agent binary for the suggested `apply` line — used
+# only when that provider's credentials are actually detected in the host
+# env. (mxc discovery-helpers precedent: suggestions, never silent writes.)
+_PREFERRED_PROVIDER = {
+    "claude": "anthropic",
+    "codex": "openai",
+    "gemini": "google",
+    "opencode": "anthropic",
+    "aider": "openai",
+    "amp": "anthropic",
+}
+
+# Toolchains whose presence is relevant to sandbox mounts/caches.
+_TOOLCHAIN_BINARIES = (
+    "node", "npm", "cargo", "rustc", "go", "python3", "uv", "pip",
+    "mvn", "gradle", "make", "gcc", "git",
+)
+
+
+def cmd_discover(args) -> int:
+    """`lince-config discover` — detect installed agents, toolchains, and
+    candidate paths; propose ready-made `apply` lines (#208). All emitted
+    paths are absolute and validated (the #125 relative-path bug class)."""
+    import os
+    import shutil
+
+    view, error = build_resolved_view()
+    if error is not None:
+        print(json.dumps({"error": error}, indent=2) if args.json
+              else f"Error: {error['message']}", file=sys.stderr)
+        return 1
+
+    agents: list[dict] = []
+    shells: list[dict] = []
+    for name, agent in sorted(view["agents"].items()):
+        binary_path = shutil.which(agent["binary"])
+        if not binary_path:
+            continue
+        resolved = str(Path(binary_path).resolve())
+        entry = {"name": name, "binary": agent["binary"], "path": resolved}
+        # Shells carry no providers in the registry — list them separately,
+        # never as agent-template suggestions (they would match on every box).
+        if not agent.get("providers"):
+            shells.append(entry)
+        else:
+            agents.append(entry)
+
+    providers_detected = [
+        {"name": name, "source": prov["source"]}
+        for name, prov in sorted(view["providers"].items())
+        if prov["available"]
+    ]
+    available_names = {p["name"] for p in providers_detected}
+
+    toolchains = []
+    for tool in _TOOLCHAIN_BINARIES:
+        path = shutil.which(tool)
+        if path:
+            toolchains.append({"name": tool, "path": str(Path(path).resolve())})
+
+    paths: dict[str, str] = {}
+    tmpdir = Path(os.environ.get("TMPDIR", "/tmp"))
+    if tmpdir.is_dir():
+        paths["tmp"] = str(tmpdir.resolve())
+    for label, candidate in (
+        ("local_share", Path.home() / ".local" / "share"),
+        ("cache", Path.home() / ".cache"),
+        ("project", Path.cwd()),
+    ):
+        if candidate.is_dir():
+            paths[label] = str(candidate.resolve())
+
+    suggestions: list[str] = []
+    for entry in agents:
+        combo = f"{entry['name']}+normal"
+        preferred = _PREFERRED_PROVIDER.get(entry["binary"])
+        if preferred in available_names:
+            combo += f"+{preferred}"
+        else:
+            user_provs = [
+                p for p in view["agents"][entry["name"]].get("providers_available", [])
+                if p in available_names
+            ]
+            if len(user_provs) == 1:
+                combo += f"+{user_provs[0]}"
+        suggestions.append(f"lince-config apply {combo}")
+
+    data = {
+        "agents": agents,
+        "shells": shells,
+        "providers": providers_detected,
+        "toolchains": toolchains,
+        "paths": paths,
+        "suggestions": suggestions,
+    }
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return 0
+
+    if agents:
+        print("Installed agents:")
+        for entry in agents:
+            print(f"  {entry['name']:<10} {entry['path']}")
+    else:
+        print("Installed agents: none detected "
+              "(claude/codex/gemini/opencode/aider/amp/pi not on PATH)")
+    if shells:
+        print("Shells:")
+        for entry in shells:
+            print(f"  {entry['name']:<10} {entry['path']}")
+    if providers_detected:
+        print("Providers with credentials detected:")
+        for prov in providers_detected:
+            origin = "configured" if prov["source"] == "user" else "env key set"
+            print(f"  {prov['name']:<14} ({origin})")
+    if toolchains:
+        print("Toolchains on PATH: " + ", ".join(t["name"] for t in toolchains))
+    if paths:
+        print("Candidate paths:")
+        for label, path in paths.items():
+            print(f"  {label:<12} {path}")
+    print()
+    if suggestions:
+        print("Suggested setup (run any of):")
+        for line in suggestions:
+            print(f"  {line}")
+    else:
+        print("No agent suggestions — install an agent (e.g. claude) and re-run.")
+    return 0
+
+
 def cmd_resolve(args) -> int:
     """Emit the fully-resolved configuration view as JSON (#202, §4.3)."""
     view, error = build_resolved_view(
@@ -2743,6 +2876,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_flag(p_validate)
     p_validate.set_defaults(func=cmd_validate)
+
+    # ── discover ────────────────────────────────────────────────
+    p_discover = sub.add_parser(
+        "discover",
+        help="Detect installed agents/toolchains/paths and propose apply lines (#208)",
+    )
+    _add_json_flag(p_discover)
+    p_discover.set_defaults(func=cmd_discover)
 
     # ── apply ───────────────────────────────────────────────────
     p_apply = sub.add_parser(
