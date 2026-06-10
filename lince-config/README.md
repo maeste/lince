@@ -33,6 +33,9 @@ lince-config unset <dotted.key>          [--target sandbox|dashboard] [-q]
 lince-config check    [--target sandbox|dashboard] [--json]
 lince-config validate [--target sandbox|dashboard|lince|registry] [--file PATH] [--overlay] [--json]
 
+# Discovery (#208) — detect installed agents/toolchains and propose apply lines
+lince-config discover [--json]
+
 # Guided configuration (#207) — compose policy bricks into ~/.config/lince/lince.toml
 lince-config templates [--json]                  # list agents / levels / providers
 lince-config apply <agent>[+<level>][+<provider>] [--project DIR] [--dry-run] [--force-v2]
