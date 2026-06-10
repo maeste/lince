@@ -3,9 +3,10 @@ id: LINCE-129
 title: >-
   agents-defaults.toml ownership: fully shipped + always overwritten, custom
   agents to user config
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-09 20:52'
+updated_date: '2026-06-10 12:23'
 labels:
   - config-v2
 milestone: m-16
@@ -31,3 +32,9 @@ Resolve the three-way ownership conflict (docs say overwritten, update.sh preser
 - [ ] #3 Per-key (not full-entry) override semantics for user [agents.*] sections
 - [ ] #4 Migration note for users who customized agents-defaults.toml
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+agents-defaults ownership contract (shipped = always overwritten, custom agents to user config) shipped to main via issue #199 / PR #216 (pre-session). Wave-2 #204 (registry.d) and #202 (resolve --json) realized the contract: registry.d is shipped/always-overwritten, custom agents live in lince.toml, the dashboard full-entry-replacement footgun is gone. Stale backlog status corrected post-wave.
+<!-- SECTION:FINAL_SUMMARY:END -->
