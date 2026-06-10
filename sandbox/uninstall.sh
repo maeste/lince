@@ -56,6 +56,21 @@ else
 fi
 echo ""
 
+# ── Unified agent registry (shared with lince-dashboard) ──────────────
+REGISTRY_DST="$HOME/.local/share/lince/registry.d"
+if [ -d "$REGISTRY_DST" ]; then
+    if [ -d "$HOME/.config/lince-dashboard" ]; then
+        echo "  Agent registry kept (lince-dashboard still installed): $REGISTRY_DST"
+    else
+        echo -e "${YELLOW}Found: $REGISTRY_DST${NC}"
+        if confirm "  Remove agent registry?"; then
+            rm -rf "$REGISTRY_DST"
+            echo -e "${GREEN}  ✓ Removed${NC}"
+        fi
+    fi
+fi
+echo ""
+
 # ── nono profiles ─────────────────────────────────────────────────────
 NONO_PROFILES=$(ls "$HOME/.config/nono/profiles/lince-"*.json 2>/dev/null || true)
 if [ -n "$NONO_PROFILES" ]; then

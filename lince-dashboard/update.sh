@@ -119,6 +119,21 @@ echo -e "${GREEN}[7/8] Updating agent defaults...${NC}"
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
 
+# Unified agent registry (Config v2, #204). Shipped data — always overwritten
+# (#199); custom agents never live here. Also updated by sandbox/update.sh.
+REGISTRY_SRC="$SCRIPT_DIR/../registry.d"
+REGISTRY_DST="$HOME/.local/share/lince/registry.d"
+if [ -d "$REGISTRY_SRC" ]; then
+    mkdir -p "$REGISTRY_DST"
+    count=0
+    for entry in "$REGISTRY_SRC"/*.toml; do
+        [ -f "$entry" ] || continue
+        cp "$entry" "$REGISTRY_DST/"
+        count=$((count + 1))
+    done
+    echo -e "${GREEN}  ✓ Agent registry updated: $count file(s) in $REGISTRY_DST${NC}"
+fi
+
 if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
     # agents-defaults.toml is fully shipped data (#199) — always overwritten.
     # Fail-safe migration: if the old installed file differs from the shipped

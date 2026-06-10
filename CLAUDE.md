@@ -4,6 +4,7 @@
 - `sandbox/` — Bubblewrap sandbox for Claude Code (Python 3.11+, single-file script)
 - `lince-dashboard/` — Multi-agent TUI dashboard (Zellij WASM plugin, Rust)
 - `lince-config/` — Structured CLI for reading/editing LINCE TOML configs (also powers the `/lince-configure` skill)
+- `registry.d/` — Unified agent registry: one TOML per shipped agent, consumed by sandbox + dashboard (shipped data, always overwritten on update; generated from the legacy agents-defaults files by `scripts/gen_registry.py` — edit those and regenerate)
 
 ## Build / Test
 - **sandbox**: No build step. `python3 sandbox/agent-sandbox --help` to verify.

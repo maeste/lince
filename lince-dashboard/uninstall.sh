@@ -115,6 +115,21 @@ else
 fi
 echo ""
 
+# ── Unified agent registry (shared with agent-sandbox) ───────────────
+REGISTRY_DST="$HOME/.local/share/lince/registry.d"
+if [ -d "$REGISTRY_DST" ]; then
+    if [ -f "$HOME/.local/bin/agent-sandbox" ]; then
+        echo "  Agent registry kept (agent-sandbox still installed): $REGISTRY_DST"
+    else
+        echo -e "${YELLOW}Found: $REGISTRY_DST${NC}"
+        if confirm "  Remove agent registry?"; then
+            rm -rf "$REGISTRY_DST"
+            echo -e "${GREEN}  ✓ Removed${NC}"
+        fi
+    fi
+fi
+echo ""
+
 # ── Lince-add-supported-agent skill (+ legacy lince-setup cleanup) ───
 SKILL_DIR="$HOME/.claude/skills/lince-add-supported-agent"
 OLD_SKILL_DIR="$HOME/.claude/skills/lince-setup"

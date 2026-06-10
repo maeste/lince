@@ -336,6 +336,22 @@ AGENTS_TEMPLATE_SRC="$SCRIPT_DIR/agents-template.toml"
 AGENTS_TEMPLATE_DST="$CONFIG_DIR/agents-template.toml"
 USER_CONFIG="$CONFIG_DIR/config.toml"
 
+# Unified agent registry (Config v2, #204). Shipped data — always overwritten
+# (#199); custom agents never live here. Also installed by sandbox/install.sh
+# (same files, idempotent) so either module works standalone.
+REGISTRY_SRC="$SCRIPT_DIR/../registry.d"
+REGISTRY_DST="$HOME/.local/share/lince/registry.d"
+if [ -d "$REGISTRY_SRC" ]; then
+    mkdir -p "$REGISTRY_DST"
+    count=0
+    for entry in "$REGISTRY_SRC"/*.toml; do
+        [ -f "$entry" ] || continue
+        cp "$entry" "$REGISTRY_DST/"
+        count=$((count + 1))
+    done
+    echo -e "${GREEN}  ✓ Installed agent registry: $count file(s) in $REGISTRY_DST${NC}"
+fi
+
 if [ -f "$AGENTS_DEFAULTS_SRC" ]; then
     if [ -f "$AGENTS_DEFAULTS_DST" ]; then
         AGENTS_BACKUP="${AGENTS_DEFAULTS_DST}.bak.$(date +%Y%m%d_%H%M%S)"

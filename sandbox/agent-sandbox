@@ -1335,23 +1335,117 @@ def merge_sandbox_level(base: dict, overlay: dict) -> dict:
 
 _agents_defaults_cache: dict[str, dict] | None = None
 
+# Unified agent registry (Config v2, #204 — docs/design/config-v2-design.md §3).
+# One TOML per shipped agent; shipped data, always overwritten on update.
+# Search order: installed location, then the repo dev layout (registry.d/
+# sibling of the sandbox/ module directory).
+LINCE_REGISTRY_DIRS: tuple[Path, ...] = (
+    Path.home() / ".local" / "share" / "lince" / "registry.d",
+    Path(__file__).resolve().parent.parent / "registry.d",
+)
+
+
+def find_registry_dir() -> Path | None:
+    """Return the first registry.d/ directory that contains agent files."""
+    for d in LINCE_REGISTRY_DIRS:
+        try:
+            if d.is_dir() and any(d.glob("*.toml")):
+                return d
+        except OSError:
+            continue
+    return None
+
+
+def _registry_expand_provider_env(env: dict, providers: dict[str, dict]) -> dict:
+    """Resolve ``provider_env = "all"`` into the union of provider env-var
+    NAMES from registry.d/providers.toml, each as its $VAR host-expansion form
+    (design §3.4). Other keys pass through unchanged."""
+    out = {k: v for k, v in env.items() if k != "provider_env"}
+    if env.get("provider_env") == "all":
+        for prov in providers.values():
+            for var in prov.get("env", []):
+                out.setdefault(var, f"${var}")
+    return out
+
+
+def load_registry_defaults(registry_dir: Path) -> dict[str, dict]:
+    """Load registry.d/*.toml and project it into the legacy agents-defaults
+    shape consumed by resolve_agent_config (design §3.1 key mapping:
+    [agent].binary → command, [sandbox].* → flat keys, [env] expanded).
+
+    A malformed registry file skips that agent only, with a warning naming
+    the file — never silently drops the whole registry.
+    """
+    providers: dict[str, dict] = {}
+    providers_path = registry_dir / "providers.toml"
+    if providers_path.is_file():
+        try:
+            with open(providers_path, "rb") as fh:
+                providers = tomllib.load(fh).get("providers", {})
+        except (tomllib.TOMLDecodeError, OSError) as exc:
+            print(f"agent-sandbox: warning: skipping {providers_path}: {exc}", file=sys.stderr)
+
+    agents: dict[str, dict] = {}
+    for path in sorted(registry_dir.glob("*.toml")):
+        if path.name == "providers.toml":
+            continue
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh)
+        except (tomllib.TOMLDecodeError, OSError) as exc:
+            print(f"agent-sandbox: warning: skipping {path}: {exc}", file=sys.stderr)
+            continue
+        agent = data.get("agent", {})
+        sandbox = data.get("sandbox", {})
+        name = agent.get("name", path.stem)
+        if not agent.get("binary"):
+            print(f"agent-sandbox: warning: {path} has no [agent].binary — skipped", file=sys.stderr)
+            continue
+        agents[name] = {
+            "command": agent["binary"],
+            "default_args": list(agent.get("default_args", [])),
+            "env": _registry_expand_provider_env(data.get("env", {}), providers),
+            "home_ro_dirs": list(sandbox.get("home_ro_dirs", [])),
+            "home_rw_dirs": list(sandbox.get("home_rw_dirs", [])),
+            "bwrap_conflict": bool(sandbox.get("bwrap_conflict", False)),
+            "disable_inner_sandbox_args": list(sandbox.get("disable_inner_sandbox_args", [])),
+        }
+    return agents
+
 
 def find_agents_defaults() -> dict[str, dict]:
-    """Locate and load agents-defaults.toml (cached after first call).
+    """Locate and load the shipped agent definitions (cached after first call).
 
     Search order:
-      1. ./.agent-sandbox/agents-defaults.toml  (project-local)
-      2. ~/.agent-sandbox/agents-defaults.toml   (global)
-      3. <script-dir>/agents-defaults.toml        (development / installed alongside script)
+      1. ./.agent-sandbox/agents-defaults.toml   (project-local, user-owned)
+      2. registry.d/ (unified registry, Config v2 #204 — installed at
+         ~/.local/share/lince/registry.d/ or the repo dev layout)
+      3. ~/.agent-sandbox/agents-defaults.toml    (legacy global)
+      4. <script-dir>/agents-defaults.toml         (legacy, alongside script)
 
-    Returns an empty dict if no file is found (caller falls back to hardcoded defaults).
+    Returns an empty dict if nothing is found (caller falls back to hardcoded
+    defaults).
     """
     global _agents_defaults_cache
     if _agents_defaults_cache is not None:
         return _agents_defaults_cache
+
+    project_local = Path.cwd() / ".agent-sandbox" / "agents-defaults.toml"
+    if project_local.is_file():
+        with open(project_local, "rb") as fh:
+            data = tomllib.load(fh)
+        _agents_defaults_cache = data.get("agents", {})
+        return _agents_defaults_cache
+
+    registry_dir = find_registry_dir()
+    if registry_dir is not None:
+        agents = load_registry_defaults(registry_dir)
+        if agents:
+            _agents_defaults_cache = agents
+            return _agents_defaults_cache
+
     script_dir = Path(__file__).resolve().parent
     candidates = [
-        Path.cwd() / ".agent-sandbox" / "agents-defaults.toml",
         SANDBOX_DIR / "agents-defaults.toml",
         script_dir / "agents-defaults.toml",
     ]
