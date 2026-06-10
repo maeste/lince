@@ -33,10 +33,30 @@ lince-config unset <dotted.key>          [--target sandbox|dashboard] [-q]
 lince-config check    [--target sandbox|dashboard] [--json]
 lince-config validate [--target sandbox|dashboard|lince|registry] [--file PATH] [--overlay] [--json]
 
+# Guided configuration (#207) — compose policy bricks into ~/.config/lince/lince.toml
+lince-config templates [--json]                  # list agents / levels / providers
+lince-config apply <agent>[+<level>][+<provider>] [--project DIR] [--dry-run] [--force-v2]
+
+# Resolution (#202) — the single resolved view (consumed by the dashboard)
+lince-config resolve [--agent NAME] [--project DIR] [--level L] [--provider P]
+
 # JSON Schemas (Taplo-compatible — see schemas/ in the repo)
 lince-config schema <lince|registry-agent|registry-providers|sandbox-config|dashboard-config>
 lince-config schema --write schemas/
 ```
+
+`apply` writes ONLY the v2 policy file (never registry.d, never generated
+files), validates the composed result before writing, is idempotent, and
+shows a diff with `--dry-run`. Example — a working sandboxed Claude in one
+command:
+
+```bash
+lince-config apply claude+normal+anthropic
+```
+
+Creating `lince.toml` switches resolution to v2-only; when legacy
+customizations exist (`[providers.*]`, `[agents.*]` in the old config
+files), `apply` refuses until they are migrated (or `--force-v2`).
 
 `validate` is schema-driven (#203): type mismatches and missing required keys
 are errors; unknown keys under known tables are warnings (forward-compat).
