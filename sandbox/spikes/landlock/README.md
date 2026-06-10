@@ -11,15 +11,25 @@ dependencies — the same constraint as `sandbox/agent-sandbox`.
 |---|---|
 | `landlock_probe.py` | Queries the kernel's Landlock ABI version via `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` and prints the implied feature set. This is the startup probe agent-sandbox would run to decide what to enforce. |
 | `demo.py` | Working self-restriction demo: a child process applies a Landlock ruleset (rw beneath a temp project dir, ro+execute on system paths, TCP connect allowed only to one port), then proves the fence holds — including across `fork`+`execve` into a fresh subprocess. |
+| `landlock_exec.py` | The launcher shim (prototype of the future `agent-sandbox __landlock-exec` subcommand): runs as the last element of the bwrap argv, opens its rule FDs in the final mount namespace, applies fs (+net if ABI ≥ 4) rules, then `execvp`s the agent argv. Graceful on ABI 0. |
+| `gate_check.py` | In-sandbox assertion payload run by the shim in place of a real agent binary: proves the fence inside the actual paranoid sandbox (denied write to bwrap's own rw tmpfs `/tmp`, connect allowed only to the socat bridge on 8118, bind denied, inheritance). |
+| `paranoid_gate.sh` | **The prototype gate**: gates agent `landlock-demo` at `--sandbox-level paranoid` through the shim using only existing agent-sandbox mechanisms (project-local config + custom agent command — `sandbox/agent-sandbox` is NOT modified). Chain: `unshare`/socat wrapper → bwrap → `landlock_exec.py` → `gate_check.py`. |
 
 ## How to run
 
 ```bash
 python3 sandbox/spikes/landlock/landlock_probe.py
 python3 sandbox/spikes/landlock/demo.py
+
+# Q4 composition experiment: same demo inside a bwrap mount namespace
+bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc -- \
+  python3 sandbox/spikes/landlock/demo.py
+
+# Paranoid gate prototype: one agent gated at --sandbox-level paranoid
+bash sandbox/spikes/landlock/paranoid_gate.sh
 ```
 
-Exit code 0 = available/all checks pass. On kernels without Landlock both
+Exit code 0 = available/all checks pass. On kernels without Landlock the
 scripts degrade gracefully (clear message, no crash) — the same pattern
 agent-sandbox would use.
 
@@ -69,6 +79,77 @@ RESULT: ALL CHECKS PASSED
 Setup-time over 5 consecutive runs: 60.1 / 65.5 / 66.0 / 71.6 / 74.1 µs
 (10 `landlock_add_rule` calls + `landlock_restrict_self`).
 
+### Q4 experiment — `demo.py` inside a bwrap mount namespace
+
+The composition question (#211 Q4: bwrap binds vs. Landlock rule FDs) is
+answered by running the same demo inside a bwrap sandbox with a **fresh
+tmpfs `/tmp`** — the case that breaks the host-side `preexec_fn` variant:
+
+```
+$ bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc -- \
+    python3 sandbox/spikes/landlock/demo.py
+child: Landlock ABI 7, restricting self...
+child: ruleset built + applied in 59.6 us (9 path rules, 1 net rules)
+  [PASS] fs: write inside allowed dir succeeds — /tmp/landlock_demo_92vjy2ai/inside.txt
+  [PASS] fs: write outside allowed dir denied — errno=EACCES
+  [PASS] fs: read /etc (ro rule) still works
+  [PASS] net: connect to allowed port 38299 succeeds
+  [PASS] net: connect to denied port 39993 blocked — errno=EACCES (listener IS running — denial is Landlock's)
+  [PASS] net: bind blocked (no bind rule added) — errno=EACCES
+  [PASS] inherit: subprocess (fork+execve) still denied outside write — rc=1
+  [PASS] inherit: subprocess can still write inside allowed dir — rc=0
+Landlock demo — kernel 6.19.14-300.fc44.x86_64
+parent: project dir /tmp/landlock_demo_92vjy2ai
+parent: allowed port 38299, denied port 39993 (both have live listeners)
+
+RESULT: ALL CHECKS PASSED
+```
+
+All 8 checks pass: the rw rule opened on the bwrap-created tmpfs `/tmp`
+works (project dir lives there), denials hold, and inheritance holds —
+applying a Landlock ruleset inside a bwrap mount namespace composes with
+no conflict, as long as rule FDs are opened after the mount picture is
+final.
+
+### `paranoid_gate.sh` — one agent gated at paranoid
+
+The issue's prototype deliverable: agent `landlock-demo` runs at
+`--sandbox-level paranoid` (fresh netns + credential proxy + socat
+bridge on 8118), with the shim applying Landlock fs + net rules between
+bwrap setup and the agent exec:
+
+```
+$ bash sandbox/spikes/landlock/paranoid_gate.sh
+landlock: fs+net (ABI 7) applied in 47.5 us — rw=['/tmp/landlock_gate_sj7Vzj'] connect=[8118] bind=[]
+gate_check: pid 2 inside paranoid sandbox, project /tmp/landlock_gate_sj7Vzj
+  [PASS] fs: write inside project dir succeeds — /tmp/landlock_gate_sj7Vzj/inside.txt
+  [PASS] fs: write to bwrap rw tmpfs /tmp denied by Landlock — errno=EACCES
+  [PASS] fs: read /etc (ro rule) still works
+  [PASS] net: connect to proxy bridge port 8118 succeeds — socat listener reached
+  [PASS] net: connect to denied port 9 blocked — errno=EACCES (ECONNREFUSED would mean Landlock let it through)
+  [PASS] net: bind blocked (no bind rule) — errno=EACCES
+  [PASS] inherit: subprocess still denied /tmp write — rc=1
+
+GATE RESULT: ALL CHECKS PASSED
+```
+
+Two details make this run self-proving:
+
+- bwrap mounts `/tmp` as a fresh **rw** tmpfs at paranoid, so the EACCES
+  on the `/tmp` write can only come from Landlock (bwrap would have
+  allowed it; a bwrap ro denial would be EROFS);
+- the denied port has no listener in the fresh netns, so without
+  Landlock the connect would fail ECONNREFUSED — the observed EACCES is
+  the LSM's.
+
+The gate uses only existing agent-sandbox mechanisms (project-local
+`.agent-sandbox/config.toml` defining the agent's `command` as the shim,
+plus a project-local paranoid fragment) — `sandbox/agent-sandbox` is not
+modified, keeping this branch conflict-free with the in-flight
+credential-proxy and seatbelt PRs. Productizing means moving
+`landlock_exec.py` into the script as a hidden `__landlock-exec`
+subcommand appended to the bwrap argv by `build_bwrap_cmd()`.
+
 ## What this proves
 
 1. **Availability**: this Fedora 44 box exposes Landlock ABI v7 — full fs
@@ -90,6 +171,13 @@ Setup-time over 5 consecutive runs: 60.1 / 65.5 / 66.0 / 71.6 / 74.1 µs
 6. **Graceful degradation is trivial**: a single probe call distinguishes
    ENOSYS / EOPNOTSUPP / ABI level; the enforcement code simply caps the
    handled-access mask to what the probed ABI supports.
+7. **bwrap composition works** (Q4, tested — see the bwrap-wrapped run
+   above): a ruleset applied inside the bwrap mount namespace attaches to
+   the bwrap-created tmpfs and bind-mounted views with no conflict.
+8. **End-to-end gating at paranoid works** (`paranoid_gate.sh`): the shim
+   slots into the real paranoid chain (`unshare`/socat → bwrap → shim →
+   agent) and enforces rw-project-only fs plus connect-to-proxy-only net,
+   without modifying `sandbox/agent-sandbox`.
 
 ## Gotchas found while building this (feed into implementation)
 

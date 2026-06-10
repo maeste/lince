@@ -3,9 +3,11 @@
 **Status**: spike complete — recommendation: **GO**
 **Date**: 2026-06-10
 **Evidence**: live experiments in [`sandbox/spikes/landlock/`](../../sandbox/spikes/landlock/)
-(stdlib-only ctypes probe + working demo, run on Fedora 44, kernel
-6.19.14-300.fc44.x86_64, Landlock ABI v7 — all checks green, output
-captured in the spike README).
+(stdlib-only ctypes probe, working demo — also run under bwrap for the
+Q4 composition question — and a working prototype gating one agent at
+`--sandbox-level paranoid` through a Landlock launcher shim; all run on
+Fedora 44, kernel 6.19.14-300.fc44.x86_64, Landlock ABI v7 — all checks
+green, output captured in the spike README).
 
 Landlock is evaluated as a **defense-in-depth layer inside the existing
 bubblewrap backend**, not a new backend: bwrap paints the mount picture,
@@ -102,7 +104,11 @@ visible inside; the shim can simply be a hidden subcommand of the
 single-file script (e.g. `agent-sandbox __landlock-exec --rw <dir> ...
 -- <agent argv>`), keeping the zero-extra-files, stdlib-only constraints.
 ~100 lines of ctypes (the demo's `apply_landlock()` is the core, 60
-lines).
+lines). **Prototyped**: the spike's `landlock_exec.py` is exactly this
+shim as a standalone file, and `paranoid_gate.sh` runs it as a custom
+agent's `command` inside the real paranoid chain (`unshare`/socat →
+bwrap → shim → agent payload) — all checks pass with `agent-sandbox`
+itself unmodified.
 
 **Inheritance — confirmed empirically**: rulesets are inherited across
 `fork` + `execve` like `no_new_privs`. The demo restricts the child and
@@ -170,10 +176,15 @@ at `landlock_add_rule` time*, not to a path string. Consequences:
    exactly what bit the `preexec_fn` variant in Q2.
 2. **Bind mounts are transparent** once you open through them: a rule on
    the sandbox-side `/tmp` (tmpfs) or on the bound project dir governs
-   accesses through those mounts. No conflict between bwrap binds and
-   Landlock observed in the spike — bwrap mounts first, Landlock fences
-   second, and mounts created *after* restriction are irrelevant because
-   the agent has no CAP_SYS_ADMIN to mount anything.
+   accesses through those mounts. **Tested**: running `demo.py` inside
+   `bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc` passes all
+   8 checks — the rw rule opened on the bwrap-created tmpfs works,
+   denials and inheritance hold (output captured in the spike README,
+   "Q4 experiment"). The paranoid gate prototype (`paranoid_gate.sh`)
+   confirms the same inside the real agent-sandbox chain. bwrap mounts
+   first, Landlock fences second, and mounts created *after* restriction
+   are irrelevant because the agent has no CAP_SYS_ADMIN to mount
+   anything.
 3. **Compute everything before `landlock_restrict_self()`.** The shim
    itself must resolve paths/EXE lookups up front — after restriction
    the shim is confined too (spike gotcha: `tempfile.gettempdir()`
@@ -197,11 +208,12 @@ prints the measurement). One-time at spawn — invisible next to bwrap +
 agent startup (hundreds of ms). Per-syscall overhead is a path-walk
 check in-kernel; no agent-visible latency at our scale.
 
-**Code surface (estimated from the working demo):**
+**Code surface (measured from the working shim):**
 ~100 lines for the ctypes layer (constants + 3 structs + `probe_abi` +
-`apply_landlock` — already written and proven in `demo.py`), ~50 lines
-for the `__landlock-exec` shim subcommand + argv plumbing in
-`build_bwrap_cmd()`, ~20 lines of banner/logging. **≈150–200 lines**
+`apply_landlock` — written and proven in `demo.py` and reused verbatim
+in `landlock_exec.py`), ~50 lines for the `__landlock-exec` shim
+subcommand (the prototype shim's `main()` is 55 lines) + argv plumbing
+in `build_bwrap_cmd()`, ~20 lines of banner/logging. **≈150–200 lines**
 added to `sandbox/agent-sandbox`, zero new dependencies, zero new
 installed files.
 
@@ -245,7 +257,17 @@ under `unshare_net`, the ephemeral host port otherwise) + listed extras;
 `mode = "open"` ⇒ net mask not handled (unrestricted). Hosts stay the
 proxy's job; ports are Landlock's.
 
-**Next step** (separate task, out of spike scope): implement the
-`__landlock-exec` shim in `sandbox/agent-sandbox`, gate one agent at
-paranoid, and add a `sandbox/tests/` check mirroring the demo's
-assertions.
+**Prototype status** — the issue's prototype deliverable is met
+in-spike: `paranoid_gate.sh` gates one agent (`landlock-demo`) at
+`--sandbox-level paranoid` with Landlock fs rules **and** net rules
+(connect allowed only to the socat proxy bridge on 8118), via the
+`landlock_exec.py` shim and existing agent-sandbox mechanisms
+(project-local config + custom agent `command`). `sandbox/agent-sandbox`
+is deliberately untouched on this branch only to stay conflict-free with
+the in-flight credential-proxy (#194/#195) and Seatbelt (#196) PRs that
+edit the same file.
+
+**Next step** (follow-up implementation task): fold `landlock_exec.py`
+into `sandbox/agent-sandbox` as the hidden `__landlock-exec` subcommand,
+have `build_bwrap_cmd()` append it for the levels in the table above,
+and add a `sandbox/tests/` check mirroring `gate_check.py`'s assertions.
