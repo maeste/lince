@@ -208,6 +208,17 @@ block_git_push = true
 # Requires API keys to be configured in a [*.providers.*.env] section.
 credential_proxy = false
 
+# Landlock hardening layer (Linux, bwrap backend) — a kernel fence inside
+# the bwrap mount picture: filesystem rules mirror the bind mounts; TCP
+# port rules allow connect only to the credential proxy when it is active.
+# Defaults: paranoid = fs + net, normal = fs (+ net when proxy active),
+# permissive = off. On kernels without Landlock, normal degrades gracefully
+# (bwrap-only); paranoid FAILS CLOSED unless you opt out here.
+# landlock = true
+# Extra TCP ports the agent may connect to / bind (e.g. local dev servers):
+# allow_connect_ports = []
+# allow_bind_ports = [3000, 8080]
+
 # [credential_proxy]
 # # Extra hosts to block (cloud metadata endpoints are always blocked).
 # blocked_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]
@@ -2965,7 +2976,8 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
                     agent_id: str | None = None,
                     agent_name: str = "claude",
                     proxy_env: dict[str, str] | None = None,
-                    scratch_binds: list[tuple[str, str]] | None = None) -> list[str]:
+                    scratch_binds: list[tuple[str, str]] | None = None,
+                    landlock: dict | None = None) -> list[str]:
     home = str(Path.home())
     home_p = Path.home()
     sandbox = config.get("sandbox", {})
@@ -3297,6 +3309,44 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
 
     agent_cmd = [agent_cfg["command"]] + args_source + list(agent_extra_args)
 
+    # --- Landlock hardening shim (#222) ---------------------------------------
+    # Injected as the LAST bwrap argv element so its rule FDs open in the
+    # final mount namespace. The rw rule list mirrors this very argv's
+    # writable mounts — one intent, two mechanisms (bwrap + Landlock).
+    if landlock is not None:
+        shim_src = str(Path(__file__).resolve())
+        opts = ["--ro-bind", shim_src, LANDLOCK_SHIM_MOUNT]
+        if agent_id:
+            record_file = policy_record_path(agent_id)
+            try:
+                record_file.parent.mkdir(parents=True, exist_ok=True)
+                # Make the record dir visible inside the jail so the shim can
+                # merge its ground truth (duplicate of the default
+                # /tmp/lince-dashboard bind is harmless; needed when
+                # LINCE_STATUS_DIR points elsewhere).
+                opts += ["--bind", str(record_file.parent), str(record_file.parent)]
+                opts += ["--setenv", "LINCE_POLICY_RECORD_PATH", str(record_file)]
+            except OSError:
+                pass
+        # bwrap option parsing stops at the `--` separator already appended
+        # above — bind/setenv options must land before it.
+        if cmd and cmd[-1] == "--":
+            cmd[-1:-1] = opts
+        else:
+            cmd += opts
+        shim: list[str] = ["python3", LANDLOCK_SHIM_MOUNT, "__landlock-exec"]
+        for target in bwrap_rw_targets(cmd):
+            shim += ["--rw", target]
+        shim += ["--ro", "/"]
+        for port in landlock.get("connect_ports", []):
+            shim += ["--connect-port", str(port)]
+        for port in landlock.get("bind_ports", []):
+            shim += ["--bind-port", str(port)]
+        if landlock.get("fail_closed"):
+            shim += ["--fail-closed"]
+        shim += ["--"]
+        agent_cmd = shim + agent_cmd
+
     if log_file:
         # Use `script` to record the full terminal session.
         # Fall back to shell redirect if script is not available.
@@ -3601,6 +3651,350 @@ def enforce_paranoid_fail_closed(level: str | None, record: dict) -> None:
 
 def _argv_digest(cmd: list[str]) -> str:
     return hashlib.sha256("\0".join(cmd).encode("utf-8", "replace")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Landlock hardening layer (#222, spike GO: docs/design/landlock-spike.md)
+#
+# Landlock is a kernel fence INSIDE the existing bwrap backend, never a
+# second sandbox product: bwrap paints the mount picture, the
+# `__landlock-exec` shim (last bwrap argv element, so its rule FDs open in
+# the final mount namespace) re-asserts it as a Landlock ruleset and adds
+# TCP port rules, then execs the agent. Defaults per the spike
+# recommendation: paranoid = fs + net (connect -> the 8118 proxy bridge
+# only); normal = fs + net-when-proxy-active; permissive = off.
+# Interim config keys (pre-v2 [filesystem]/[network] policy layer):
+#   [security] landlock = true|false        (default true; false = explicit
+#                                            opt-out, paranoid may degrade)
+#   [security] allow_connect_ports = []     (extra CONNECT_TCP rules)
+#   [security] allow_bind_ports = []        (BIND_TCP rules, dev servers)
+# ---------------------------------------------------------------------------
+
+_SYS_LANDLOCK_ADD_RULE = 445
+_SYS_LANDLOCK_RESTRICT_SELF = 446
+_LANDLOCK_RULE_PATH_BENEATH = 1
+_LANDLOCK_RULE_NET_PORT = 2
+_PR_SET_NO_NEW_PRIVS = 38
+
+# Filesystem access rights (bit -> minimum ABI), include/uapi/linux/landlock.h
+_LANDLOCK_FS_RIGHTS: dict[str, tuple[int, int]] = {
+    "EXECUTE":     (1 << 0, 1),
+    "WRITE_FILE":  (1 << 1, 1),
+    "READ_FILE":   (1 << 2, 1),
+    "READ_DIR":    (1 << 3, 1),
+    "REMOVE_DIR":  (1 << 4, 1),
+    "REMOVE_FILE": (1 << 5, 1),
+    "MAKE_CHAR":   (1 << 6, 1),
+    "MAKE_DIR":    (1 << 7, 1),
+    "MAKE_REG":    (1 << 8, 1),
+    "MAKE_SOCK":   (1 << 9, 1),
+    "MAKE_FIFO":   (1 << 10, 1),
+    "MAKE_BLOCK":  (1 << 11, 1),
+    "MAKE_SYM":    (1 << 12, 1),
+    "REFER":       (1 << 13, 2),
+    "TRUNCATE":    (1 << 14, 3),
+    "IOCTL_DEV":   (1 << 15, 5),
+}
+_LANDLOCK_NET_BIND_TCP = 1 << 0     # ABI >= 4
+_LANDLOCK_NET_CONNECT_TCP = 1 << 1  # ABI >= 4
+
+_LANDLOCK_RO_EXEC = (
+    _LANDLOCK_FS_RIGHTS["EXECUTE"][0]
+    | _LANDLOCK_FS_RIGHTS["READ_FILE"][0]
+    | _LANDLOCK_FS_RIGHTS["READ_DIR"][0]
+)
+# Rights applicable to a non-directory rule target (file binds, e.g. the
+# paranoid scratch ~/.claude.json) — directory-only rights on a file rule
+# are rejected by the kernel with EINVAL.
+_LANDLOCK_FILE_RIGHTS = (
+    _LANDLOCK_FS_RIGHTS["EXECUTE"][0]
+    | _LANDLOCK_FS_RIGHTS["WRITE_FILE"][0]
+    | _LANDLOCK_FS_RIGHTS["READ_FILE"][0]
+    | _LANDLOCK_FS_RIGHTS["TRUNCATE"][0]
+    | _LANDLOCK_FS_RIGHTS["IOCTL_DEV"][0]
+)
+
+# In-sandbox mount point for this script (ro-bound by build_bwrap_cmd) so
+# the shim never depends on PATH or $HOME mounts inside the jail. Lives
+# under bwrap's own /tmp tmpfs because the ro-bound / cannot grow new
+# mount-point directories ("Can't mkdir parents: Read-only file system");
+# the bind itself is read-only and the shim runs before the agent.
+LANDLOCK_SHIM_MOUNT = "/tmp/.lince/agent-sandbox"
+# In-sandbox TCP port of the paranoid socat bridge (see the unshare wrapper).
+PARANOID_BRIDGE_PORT = 8118
+
+
+def _landlock_fs_rights_for_abi(abi: int) -> int:
+    return sum(bit for bit, min_abi in _LANDLOCK_FS_RIGHTS.values() if abi >= min_abi)
+
+
+def _landlock_probe_capped() -> int:
+    """probe_landlock_abi(), optionally capped by LINCE_LANDLOCK_FORCE_ABI
+    (degraded-path testing — can only lower, never raise)."""
+    abi = probe_landlock_abi()
+    forced = os.environ.get("LINCE_LANDLOCK_FORCE_ABI")
+    if forced is not None:
+        try:
+            abi = min(abi, int(forced))
+        except ValueError:
+            pass
+    return abi
+
+
+def apply_landlock_ruleset(abi: int, rw_paths: list[str], ro_paths: list[str],
+                           connect_ports: list[int], bind_ports: list[int]) -> None:
+    """Self-restrict the current process (inherited across fork+execve).
+
+    The net mask is handled only when port rules were requested (spike
+    recommendation: proxy off at normal => net unrestricted, mask = 0).
+    """
+    import ctypes
+
+    class RulesetAttr(ctypes.Structure):
+        _fields_ = [
+            ("handled_access_fs", ctypes.c_uint64),
+            ("handled_access_net", ctypes.c_uint64),  # ABI >= 4
+            ("scoped", ctypes.c_uint64),              # ABI >= 6
+        ]
+
+    class PathBeneathAttr(ctypes.Structure):
+        _pack_ = 1  # __attribute__((packed)) in the UAPI header
+        _layout_ = "ms"  # silence 3.14 DeprecationWarning; ignored pre-3.13
+        _fields_ = [
+            ("allowed_access", ctypes.c_uint64),
+            ("parent_fd", ctypes.c_int32),
+        ]
+
+    class NetPortAttr(ctypes.Structure):
+        _fields_ = [
+            ("allowed_access", ctypes.c_uint64),
+            ("port", ctypes.c_uint64),
+        ]
+
+    libc = ctypes.CDLL(None, use_errno=True)
+
+    def check(res: int, what: str) -> int:
+        if res < 0:
+            err = ctypes.get_errno()
+            raise OSError(err, f"{what}: {os.strerror(err)}")
+        return res
+
+    handled_fs = _landlock_fs_rights_for_abi(abi)
+    net_requested = bool(connect_ports or bind_ports)
+    attr = RulesetAttr(handled_access_fs=handled_fs, handled_access_net=0, scoped=0)
+    size = 8  # ABI 1-3: fs field only
+    if abi >= 4:
+        size = 16
+        if net_requested:
+            attr.handled_access_net = _LANDLOCK_NET_BIND_TCP | _LANDLOCK_NET_CONNECT_TCP
+
+    ruleset_fd = check(
+        libc.syscall(_SYS_LANDLOCK_CREATE_RULESET, ctypes.byref(attr),
+                     ctypes.c_size_t(size), ctypes.c_uint32(0)),
+        "landlock_create_ruleset",
+    )
+    try:
+        for path, rights in ([(p, handled_fs) for p in rw_paths]
+                             + [(p, _LANDLOCK_RO_EXEC) for p in ro_paths]):
+            if os.path.isdir(path):
+                allowed = rights & handled_fs
+            elif os.path.exists(path):
+                allowed = rights & handled_fs & _LANDLOCK_FILE_RIGHTS
+            else:
+                continue
+            dir_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+            try:
+                pb = PathBeneathAttr(allowed_access=allowed, parent_fd=dir_fd)
+                check(libc.syscall(
+                    _SYS_LANDLOCK_ADD_RULE, ruleset_fd,
+                    _LANDLOCK_RULE_PATH_BENEATH, ctypes.byref(pb),
+                    ctypes.c_uint32(0)), f"landlock_add_rule({path})")
+            finally:
+                os.close(dir_fd)
+        if abi >= 4 and net_requested:
+            for access, ports in ((_LANDLOCK_NET_CONNECT_TCP, connect_ports),
+                                  (_LANDLOCK_NET_BIND_TCP, bind_ports)):
+                for port in ports:
+                    np = NetPortAttr(allowed_access=access, port=port)
+                    check(libc.syscall(
+                        _SYS_LANDLOCK_ADD_RULE, ruleset_fd,
+                        _LANDLOCK_RULE_NET_PORT, ctypes.byref(np),
+                        ctypes.c_uint32(0)), f"landlock_add_rule(port {port})")
+        check(libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), "prctl(no_new_privs)")
+        check(libc.syscall(_SYS_LANDLOCK_RESTRICT_SELF, ruleset_fd,
+                           ctypes.c_uint32(0)), "landlock_restrict_self")
+    finally:
+        os.close(ruleset_fd)
+
+
+def bwrap_rw_targets(cmd: list[str]) -> list[str]:
+    """Derive the Landlock rw allow-list mechanically from the bwrap argv:
+    every writable mount destination (--bind/--dev-bind dst, --tmpfs, --dev,
+    --proc). 'Rule list = mirror of the bind list' (spike gotcha #4) — the
+    two mechanisms express ONE intent and can never drift."""
+    targets: list[str] = []
+    i = 0
+    while i < len(cmd):
+        arg = cmd[i]
+        if arg in ("--bind", "--dev-bind"):
+            if i + 2 < len(cmd):
+                targets.append(cmd[i + 2])
+            i += 3
+        elif arg in ("--tmpfs", "--dev", "--proc"):
+            if i + 1 < len(cmd):
+                targets.append(cmd[i + 1])
+            i += 2
+        elif arg in ("--ro-bind", "--ro-bind-try"):
+            i += 3
+        else:
+            i += 1
+    return list(dict.fromkeys(targets))
+
+
+def landlock_update_record(record_path: str, **fields) -> None:
+    """Merge shim ground truth into the host-written #221 record (the status
+    dir is bind-mounted rw, so this works inside the jail). Best-effort."""
+    try:
+        with open(record_path, "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError):
+        record = {}
+    record.update(fields)
+    try:
+        with open(record_path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def cmd_landlock_exec(argv: list[str]) -> int:
+    """`agent-sandbox __landlock-exec` — internal launcher shim (#222).
+
+    Runs as the LAST element of the bwrap argv (rule FDs must open in the
+    final mount namespace — bwrap-created tmpfs is not beneath host-opened
+    FDs, verified by the #211 spike). Applies the Landlock ruleset, updates
+    the effective-policy record with ground truth, then execs the agent.
+    """
+    if "--" not in argv:
+        print("usage: agent-sandbox __landlock-exec [--rw PATH]... [--ro PATH]... "
+              "[--connect-port N]... [--bind-port N]... [--fail-closed] -- ARGV...",
+              file=sys.stderr)
+        return 2
+    sep = argv.index("--")
+    shim_argv, agent_argv = argv[:sep], argv[sep + 1:]
+    if not agent_argv:
+        print("agent-sandbox __landlock-exec: no agent command after '--'", file=sys.stderr)
+        return 2
+
+    parser = argparse.ArgumentParser(prog="agent-sandbox __landlock-exec")
+    parser.add_argument("--rw", action="append", default=[], metavar="PATH")
+    parser.add_argument("--ro", action="append", default=[], metavar="PATH")
+    parser.add_argument("--connect-port", action="append", type=int, default=[], metavar="N")
+    parser.add_argument("--bind-port", action="append", type=int, default=[], metavar="N")
+    parser.add_argument("--fail-closed", action="store_true")
+    args = parser.parse_args(shim_argv)
+
+    ro_paths = args.ro if args.ro else ["/"]
+    abi = _landlock_probe_capped()
+    record_path = os.environ.get("LINCE_POLICY_RECORD_PATH")
+    # Never leak shim plumbing into the agent environment.
+    os.environ.pop("LINCE_POLICY_RECORD_PATH", None)
+
+    if abi == 0:
+        reason = "landlock unavailable (ABI 0 — kernel without Landlock or LSM disabled)"
+        if args.fail_closed:
+            if record_path:
+                landlock_update_record(
+                    record_path, landlock_abi=0, fs_enforced=False,
+                    net_enforced=False, degraded_reason=reason,
+                )
+            print(f"agent-sandbox __landlock-exec: FAIL-CLOSED — requested "
+                  f"filesystem fence cannot be enforced ({reason}); refusing "
+                  f"to exec the agent (I7)", file=sys.stderr)
+            return 1
+        if record_path:
+            landlock_update_record(
+                record_path, landlock_abi=0,
+                degraded_reason=f"{reason} — bwrap-only containment",
+            )
+        print("agent-sandbox: landlock not available — bwrap-only containment",
+              file=sys.stderr)
+        os.execvp(agent_argv[0], agent_argv)
+
+    net_requested = bool(args.connect_port or args.bind_port)
+    try:
+        apply_landlock_ruleset(abi, rw_paths=args.rw, ro_paths=ro_paths,
+                               connect_ports=args.connect_port,
+                               bind_ports=args.bind_port)
+    except OSError as exc:
+        if record_path:
+            landlock_update_record(
+                record_path, landlock_abi=abi, fs_enforced=False,
+                net_enforced=False, degraded_reason=f"landlock apply failed: {exc}",
+            )
+        print(f"agent-sandbox __landlock-exec: ruleset apply failed: {exc}",
+              file=sys.stderr)
+        if args.fail_closed:
+            return 1
+        os.execvp(agent_argv[0], agent_argv)
+
+    net_enforced = abi >= 4 or not net_requested
+    degraded = None if net_enforced else f"landlock network rules not enforced (ABI {abi} < 4)"
+    if args.fail_closed and not net_enforced:
+        if record_path:
+            landlock_update_record(
+                record_path, landlock_abi=abi, fs_enforced=True,
+                net_enforced=False, degraded_reason=degraded,
+            )
+        print(f"agent-sandbox __landlock-exec: FAIL-CLOSED — requested network "
+              f"boundary cannot be enforced ({degraded}); refusing to exec the "
+              f"agent (I7)", file=sys.stderr)
+        return 1
+    if record_path:
+        landlock_update_record(
+            record_path,
+            landlock_abi=abi,
+            fs_enforced=True,
+            net_enforced=net_enforced,
+            net_limitation="port-only, host-unaware" if (abi >= 4 and net_requested) else None,
+            applied_before_exec=True,
+            inherited_by_subprocesses="verified (landlock ruleset applied pre-exec; "
+                                      "kernel-inherited across fork+execve)",
+            degraded_reason=degraded,
+        )
+    enforced = "fs+net" if (abi >= 4 and net_requested) else "fs only"
+    print(f"agent-sandbox: landlock {enforced} (ABI {abi}) — "
+          f"rw rules={len(args.rw)} connect={args.connect_port} bind={args.bind_port}",
+          file=sys.stderr)
+    os.execvp(agent_argv[0], agent_argv)
+    return 1  # unreachable
+
+
+def landlock_plan(config: dict, sandbox_level: str | None,
+                  unshare_net: bool, proxy_port: int | None) -> dict | None:
+    """Decide the Landlock posture for a bwrap launch (spike recommendation
+    table). Returns None when the shim must not be injected."""
+    sec = config.get("security", {})
+    if not sec.get("landlock", True):
+        return None
+    if sandbox_level == "permissive":
+        return None
+    if sys.platform != "linux":
+        return None
+    connect_ports: list[int] = []
+    bind_ports: list[int] = [int(p) for p in sec.get("allow_bind_ports", [])]
+    if unshare_net:
+        connect_ports.append(PARANOID_BRIDGE_PORT)
+    elif proxy_port:
+        connect_ports.append(int(proxy_port))
+    connect_ports += [int(p) for p in sec.get("allow_connect_ports", [])]
+    if not connect_ports:
+        bind_ports = []  # net mask only handled when the proxy path is active
+    return {
+        "connect_ports": list(dict.fromkeys(connect_ports)),
+        "bind_ports": list(dict.fromkeys(bind_ports)),
+        "fail_closed": sandbox_level == "paranoid",
+    }
 
 
 def cmd_run(args, agent_extra: list[str]) -> None:
@@ -4312,6 +4706,31 @@ def cmd_run(args, agent_extra: list[str]) -> None:
         for rule in rules:
             proxy_env[rule["base_url_env"]] = sandbox_proxy_base
 
+    # Landlock posture (#222): paranoid = fs + net (connect -> bridge 8118
+    # only); normal = fs + net-when-proxy-active; permissive = off. Host-side
+    # I7 gate: paranoid requires the Landlock fence unless explicitly opted
+    # out via [security] landlock = false.
+    landlock_abi = _landlock_probe_capped()
+    landlock = landlock_plan(
+        config, sandbox_level, unshare_net,
+        proxy.get_port() if proxy else None,
+    )
+    if landlock is not None and landlock_abi == 0:
+        if sandbox_level == "paranoid":
+            print(
+                "Error: sandbox level 'paranoid' requires the Landlock "
+                "filesystem fence, but this kernel has no Landlock support "
+                "(ABI 0). Refusing to launch (paranoid fails closed — design "
+                "invariant I7). Opt into degraded operation explicitly with "
+                "[security] landlock = false, or pick --sandbox-level "
+                "normal/permissive.",
+                file=sys.stderr,
+            )
+            if proxy:
+                proxy.stop()
+            sys.exit(1)
+        # normal: graceful — the shim logs and continues bwrap-only.
+
     # Build command
     cmd = build_bwrap_cmd(config, project_dir, agent_extra, log_file,
                           profile=profile, safe_mode=args.safe,
@@ -4319,7 +4738,8 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                           agent_config=agent_cfg, agent_id=args.id,
                           agent_name=agent_name,
                           proxy_env=proxy_env if proxy_env else None,
-                          scratch_binds=scratch_binds or None)
+                          scratch_binds=scratch_binds or None,
+                          landlock=landlock)
 
     # Paranoid wrap: create a userns + fresh netns OUTSIDE bwrap so we can
     # bring up loopback (needs CAP_NET_ADMIN, which non-setuid bwrap drops
@@ -4424,6 +4844,15 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     print(f"  project     {project_dir}")
     print(f"  filesystem  read-only root, writable project dir")
     print(f"  network     enabled")
+    if landlock is None:
+        print("  landlock    off")
+    elif landlock_abi == 0:
+        print("  landlock    unavailable (ABI 0) — bwrap-only containment")
+    elif landlock_abi >= 4 and landlock.get("connect_ports"):
+        print(f"  landlock    fs+net (ABI {landlock_abi}): connect -> "
+              f"{', '.join(str(p) for p in landlock['connect_ports'])}")
+    else:
+        print(f"  landlock    fs only (ABI {landlock_abi})")
     print(f"  pid isolat. {'on' if sec.get('unshare_pid', True) else 'off'}")
     print(f"  git push    {'blocked' if sec.get('block_git_push', True) else 'allowed'}")
     print(f"  env vars    clearenv + whitelist")
@@ -4463,18 +4892,41 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     # namespaces before exec'ing the agent; both are kernel-inherited by
     # every subprocess.
     bwrap_unshare_net = bool(sec.get("unshare_net", False))
+    landlock_active = landlock is not None and landlock_abi >= 1
+    requested_fs = "bwrap bind mounts (project rw, system ro, clearenv)"
+    requested_net = (
+        "loopback-only via credential proxy (netns --unshare-net)"
+        if bwrap_unshare_net else "shared (no kernel restriction requested)"
+    )
+    net_limitation = None
+    helper_version = None
+    helper_digest = None
+    if landlock_active:
+        requested_fs += " + landlock path rules"
+        if landlock_abi >= 4 and landlock.get("connect_ports"):
+            requested_net += (
+                f" + landlock CONNECT_TCP -> {landlock['connect_ports']}"
+            )
+            net_limitation = "port-only, host-unaware"
+        helper_version = f"__landlock-exec (embedded, ABI {landlock_abi})"
+        try:
+            helper_digest = hashlib.sha256(
+                Path(__file__).resolve().read_bytes()
+            ).hexdigest()
+        except OSError:
+            helper_digest = None
     bwrap_record = build_policy_record(
         backend="bwrap",
         agent_name=agent_name,
         agent_id=args.id,
         level=sandbox_level,
-        requested_fs="bwrap bind mounts (project rw, system ro, clearenv)",
-        requested_net=(
-            "loopback-only via credential proxy (netns --unshare-net)"
-            if bwrap_unshare_net else "shared (no kernel restriction requested)"
-        ),
+        requested_fs=requested_fs,
+        requested_net=requested_net,
         fs_enforced=True,
         net_enforced=True,
+        net_limitation=net_limitation,
+        helper_version=helper_version,
+        helper_digest=helper_digest,
         bwrap_args_digest=_argv_digest(cmd),
     )
     enforce_paranoid_fail_closed(sandbox_level, bwrap_record)
@@ -6762,6 +7214,10 @@ def cmd_learn(args) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # Internal launcher shim (#222) — dispatched before argparse because its
+    # argv contains a free-form `--`-separated agent command.
+    if len(sys.argv) > 1 and sys.argv[1] == "__landlock-exec":
+        sys.exit(cmd_landlock_exec(sys.argv[2:]))
     _check_migration()
     parser = argparse.ArgumentParser(
         prog="agent-sandbox",
