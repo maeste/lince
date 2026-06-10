@@ -293,15 +293,10 @@ impl ZellijPlugin for State {
                     Some(CMD_GET_CWD) if exit_code == Some(0) => {
                         let dir = String::from_utf8_lossy(&stdout).trim().to_string();
                         if !dir.is_empty() {
-                            // Kick off async provider discovery (reads sandbox config via shell).
-                            config::discover_providers_async(
-                                self.config.sandbox_config_path.as_deref(),
-                                Some(&dir),
-                            );
-                            // Kick off async load of agent type defaults.
-                            config::load_agent_defaults_async(
-                                self.config.sandbox_config_path.as_deref(),
-                            );
+                            // Kick off the single async resolution call (#202):
+                            // agent types + providers + sandbox levels all come
+                            // from `lince-config resolve --json`.
+                            config::resolve_config_async(Some(&dir));
                             // Kick off async load of saved state.
                             state_file::load_state_async(&dir);
                             self.launch_dir = Some(dir);
@@ -345,48 +340,51 @@ impl ZellijPlugin for State {
                         // Nothing to do, just acknowledge.
                         false
                     }
-                    Some(config::CMD_DISCOVER_PROVIDERS) => {
-                        // Each config file's output is separated by NUL.
-                        // Parse each independently to avoid duplicate-section TOML errors.
-                        for chunk in stdout.split(|&b| b == 0) {
-                            if chunk.is_empty() { continue; }
-                            let content = String::from_utf8_lossy(chunk);
-                            let (by_agent, details_by_agent) = config::parse_providers_from_toml(&content);
-                            self.config.merge_providers(&by_agent, &details_by_agent);
+                    Some(config::CMD_RESOLVE_CONFIG) => {
+                        // Single resolution point (#202): agent types, providers,
+                        // and custom sandbox levels all arrive in one JSON payload
+                        // from `lince-config resolve --json`.
+                        let mut applied = false;
+                        if exit_code == Some(0) && !stdout.is_empty() {
+                            let content = String::from_utf8_lossy(&stdout);
+                            match config::apply_resolved_view(&mut self.config, &content) {
+                                Ok(warnings) => {
+                                    applied = true;
+                                    if let Some(w) = warnings.first() {
+                                        self.config_error =
+                                            Some(format!("config: {}", w));
+                                    }
+                                }
+                                Err(e) => {
+                                    self.config_error = Some(format!(
+                                        "lince-config resolve: {} — using built-in defaults",
+                                        e
+                                    ));
+                                }
+                            }
+                        } else {
+                            let err = String::from_utf8_lossy(&stderr);
+                            self.config_error = Some(format!(
+                                "lince-config resolve failed ({}) — using built-in defaults. \
+                                 Install it: lince-config/install.sh",
+                                err.trim().lines().last().unwrap_or("not found")
+                            ));
                         }
-                        true
-                    }
-                    Some(config::CMD_LOAD_AGENT_DEFAULTS) => {
-                        let agent_types = config::parse_agent_defaults(&stdout);
-                        if !agent_types.is_empty() {
-                            self.config.agent_types = agent_types;
+                        if !applied && self.config.agent_types.is_empty() {
+                            // Last-resort fallback (#198 precedent): compiled-in
+                            // shipped defaults keep the dashboard usable.
+                            self.config.agent_types = config::embedded_agent_types().clone();
                         }
                         self.agent_types_loaded = true;
-                        // Pre-warm the custom sandbox-level cache now that we know the
-                        // bases. Discovery is async and idempotent — the wizard re-fires
-                        // it on open as a refresh, but doing it here means the cache is
-                        // usually populated before the user ever presses N.
-                        let bases: Vec<String> = self.config.base_agents()
-                            .into_iter().map(|(b, _)| b).collect();
-                        config::discover_sandbox_levels_async(&bases);
                         // Flush any buffered restore that was waiting for agent types.
                         if let Some(saved_agents) = self.pending_restore.take() {
                             self.restore_agents(saved_agents);
                         }
-                        true
-                    }
-                    Some(config::CMD_DISCOVER_SANDBOX_LEVELS) => {
-                        if exit_code == Some(0) {
-                            // Replace entire cache: each discovery call covers all
-                            // bases × both backends atomically. A profile removed
-                            // since the last run won't appear in the new map and
-                            // would otherwise stick around as a stale level.
-                            self.config.discovered_sandbox_levels =
-                                config::parse_discovered_sandbox_levels(&stdout);
-                            // Refresh the wizard's level list ONLY if the user hasn't
-                            // moved past SandboxLevel yet — otherwise we'd risk
-                            // clobbering an already-confirmed choice if discovery
-                            // shifted the list (e.g., file removed mid-wizard).
+                        // Refresh the wizard's level list ONLY if the user hasn't
+                        // moved past SandboxLevel yet — otherwise we'd risk
+                        // clobbering an already-confirmed choice if resolution
+                        // shifted the list (e.g., profile file removed mid-wizard).
+                        if applied {
                             if let Some(ref mut wizard) = self.wizard {
                                 let on_or_before_level = matches!(
                                     wizard.step,
@@ -825,10 +823,10 @@ impl State {
                     .and_then(|dp| available_providers.iter().position(|p| p == dp))
                     .unwrap_or(0);
                 // Sandbox levels follow the canonical sandboxed entry (skipped when backend = None).
-                // Levels are backend-aware: discovered custom levels from
-                // `~/.config/nono/profiles/` and `~/.agent-sandbox/profiles/` are merged with
-                // the standard 3. Discovery is async — the cache may be empty at this point;
-                // CMD_DISCOVER_SANDBOX_LEVELS handler refreshes the wizard when results arrive.
+                // Levels are backend-aware: custom levels discovered by the resolver
+                // (lince-config resolve --json) are merged with the standard 3.
+                // Resolution is async — the cache may be empty at this point;
+                // the CMD_RESOLVE_CONFIG handler refreshes the wizard when results arrive.
                 let default_backend = available_sandbox_backends.get(sandbox_backend_index);
                 let available_sandbox_levels = self.config.supported_sandbox_levels(default_base, default_backend);
                 let sandbox_level_index = {
@@ -838,10 +836,8 @@ impl State {
                         .and_then(|p| available_sandbox_levels.iter().position(|l| l == p))
                         .unwrap_or(0)
                 };
-                // Kick off async discovery for ALL bases (cache covers any future wizard moves).
-                let discover_bases: Vec<String> = self.config.base_agents()
-                    .into_iter().map(|(b, _)| b).collect();
-                config::discover_sandbox_levels_async(&discover_bases);
+                // Re-run resolution as a refresh (covers custom levels added since boot).
+                config::resolve_config_async(self.launch_dir.as_deref());
                 // #167: seed the default name from the (possibly pre-filled)
                 // project dir basename. Recomputed when the user changes the
                 // ProjectDir field (which now precedes the Name step).

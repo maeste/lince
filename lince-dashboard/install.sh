@@ -336,6 +336,22 @@ AGENTS_TEMPLATE_SRC="$SCRIPT_DIR/agents-template.toml"
 AGENTS_TEMPLATE_DST="$CONFIG_DIR/agents-template.toml"
 USER_CONFIG="$CONFIG_DIR/config.toml"
 
+# lince-config is a runtime dependency since #202: the plugin obtains agent
+# types / providers / sandbox levels from `lince-config resolve --json`.
+# Install it from the sibling module when missing (idempotent); without it
+# the dashboard falls back to compiled-in shipped defaults.
+if ! command -v lince-config >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/lince-config" ]; then
+    if [ -x "$SCRIPT_DIR/../lince-config/install.sh" ]; then
+        echo -e "${YELLOW}  lince-config not found — installing from ../lince-config${NC}"
+        bash "$SCRIPT_DIR/../lince-config/install.sh" >/dev/null \
+            && echo -e "${GREEN}  ✓ lince-config installed${NC}" \
+            || echo -e "${YELLOW}  ⚠ lince-config install failed — dashboard will use built-in agent defaults${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ lince-config not installed — dashboard will use built-in agent defaults.${NC}"
+        echo -e "${YELLOW}    Install it: cd ../lince-config && ./install.sh${NC}"
+    fi
+fi
+
 # Unified agent registry (Config v2, #204). Shipped data — always overwritten
 # (#199); custom agents never live here. Also installed by sandbox/install.sh
 # (same files, idempotent) so either module works standalone.

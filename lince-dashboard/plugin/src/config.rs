@@ -273,9 +273,11 @@ pub struct DashboardConfig {
     /// then provider name.
     #[serde(skip)]
     pub provider_details_by_agent: HashMap<String, HashMap<String, ProviderDetails>>,
-    /// Path to sandbox config for provider auto-discovery.
-    /// Defaults to `~/.agent-sandbox/config.toml`.
+    /// Path to the sandbox config. Since #202 provider discovery happens in
+    /// `lince-config resolve` (which reads the canonical locations itself);
+    /// the key is kept so existing configs keep validating.
     #[serde(default)]
+    #[allow(dead_code)]
     pub sandbox_config_path: Option<String>,
     #[serde(default)]
     pub default_project_dir: Option<String>,
@@ -336,9 +338,9 @@ pub struct DashboardConfig {
     pub instance_icons: Vec<String>,
     /// Custom sandbox levels discovered from the filesystem, keyed by
     /// `<backend>:<base>` (e.g. `"nono:claude"` or `"agent-sandbox:claude"`).
-    /// Populated asynchronously by `discover_sandbox_levels_async()` reading
-    /// profile files matching `~/.config/nono/profiles/lince-<base>-*.json` and
-    /// `~/.agent-sandbox/profiles/<base>-*.toml`. Combined with the shipped
+    /// Populated from the `levels_by_backend` field of `lince-config
+    /// resolve --json` (#202; the resolver does the filesystem discovery
+    /// the plugin's shell globs used to do). Combined with the shipped
     /// `paranoid`/`normal`/`permissive` defaults by `supported_sandbox_levels()`.
     #[serde(skip)]
     pub discovered_sandbox_levels: HashMap<String, Vec<String>>,
@@ -443,11 +445,11 @@ pub fn common_prefix(items: &[String]) -> String {
 
 /// Context key for identifying RunCommandResult callbacks (shared with state_file).
 pub const CMD_TYPE_KEY: &str = "type";
-/// Command type for async provider discovery via `run_command` (was
-/// `CMD_DISCOVER_PROFILES` pre-#81).
-pub const CMD_DISCOVER_PROVIDERS: &str = "discover_providers";
-/// Command type for async loading of agent type defaults via `run_command`.
-pub const CMD_LOAD_AGENT_DEFAULTS: &str = "load_agent_defaults";
+/// Command type for the async `lince-config resolve --json` call (#202) —
+/// the single source for agent types, providers, and sandbox levels.
+/// Replaces the former `discover_providers` / `load_agent_defaults` /
+/// `discover_sandbox_levels` TOML-parsing pipeline.
+pub const CMD_RESOLVE_CONFIG: &str = "resolve_config";
 
 /// Run a command with a typed context map. Wraps the common
 /// BTreeMap + `run_command` boilerplate used across modules.
@@ -493,11 +495,6 @@ pub fn poll_status_files_async(status_dir: &str) {
     );
     run_typed_command(&["sh", "-c", &script], CMD_POLL_STATUS);
 }
-
-/// Command type for async discovery of custom sandbox-level profiles.
-/// Output format: lines of `<backend>:<base>:<level>` (or `<backend>:<base>:` for the
-/// suffix-less "normal" profile). See `discover_sandbox_levels_async()`.
-pub const CMD_DISCOVER_SANDBOX_LEVELS: &str = "discover_sandbox_levels";
 
 /// Command type for async transcript extraction for the relay feature.
 pub const CMD_EXTRACT_TRANSCRIPT: &str = "extract_transcript";
@@ -548,251 +545,265 @@ for m in msgs[-{count}:]:
     );
 }
 
-/// Extract provider details from a TOML table (the value side of a
-/// `[*.providers.<name>]` / `[*.profiles.<name>]` entry).
-fn parse_provider_details(table: &toml::Table) -> ProviderDetails {
-    let mut pd = ProviderDetails::default();
-    // Parse env vars to set
-    if let Some(env_table) = table.get("env").and_then(|v| v.as_table()) {
-        for (k, v) in env_table {
-            if let Some(s) = v.as_str() {
-                pd.env.insert(k.clone(), s.to_string());
-            }
-        }
-    }
-    // Parse env vars to unset
-    if let Some(unset_arr) = table.get("env_unset").and_then(|v| v.as_array()) {
-        for v in unset_arr {
-            if let Some(s) = v.as_str() {
-                pd.env_unset.push(s.to_string());
-            }
-        }
-    }
-    pd
-}
-
-/// Parse providers (env-var bundles) from sandbox config TOML content,
-/// returning per-agent-type maps.
-///
-/// Recognises four formats — canonical first, legacy second:
-///   - `[providers.<name>]`              → attributed to agent base "claude"
-///   - `[<agent>.providers.<name>]`      → attributed to `<agent>`
-///   - Legacy `[profiles.<name>]`        → attributed to "claude"
-///   - Legacy `[<agent>.profiles.<name>]` → attributed to `<agent>`
-///
-/// When both forms exist for the same agent + name, the canonical entry wins.
-/// Returns `(providers_by_agent, details_by_agent)`.
-pub fn parse_providers_from_toml(
-    content: &str,
-) -> (HashMap<String, Vec<String>>, HashMap<String, HashMap<String, ProviderDetails>>) {
-    let table: toml::Table = match toml::from_str(content) {
-        Ok(t) => t,
-        Err(_) => return (HashMap::new(), HashMap::new()),
-    };
-
-    let mut by_agent: HashMap<String, Vec<String>> = HashMap::new();
-    let mut details_by_agent: HashMap<String, HashMap<String, ProviderDetails>> = HashMap::new();
-
-    fn push_one(
-        agent: &str,
-        name: &str,
-        detail_table: Option<&toml::Table>,
-        by_agent: &mut HashMap<String, Vec<String>>,
-        details_by_agent: &mut HashMap<String, HashMap<String, ProviderDetails>>,
-    ) {
-        let names = by_agent.entry(agent.to_string()).or_default();
-        if !names.iter().any(|n| n == name) {
-            names.push(name.to_string());
-        }
-        // Last-wins semantics: a later (higher-precedence) call OVERWRITES the
-        // previous detail for the same agent + name. Match the Python reader's
-        // dict.update() behaviour so the same config produces the same env-var
-        // bundle on both sides — see the precedence comment below.
-        if let Some(t) = detail_table {
-            details_by_agent
-                .entry(agent.to_string())
-                .or_default()
-                .insert(name.to_string(), parse_provider_details(t));
-        }
-    }
-
-    // Process from LOWEST to HIGHEST precedence so the last write wins
-    // (matches `resolve_providers` in sandbox/agent-sandbox: legacy top →
-    // legacy ns → canonical top → canonical ns, with later layers replacing
-    // earlier ones for any colliding agent + name pair).
-    //
-    // 1) Legacy top-level [profiles.*]      → "claude"
-    // 2) Canonical top-level [providers.*]  → "claude"
-    for top_key in ["profiles", "providers"] {
-        if let Some(top) = table.get(top_key).and_then(|v| v.as_table()) {
-            for (name, value) in top {
-                push_one("claude", name, value.as_table(), &mut by_agent, &mut details_by_agent);
-            }
-        }
-    }
-    // 3) Legacy namespaced [<agent>.profiles.*]
-    // 4) Canonical namespaced [<agent>.providers.*] — highest precedence
-    for (agent_key, agent_value) in &table {
-        if agent_key == "providers" || agent_key == "profiles" {
-            continue;
-        }
-        let Some(agent_section) = agent_value.as_table() else { continue };
-        for sub_key in ["profiles", "providers"] {
-            if let Some(provs) = agent_section.get(sub_key).and_then(|v| v.as_table()) {
-                for (name, val) in provs {
-                    push_one(agent_key, name, val.as_table(), &mut by_agent, &mut details_by_agent);
-                }
-            }
-        }
-    }
-
-    // Sort each agent's provider names
-    for names in by_agent.values_mut() {
-        names.sort();
-    }
-
-    (by_agent, details_by_agent)
-}
-
 /// Escape a string for use inside single quotes in a shell command.
 pub fn shell_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
-/// Kick off async discovery of providers (env-var bundles) by reading sandbox
-/// config files via `run_command`. Results arrive in `Event::RunCommandResult`
-/// with context `type=discover_providers`. Was `discover_profiles_async`
-/// pre-#81 — see issue for naming rationale.
+/// Kick off the async `lince-config resolve --json` call (#202).
 ///
-/// Reads the global config and optionally a project-local config. Each file
-/// is cat'd separately and their outputs are joined by a NUL byte so the
-/// handler can parse them independently (avoiding invalid TOML from
-/// concatenating files with duplicate `[providers]` headers).
-pub fn discover_providers_async(sandbox_config_path: Option<&str>, launch_dir: Option<&str>) {
-    // Build the global config path for the shell script.
-    // IMPORTANT: We must NOT quote paths that start with `~` because the shell
-    // only performs tilde expansion on unquoted tildes.  `expand_tilde()` uses
-    // `std::env::var("HOME")` which is unavailable inside the WASI sandbox, so
-    // the tilde would be passed through literally.  Instead we let the shell
-    // handle `~` expansion by using `$HOME` in the script.
-    let raw_path = sandbox_config_path.unwrap_or("~/.agent-sandbox/config.toml");
-    let global_expr = shell_path_expr(raw_path);
-
-    // Output each file separated by NUL so the handler can split and parse independently.
-    let mut script = format!("cat {} 2>/dev/null", global_expr);
-
+/// The resolver is the single resolution point (design config-v2 §4.3): it
+/// merges registry.d, the legacy sandbox/dashboard user configs (dual-read
+/// window) or `~/.config/lince/lince.toml`, the project overlay, and the
+/// filesystem-discovered custom sandbox levels — so this plugin no longer
+/// parses any sandbox-owned TOML. Result arrives in
+/// `Event::RunCommandResult` with context `type=resolve_config` and is
+/// applied by `apply_resolved_view`.
+pub fn resolve_config_async(launch_dir: Option<&str>) {
+    // PATH inside the Zellij host shell may not include ~/.local/bin —
+    // prefer the PATH lookup, fall back to the canonical install location.
+    let mut script = String::from(
+        "LC=\"$(command -v lince-config || echo \"$HOME/.local/bin/lince-config\")\"; \
+         \"$LC\" resolve --json",
+    );
     if let Some(dir) = launch_dir {
-        let local_path = format!(
-            "{}/.agent-sandbox/config.toml",
-            dir.trim_end_matches('/')
-        );
-        script = format!(
-            "{} ; printf '\\0' ; cat '{}' 2>/dev/null",
-            script,
-            shell_escape(&local_path)
-        );
+        script.push_str(&format!(" --project '{}'", shell_escape(dir)));
     }
-
-    run_typed_command(&["sh", "-c", &script], CMD_DISCOVER_PROVIDERS);
+    run_typed_command(&["sh", "-c", &script], CMD_RESOLVE_CONFIG);
 }
 
-/// Kick off async discovery of custom sandbox-level profile files.
-///
-/// Globs:
-/// - `~/.config/nono/profiles/lince-<base>-*.json` (nono: per-agent only)
-/// - `~/.agent-sandbox/profiles/<base>-<level>.toml` (agent-sandbox: per-agent)
-/// - `~/.agent-sandbox/profiles/<level>.toml` (agent-sandbox: agent-agnostic,
-///   matches agent-sandbox's own resolution order — see its source for the
-///   comment "tried as <agent>-<level>.toml then <level>.toml"). Agent-agnostic
-///   levels are emitted once per known base so the cache is populated uniformly.
-///
-/// Filenames are emitted as `<backend>:<base>:<level>` lines on stdout.
-/// Result arrives in `Event::RunCommandResult` with context
-/// `type=discover_sandbox_levels`; the handler parses and populates
-/// `DashboardConfig.discovered_sandbox_levels`.
-pub fn discover_sandbox_levels_async(bases: &[String]) {
-    if bases.is_empty() {
-        return;
-    }
-    let mut script = String::new();
-    // Per-base globs: nono (always per-agent) + agent-sandbox <base>-<level>.toml.
-    for base in bases {
-        let b = shell_escape(base);
-        script.push_str(&format!(
-            "find \"$HOME/.config/nono/profiles\" -maxdepth 1 -type f \
-                -name 'lince-{base}-*.json' 2>/dev/null \
-                | sed -n 's|.*/lince-{base}-\\(.*\\)\\.json$|nono:{base}:\\1|p';\n",
-            base = b,
-        ));
-        script.push_str(&format!(
-            "find \"$HOME/.agent-sandbox/profiles\" -maxdepth 1 -type f \
-                -name '{base}-*.toml' 2>/dev/null \
-                | sed -n 's|.*/{base}-\\(.*\\)\\.toml$|agent-sandbox:{base}:\\1|p';\n",
-            base = b,
-        ));
-    }
-    // Agent-agnostic agent-sandbox profiles: any *.toml whose stem doesn't start
-    // with `<known-base>-`. Each such level applies to ALL bases, so we emit one
-    // line per base. Skip-patterns are quoted shell `case` patterns built from
-    // the same base list to avoid double-counting per-base files.
-    let bases_quoted: Vec<String> = bases.iter().map(|b| format!("'{}'", shell_escape(b))).collect();
-    let skip_patterns: Vec<String> = bases.iter().map(|b| format!("{}-*", shell_escape(b))).collect();
-    script.push_str(&format!(
-        "find \"$HOME/.agent-sandbox/profiles\" -maxdepth 1 -type f -name '*.toml' 2>/dev/null \
-         | while IFS= read -r f; do \
-             name=$(basename \"$f\" .toml); \
-             case \"$name\" in {skip}) continue;; esac; \
-             for base in {bases}; do \
-                 printf 'agent-sandbox:%s:%s\\n' \"$base\" \"$name\"; \
-             done; \
-         done\n",
-        skip = skip_patterns.join("|"),
-        bases = bases_quoted.join(" "),
-    ));
-    run_typed_command(&["sh", "-c", &script], CMD_DISCOVER_SANDBOX_LEVELS);
+/// The resolve --json contract (design config-v2 §4.3), reduced to the fields
+/// this plugin consumes. Unknown fields are ignored (forward compat); every
+/// field is defaulted so partial output degrades instead of failing.
+#[derive(Deserialize)]
+pub struct ResolvedView {
+    /// "default-deny", or "void:<key>" when an [experimental] hatch is
+    /// active (I5). Not yet rendered — the #221 effective-policy badge
+    /// consumes it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub guarantee: String,
+    #[serde(default)]
+    pub providers: HashMap<String, ResolvedProvider>,
+    #[serde(default)]
+    pub agents: HashMap<String, ResolvedAgent>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
-/// Parse the stdout of `discover_sandbox_levels_async()` into a
-/// `<backend>:<base> -> [level, ...]` map. Empty / malformed lines are skipped.
-pub fn parse_discovered_sandbox_levels(stdout: &[u8]) -> HashMap<String, Vec<String>> {
-    let output = String::from_utf8_lossy(stdout);
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    for line in output.lines() {
-        // Format: backend:base:level — parse from the right so base names with
-        // `-` (none today, future-proofing) survive.
-        let mut parts = line.splitn(3, ':');
-        let backend = match parts.next() { Some(s) if !s.is_empty() => s, _ => continue };
-        let base = match parts.next() { Some(s) if !s.is_empty() => s, _ => continue };
-        let level = match parts.next() { Some(s) if !s.is_empty() => s, _ => continue };
-        let key = format!("{}:{}", backend, base);
-        let bucket = out.entry(key).or_default();
-        if !bucket.iter().any(|l| l == level) {
-            bucket.push(level.to_string());
+/// Provider entry: env-var NAMES (secret values are redacted to `$NAME`
+/// self-references by the resolver — I4; the spawn path skips those and the
+/// value is inherited from the host environment).
+#[derive(Deserialize, Default)]
+pub struct ResolvedProvider {
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub env_unset: Vec<String>,
+    /// Whether any of the provider's env names is set in the host env.
+    /// Informational for now (wizard filtering is a follow-up).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub available: bool,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ResolvedAgentDashboard {
+    #[serde(default)]
+    pub pane_title_pattern: String,
+    #[serde(default)]
+    pub status_pipe_name: String,
+    #[serde(default)]
+    pub has_native_hooks: bool,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ResolvedVariant {
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub pane_title_pattern: String,
+    #[serde(default)]
+    pub status_pipe_name: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub short_label: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub has_native_hooks: bool,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub event_map: HashMap<String, String>,
+    #[serde(default)]
+    pub bwrap_conflict: bool,
+}
+
+#[derive(Deserialize)]
+pub struct ResolvedAgent {
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub short_label: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub backend: String,
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub levels_by_backend: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub allowed_levels: Vec<String>,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default)]
+    pub providers_available: Vec<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub event_map: HashMap<String, String>,
+    #[serde(default)]
+    pub bwrap_conflict: bool,
+    #[serde(default)]
+    pub disable_inner_sandbox_args: Vec<String>,
+    #[serde(default)]
+    pub home_subdir: String,
+    #[serde(default)]
+    pub dashboard: ResolvedAgentDashboard,
+    #[serde(default)]
+    pub variants: HashMap<String, ResolvedVariant>,
+}
+
+fn backend_from_str(s: &str) -> SandboxBackend {
+    match s {
+        "seatbelt" | "sandbox-exec" => SandboxBackend::Seatbelt,
+        "nono" => SandboxBackend::Nono,
+        // "bwrap" / "agent-sandbox" / "auto" / anything unknown
+        _ => SandboxBackend::AgentSandbox,
+    }
+}
+
+const SHIPPED_LEVELS: [&str; 3] = ["paranoid", "normal", "permissive"];
+
+/// Apply a `lince-config resolve --json` payload to the dashboard config:
+/// agent types (base + derived variants), per-agent providers + details,
+/// and the per-backend custom sandbox-level cache. Returns the resolver
+/// warnings on success.
+pub fn apply_resolved_view(
+    config: &mut DashboardConfig,
+    json_text: &str,
+) -> Result<Vec<String>, String> {
+    let view: ResolvedView = serde_json::from_str(json_text.trim())
+        .map_err(|e| format!("resolve JSON parse error: {}", e))?;
+    if view.agents.is_empty() {
+        return Err("resolve returned no agents".to_string());
+    }
+
+    let mut agent_types: HashMap<String, AgentTypeConfig> = HashMap::new();
+    let mut providers_by_agent: HashMap<String, Vec<String>> = HashMap::new();
+    let mut details_by_agent: HashMap<String, HashMap<String, ProviderDetails>> = HashMap::new();
+    let mut discovered: HashMap<String, Vec<String>> = HashMap::new();
+
+    for (name, agent) in &view.agents {
+        agent_types.insert(
+            name.clone(),
+            AgentTypeConfig {
+                command: agent.command.clone(),
+                pane_title_pattern: if agent.dashboard.pane_title_pattern.is_empty() {
+                    DEFAULT_SANDBOX_COMMAND.to_string()
+                } else {
+                    agent.dashboard.pane_title_pattern.clone()
+                },
+                status_pipe_name: agent.dashboard.status_pipe_name.clone(),
+                display_name: agent.display_name.clone(),
+                short_label: agent.short_label.clone(),
+                color: agent.color.clone(),
+                sandboxed: true,
+                env_vars: agent.env.clone(),
+                has_native_hooks: agent.dashboard.has_native_hooks,
+                home_ro_dirs: Vec::new(),
+                home_rw_dirs: Vec::new(),
+                bwrap_conflict: agent.bwrap_conflict,
+                disable_inner_sandbox_args: agent.disable_inner_sandbox_args.clone(),
+                event_map: agent.event_map.clone(),
+                providers: agent.providers.clone(),
+                sandbox_backend: backend_from_str(&agent.backend),
+                sandbox_level: agent.level.clone(),
+                sandbox_levels: agent.allowed_levels.clone(),
+                sandbox_home_subdir: if agent.home_subdir.is_empty() {
+                    None
+                } else {
+                    Some(agent.home_subdir.clone())
+                },
+            },
+        );
+        for (variant, v) in &agent.variants {
+            agent_types.insert(
+                format!("{}-{}", name, variant),
+                AgentTypeConfig {
+                    command: v.command.clone(),
+                    pane_title_pattern: v.pane_title_pattern.clone(),
+                    status_pipe_name: v.status_pipe_name.clone(),
+                    display_name: v.display_name.clone(),
+                    short_label: v.short_label.clone(),
+                    color: v.color.clone(),
+                    sandboxed: false,
+                    env_vars: v.env.clone(),
+                    has_native_hooks: v.has_native_hooks,
+                    home_ro_dirs: Vec::new(),
+                    home_rw_dirs: Vec::new(),
+                    bwrap_conflict: v.bwrap_conflict,
+                    disable_inner_sandbox_args: Vec::new(),
+                    event_map: v.event_map.clone(),
+                    providers: v.providers.clone(),
+                    sandbox_backend: SandboxBackend::None,
+                    sandbox_level: None,
+                    sandbox_levels: Vec::new(),
+                    sandbox_home_subdir: None,
+                },
+            );
+        }
+        if !agent.providers_available.is_empty() {
+            providers_by_agent.insert(name.clone(), agent.providers_available.clone());
+            let details = details_by_agent.entry(name.clone()).or_default();
+            for pname in &agent.providers_available {
+                if let Some(p) = view.providers.get(pname) {
+                    details.insert(
+                        pname.clone(),
+                        ProviderDetails {
+                            env: p.env.clone(),
+                            env_unset: p.env_unset.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        // Per-backend custom levels (extras beyond the shipped trio) feed the
+        // same cache the filesystem globs used to populate.
+        for (backend_key, levels) in &agent.levels_by_backend {
+            let extras: Vec<String> = levels
+                .iter()
+                .filter(|l| !SHIPPED_LEVELS.contains(&l.as_str()))
+                .cloned()
+                .collect();
+            if !extras.is_empty() {
+                discovered.insert(format!("{}:{}", backend_key, name), extras);
+            }
         }
     }
-    out
-}
 
-/// Kick off async loading of agent type defaults from
-/// `~/.config/lince-dashboard/agents-defaults.toml` via `run_command`.
-/// Results arrive in `Event::RunCommandResult` with context
-/// `type=load_agent_defaults`.
-///
-/// The shell reads the defaults file first, then (separated by NUL) any
-/// `[agents.*]` sections from the user's dashboard config.toml so they can
-/// be merged.  User entries override defaults (full replacement per key).
-pub fn load_agent_defaults_async(_sandbox_config_path: Option<&str>) {
-    let defaults_path = "\"$HOME/.config/lince-dashboard/agents-defaults.toml\"";
-    let user_cfg_path = "\"$HOME/.config/lince-dashboard/config.toml\"";
-
-    // Output defaults first, then NUL, then user dashboard config (which may
-    // contain [agents.*]).
-    let script = format!(
-        "cat {} 2>/dev/null ; printf '\\0' ; cat {} 2>/dev/null",
-        defaults_path, user_cfg_path
-    );
-
-    run_typed_command(&["sh", "-c", &script], CMD_LOAD_AGENT_DEFAULTS);
+    config.agent_types = agent_types;
+    config.providers_by_agent = providers_by_agent;
+    config.provider_details_by_agent = details_by_agent;
+    config.discovered_sandbox_levels = discovered;
+    Ok(view.warnings)
 }
 
 /// TOML wrapper for user config.toml `[agents.<name>]` sections.
@@ -802,13 +813,13 @@ struct UserAgentsSection {
     agents: HashMap<String, AgentTypeConfig>,
 }
 
-/// Parse agent type defaults from the stdout of `load_agent_defaults_async`.
+/// Parse agent type definitions from `[agents.<name>]` TOML content.
 ///
-/// The output consists of two NUL-separated chunks:
-///   1. Contents of `agents-defaults.toml` (`[agents.<name>]` tables)
-///   2. Contents of user `config.toml` (may contain `[agents.<name>]` tables)
-///
-/// User entries override defaults (full replacement per agent type key).
+/// Since #202 the live agent types come from `lince-config resolve --json`
+/// (`apply_resolved_view`); this parser remains only for the compiled-in
+/// shipped defaults (`embedded_agent_types` / `embedded_event_maps` fallback,
+/// #198) and tests. Input is up to two NUL-separated chunks; entries in the
+/// second chunk fully replace same-named entries from the first.
 pub fn parse_agent_defaults(stdout: &[u8]) -> HashMap<String, AgentTypeConfig> {
     let chunks: Vec<&[u8]> = stdout.split(|&b| b == 0).collect();
 
@@ -916,8 +927,9 @@ impl DashboardConfig {
     /// Returns `(config, error)` where `error` is `Some(msg)` if reading or
     /// parsing failed (in which case `config` holds all defaults).
     ///
-    /// Provider auto-discovery happens asynchronously via `discover_providers_async()`
-    /// after the plugin has permissions and knows the launch directory.
+    /// Agent types and providers arrive asynchronously via
+    /// `resolve_config_async()` (#202) after the plugin has permissions and
+    /// knows the launch directory.
     ///
     /// # Manual testing
     ///
@@ -939,29 +951,6 @@ impl DashboardConfig {
         }
     }
 
-
-    /// Merge discovered per-agent-type providers, deduplicating.
-    pub fn merge_providers(
-        &mut self,
-        by_agent: &HashMap<String, Vec<String>>,
-        details_by_agent: &HashMap<String, HashMap<String, ProviderDetails>>,
-    ) {
-        for (agent, names) in by_agent {
-            let existing = self.providers_by_agent.entry(agent.clone()).or_default();
-            for name in names {
-                if !existing.contains(name) {
-                    existing.push(name.clone());
-                }
-            }
-            existing.sort();
-        }
-        for (agent, details) in details_by_agent {
-            let existing = self.provider_details_by_agent.entry(agent.clone()).or_default();
-            for (name, detail) in details {
-                existing.entry(name.clone()).or_insert_with(|| detail.clone());
-            }
-        }
-    }
 
     /// Resolve the effective provider list for a given agent type.
     ///
@@ -995,8 +984,8 @@ impl DashboardConfig {
     /// Return the supported sandbox levels for a given agent type and backend.
     ///
     /// Combines the shipped defaults (`paranoid`, `normal`, `permissive`) with
-    /// custom levels discovered from the filesystem (see
-    /// `discover_sandbox_levels_async()`). The standard order is preserved;
+    /// custom levels discovered by the resolver (see
+    /// `resolve_config_async()` / `apply_resolved_view()`). The standard order is preserved;
     /// custom levels are appended in alphabetical order. Duplicates are
     /// removed.
     ///
@@ -1029,8 +1018,8 @@ impl DashboardConfig {
             "permissive".to_string(),
         ];
         if let Some(b) = backend {
-            // Cache key MUST match the prefix that `discover_sandbox_levels_async`
-            // emits ("agent-sandbox:" / "nono:") — NOT `display_name()`, which
+            // Cache key MUST match the backend key that `apply_resolved_view`
+            // stores ("agent-sandbox:" / "nono:") — NOT `display_name()`, which
             // returns "bwrap" for AgentSandbox and would silently miss the cache.
             // `None` has no custom-profile concept (no fs lookup), so skip.
             use crate::sandbox_backend::SandboxBackend;
@@ -1188,6 +1177,20 @@ impl DashboardConfig {
     }
 }
 
+/// Full agent-type definitions for the built-in agents, parsed once from the
+/// shipped `agents-defaults.toml` baked into the binary at compile time.
+/// Last-resort fallback (#198 precedent) when `lince-config resolve --json`
+/// is unavailable or fails — the dashboard stays usable with shipped
+/// defaults instead of an empty agent picker.
+pub fn embedded_agent_types() -> &'static HashMap<String, AgentTypeConfig> {
+    static TYPES: std::sync::OnceLock<HashMap<String, AgentTypeConfig>> =
+        std::sync::OnceLock::new();
+    TYPES.get_or_init(|| {
+        const SHIPPED: &str = include_str!("../../agents-defaults.toml");
+        parse_agent_defaults(SHIPPED.as_bytes())
+    })
+}
+
 /// Event maps for the built-in agents, parsed once from the shipped
 /// `agents-defaults.toml` baked into the binary at compile time. Used as a
 /// fallback by `event_map_for` so a stale or partial on-disk config can't
@@ -1233,31 +1236,112 @@ mod tests {
         assert_eq!(claude.providers, vec!["__discover__"]);
     }
 
-    /// Sandbox config dual-read: namespaced canonical `[<agent>.providers.X]`
-    /// must beat top-level legacy `[profiles.X]` for the same name. Matches
-    /// the precedence implemented by `resolve_providers` in
-    /// `sandbox/agent-sandbox` (legacy → canonical, last wins).
+    /// A full resolve --json payload maps onto the plugin structures: base +
+    /// variant agent types, per-agent providers with details, and the
+    /// per-backend custom-level cache. (Provider precedence itself is the
+    /// Python resolver's job now — covered by scripts/tests/test_resolve.py.)
     #[test]
-    fn namespaced_canonical_overrides_top_level_legacy() {
-        let toml_text = r#"
-            [profiles.zai]
-            description = "from-legacy-top"
-            [profiles.zai.env]
-            ANTHROPIC_BASE_URL = "https://legacy.example.com"
-
-            [claude.providers.zai]
-            description = "from-canonical-ns"
-            [claude.providers.zai.env]
-            ANTHROPIC_BASE_URL = "https://canonical.example.com"
-        "#;
-        let (_names, details) = parse_providers_from_toml(toml_text);
-        let claude = details.get("claude").expect("claude bucket");
-        let zai = claude.get("zai").expect("zai entry");
+    fn apply_resolved_view_populates_config() {
+        let json = r#"{
+            "guarantee": "default-deny",
+            "providers": {
+                "zai": {
+                    "env": {"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic",
+                             "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY"},
+                    "env_unset": ["CLAUDE_CODE_OAUTH_TOKEN"],
+                    "available": true
+                }
+            },
+            "agents": {
+                "claude": {
+                    "display_name": "Claude Code",
+                    "short_label": "CLA",
+                    "color": "blue",
+                    "backend": "bwrap",
+                    "level": "paranoid",
+                    "levels_by_backend": {
+                        "agent-sandbox": ["paranoid", "normal", "permissive", "strict"],
+                        "nono": ["paranoid", "normal", "permissive"]
+                    },
+                    "allowed_levels": [],
+                    "providers": ["__discover__"],
+                    "providers_available": ["zai"],
+                    "command": ["agent-sandbox", "run", "-p", "{project_dir}",
+                                 "--id", "{agent_id}", "--agent", "claude"],
+                    "env": {},
+                    "event_map": {"Stop": "input"},
+                    "bwrap_conflict": false,
+                    "disable_inner_sandbox_args": [],
+                    "home_subdir": ".claude",
+                    "dashboard": {"pane_title_pattern": "agent-sandbox",
+                                   "status_pipe_name": "claude-status",
+                                   "has_native_hooks": true},
+                    "variants": {
+                        "unsandboxed": {
+                            "command": ["claude"],
+                            "pane_title_pattern": "claude",
+                            "status_pipe_name": "claude-status",
+                            "display_name": "Claude Code (unsandboxed)",
+                            "short_label": "CLU",
+                            "color": "red",
+                            "has_native_hooks": true,
+                            "providers": ["__discover__"],
+                            "env": {},
+                            "event_map": {"Stop": "input"},
+                            "bwrap_conflict": false
+                        }
+                    }
+                }
+            },
+            "warnings": []
+        }"#;
+        let mut cfg = DashboardConfig::parse_toml("[dashboard]\n").0;
+        let warnings = apply_resolved_view(&mut cfg, json).expect("apply should succeed");
+        assert!(warnings.is_empty());
+        let claude = cfg.agent_types.get("claude").expect("claude type");
+        assert!(claude.sandboxed);
+        assert_eq!(claude.sandbox_level.as_deref(), Some("paranoid"));
+        assert_eq!(claude.status_pipe_name, "claude-status");
+        assert_eq!(claude.sandbox_home_subdir.as_deref(), Some(".claude"));
+        assert!(matches!(claude.sandbox_backend, SandboxBackend::AgentSandbox));
+        let clu = cfg.agent_types.get("claude-unsandboxed").expect("variant type");
+        assert!(!clu.sandboxed);
+        assert_eq!(clu.command, vec!["claude"]);
+        assert_eq!(clu.short_label, "CLU");
+        // provider plumbing
+        assert_eq!(cfg.providers_by_agent.get("claude").unwrap(), &vec!["zai".to_string()]);
+        let details = cfg.provider_details_by_agent.get("claude").unwrap();
+        assert_eq!(details.get("zai").unwrap().env_unset, vec!["CLAUDE_CODE_OAUTH_TOKEN"]);
+        // secrets arrive as $NAME self-refs only (I4) — spawn path skips them
         assert_eq!(
-            zai.env.get("ANTHROPIC_BASE_URL").map(String::as_str),
-            Some("https://canonical.example.com"),
-            "namespaced canonical must replace top-level legacy",
+            details.get("zai").unwrap().env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("$ANTHROPIC_API_KEY"),
         );
+        // custom-level cache: only the extras beyond the shipped trio
+        assert_eq!(
+            cfg.discovered_sandbox_levels.get("agent-sandbox:claude").unwrap(),
+            &vec!["strict".to_string()],
+        );
+        assert!(cfg.discovered_sandbox_levels.get("nono:claude").is_none());
+    }
+
+    /// An empty / malformed resolve payload must fail loudly so the caller
+    /// can fall back to the embedded shipped defaults.
+    #[test]
+    fn apply_resolved_view_rejects_empty_and_malformed() {
+        let mut cfg = DashboardConfig::parse_toml("[dashboard]\n").0;
+        assert!(apply_resolved_view(&mut cfg, "{}").is_err());
+        assert!(apply_resolved_view(&mut cfg, "not json").is_err());
+    }
+
+    /// The compiled-in fallback parses to a non-empty agent set with event
+    /// maps (the dashboard must stay usable without lince-config installed).
+    #[test]
+    fn embedded_agent_types_nonempty() {
+        let types = embedded_agent_types();
+        assert!(types.contains_key("claude"));
+        assert!(types.contains_key("claude-unsandboxed"));
+        assert!(!types.get("claude").unwrap().event_map.is_empty());
     }
 
     /// `default_agent_type` (gh#62) round-trips through TOML so the `n`
@@ -1280,26 +1364,6 @@ mod tests {
         let (cfg, err) = DashboardConfig::parse_toml("[dashboard]\n");
         assert!(err.is_none(), "parse error: {err:?}");
         assert!(cfg.default_agent_type.is_none());
-    }
-
-    /// Both forms in the same file must each contribute their distinct
-    /// providers without dropping anything. Uses an explicit name list assert
-    /// so a regression in iteration order would still surface a missing entry.
-    #[test]
-    fn legacy_and_canonical_coexist() {
-        let toml_text = r#"
-            [profiles.legacyOnly]
-            [profiles.legacyOnly.env]
-            X = "1"
-
-            [claude.providers.canonicalOnly]
-            [claude.providers.canonicalOnly.env]
-            Y = "2"
-        "#;
-        let (names, _details) = parse_providers_from_toml(toml_text);
-        let mut claude = names.get("claude").cloned().unwrap_or_default();
-        claude.sort();
-        assert_eq!(claude, vec!["canonicalOnly", "legacyOnly"]);
     }
 
     /// Verify that an unknown agent type (e.g. "zai") parses with

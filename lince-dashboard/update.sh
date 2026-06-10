@@ -119,6 +119,20 @@ echo -e "${GREEN}[7/8] Updating agent defaults...${NC}"
 AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
 
+# lince-config is a runtime dependency since #202 (resolve --json). Refresh
+# it from the sibling module so the plugin and resolver stay in step.
+if [ -x "$SCRIPT_DIR/../lince-config/update.sh" ] && \
+   { command -v lince-config >/dev/null 2>&1 || [ -x "$HOME/.local/bin/lince-config" ]; }; then
+    bash "$SCRIPT_DIR/../lince-config/update.sh" >/dev/null \
+        && echo -e "${GREEN}  ✓ lince-config updated${NC}" \
+        || echo -e "${YELLOW}  ⚠ lince-config update failed — run ../lince-config/update.sh manually${NC}"
+elif [ -x "$SCRIPT_DIR/../lince-config/install.sh" ]; then
+    echo -e "${YELLOW}  lince-config not found — installing from ../lince-config${NC}"
+    bash "$SCRIPT_DIR/../lince-config/install.sh" >/dev/null \
+        && echo -e "${GREEN}  ✓ lince-config installed${NC}" \
+        || echo -e "${YELLOW}  ⚠ lince-config install failed — dashboard will use built-in agent defaults${NC}"
+fi
+
 # Unified agent registry (Config v2, #204). Shipped data — always overwritten
 # (#199); custom agents never live here. Also updated by sandbox/update.sh.
 REGISTRY_SRC="$SCRIPT_DIR/../registry.d"
