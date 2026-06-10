@@ -814,6 +814,23 @@ configure_agent_selection() {
 
     echo ""
     echo -e "${CYAN}Persisting agent selection to ~/.config/lince/lince.toml...${NC}"
+
+    # Probe the v2 switch up front with a dry-run: if pre-existing legacy
+    # customizations would be silently dropped, `apply` refuses (asking for
+    # --force-v2). Detect that once and stop with a single clear, actionable
+    # message instead of looping a refusal per agent (#222 review).
+    local probe_err
+    probe_err="$("$LC" apply "${SELECTED_AGENTS[0]}+normal" --dry-run 2>&1 >/dev/null)"
+    if echo "$probe_err" | grep -q -- "--force-v2"; then
+        echo -e "  ${YELLOW}⚠ Existing legacy customizations block the Config v2 switch —"
+        echo -e "    your agent selection was NOT persisted. All registry agents stay"
+        echo -e "    available in the dashboard picker.${NC}"
+        echo -e "    To apply your picks (${SELECTED_AGENTS[*]}): migrate your legacy"
+        echo -e "    config first (see docs/migration-v2-users.md), then run e.g."
+        echo -e "      lince-config apply ${SELECTED_AGENTS[0]}+normal"
+        return
+    fi
+
     local ok=true
     for agent in "${SELECTED_AGENTS[@]}"; do
         if ! "$LC" apply "${agent}+normal" >/dev/null 2>&1; then
@@ -834,10 +851,9 @@ configure_agent_selection() {
     if [ "$ok" = true ]; then
         echo -e "${GREEN}✓ Agents enabled: ${SELECTED_AGENTS[*]}${NC}"
     else
-        echo -e "  ${YELLOW}⚠ Could not persist the agent selection (existing legacy"
-        echo -e "    customizations detected?). All registry agents stay available;"
-        echo -e "    run 'lince-config apply <agent>+<level>' manually after migrating"
-        echo -e "    (see docs/migration-v2-users.md).${NC}"
+        echo -e "  ${YELLOW}⚠ Could not fully persist the agent selection. All registry"
+        echo -e "    agents stay available; re-run 'lince-config apply <agent>+<level>'"
+        echo -e "    manually (see docs/migration-v2-users.md).${NC}"
     fi
 }
 
