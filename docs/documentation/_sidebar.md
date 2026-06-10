@@ -2,6 +2,8 @@
   - [Overview](/)
   - [Configuration Keys (generated)](configuration-keys.md)
   - [Docs Inventory](docs-inventory.md)
+  - [Migrating to Config v2 — users](https://github.com/RisorseArtificiali/lince/blob/main/docs/migration-v2-users.md)
+  - [Migrating to Config v2 — developers](https://github.com/RisorseArtificiali/lince/blob/main/docs/migration-v2-developers.md)
 
 - **Sandbox (agent-sandbox)**
   - [CLI Reference](sandbox/cli-reference.md)

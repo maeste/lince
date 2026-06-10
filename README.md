@@ -130,6 +130,8 @@ Structured CLI for reading and editing LINCE configuration files (`~/.agent-sand
 
 Also powers the **`/lince-configure` skill** — a natural-language interface that lets any AI coding agent read and modify its own configuration interactively (conversational or guided-menu mode). Installed automatically by `quickstart.sh` or `lince-dashboard/install.sh`.
 
+**Config v2**: configuration is converging on a single versioned policy file (`~/.config/lince/lince.toml`) + a shipped agent registry. Get started with `lince-config discover` / `lince-config apply <agent>+<level>+<provider>`; existing installs keep working unchanged — see the [user migration guide](docs/migration-v2-users.md) and the [developer migration guide](docs/migration-v2-developers.md).
+
 ### [sandbox/](sandbox/)
 
 Bubblewrap-based sandbox for running AI coding agents safely. Restricts filesystem access, blocks git push, isolates environment variables, and hides host processes — with near-zero overhead. Supports any agent via `--agent` flag (`agent-sandbox run -a codex`, `-a gemini`, etc.). Used by the dashboard to spawn every agent.
