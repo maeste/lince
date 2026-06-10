@@ -1,0 +1,218 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LINCE registry.d agent definition",
+  "description": "One shipped agent (registry.d/<agent>.toml). Shipped data, always overwritten on update \u2014 design config-v2 \u00a73.",
+  "type": "object",
+  "properties": {
+    "agent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "short_label": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "binary": {
+          "type": "string"
+        },
+        "default_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "binary",
+        "display_name",
+        "short_label",
+        "color"
+      ],
+      "additionalProperties": false
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "agent-sandbox",
+            "bwrap",
+            "nono",
+            "seatbelt",
+            "landlock"
+          ]
+        },
+        "default_level": {
+          "type": "string"
+        },
+        "allowed_levels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "home_subdir": {
+          "type": "string"
+        },
+        "bwrap_conflict": {
+          "type": "boolean"
+        },
+        "disable_inner_sandbox_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "home_ro_dirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "home_rw_dirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "levels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "scratch_home_dirs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "scratch_home_files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unshare_net": {
+                "type": "boolean"
+              },
+              "credential_proxy": {
+                "type": "boolean"
+              },
+              "block_git_push": {
+                "type": "boolean"
+              },
+              "allow_domains": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "home_ro_dirs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "passthrough": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env_extra": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "dashboard": {
+      "type": "object",
+      "properties": {
+        "status_pipe_name": {
+          "type": "string"
+        },
+        "pane_title_pattern": {
+          "type": "string"
+        },
+        "has_native_hooks": {
+          "type": "boolean"
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "variants": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bwrap_conflict": {
+            "type": "boolean"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "short_label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "pane_title_pattern": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "event_map": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "running",
+          "input",
+          "permission",
+          "stopped"
+        ]
+      }
+    }
+  },
+  "required": [
+    "agent"
+  ],
+  "additionalProperties": false
+}

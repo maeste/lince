@@ -1,0 +1,247 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agent-sandbox configuration (legacy v1, ~/.agent-sandbox/config.toml)",
+  "type": "object",
+  "properties": {
+    "extends": {
+      "type": "string"
+    },
+    "sandbox": {
+      "type": "object",
+      "properties": {
+        "extra_rw": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ro_dirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "persist_toolchains": {
+          "type": "boolean"
+        },
+        "auto_expose_path": {
+          "type": "boolean"
+        },
+        "home_ro_dirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_provider": {
+          "type": "string"
+        },
+        "default_profile": {
+          "type": "string"
+        },
+        "backend": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "unshare_pid": {
+          "type": "boolean"
+        },
+        "new_session": {
+          "type": "boolean"
+        },
+        "block_git_push": {
+          "type": "boolean"
+        },
+        "credential_proxy": {
+          "type": "boolean"
+        },
+        "unshare_net": {
+          "type": "boolean"
+        },
+        "allow_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "credential_proxy": {
+      "type": "object",
+      "properties": {
+        "blocked_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "strip_sections": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "env": {
+      "type": "object",
+      "properties": {
+        "passthrough": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extra": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "logging": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "dir": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "properties": {
+        "auto_project": {
+          "type": "boolean"
+        },
+        "auto_config": {
+          "type": "boolean"
+        },
+        "max_project_snapshots": {
+          "type": "integer"
+        },
+        "max_config_snapshots": {
+          "type": "integer"
+        },
+        "project_exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "claude": {
+      "type": "object",
+      "properties": {
+        "config_dir": {
+          "type": "string"
+        },
+        "use_real_config": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "env_unset": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": {
+          "type": "object"
+        }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "env_unset": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "default_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": {
+          "type": "object"
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": {
+    "type": "object"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LINCE registry.d provider table",
+  "description": "Provider env-var bundles (NAMES, never values) + API hosts \u2014 design config-v2 \u00a73.4.",
+  "type": "object",
+  "properties": {
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "env": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "env"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "providers"
+  ],
+  "additionalProperties": false
+}

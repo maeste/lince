@@ -1,0 +1,187 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "lince-dashboard configuration (legacy v1, ~/.config/lince-dashboard/config.toml)",
+  "type": "object",
+  "properties": {
+    "dashboard": {
+      "type": "object",
+      "properties": {
+        "default_provider": {
+          "type": "string"
+        },
+        "default_profile": {
+          "type": "string"
+        },
+        "sandbox_config_path": {
+          "type": "string"
+        },
+        "default_project_dir": {
+          "type": "string"
+        },
+        "default_agent_type": {
+          "type": "string"
+        },
+        "sandbox_command": {
+          "type": "string"
+        },
+        "agent_layout": {
+          "type": "string",
+          "enum": [
+            "tiled",
+            "floating"
+          ]
+        },
+        "focus_mode": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "floating"
+          ]
+        },
+        "status_method": {
+          "type": "string",
+          "enum": [
+            "pipe",
+            "file"
+          ]
+        },
+        "status_file_dir": {
+          "type": "string"
+        },
+        "max_agents": {
+          "type": "integer"
+        },
+        "sandbox_backend": {
+          "type": "string"
+        },
+        "sandbox_colors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "project_search_roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "project_search_max_depth": {
+          "type": "integer"
+        },
+        "instance_icons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "agents": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pane_title_pattern": {
+            "type": "string"
+          },
+          "status_pipe_name": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "short_label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          },
+          "sandboxed": {
+            "type": "boolean"
+          },
+          "has_native_hooks": {
+            "type": "boolean"
+          },
+          "home_ro_dirs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "home_rw_dirs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bwrap_conflict": {
+            "type": "boolean"
+          },
+          "disable_inner_sandbox_args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sandbox_backend": {
+            "type": "string"
+          },
+          "sandbox_level": {
+            "type": "string"
+          },
+          "sandbox_levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sandbox_home_subdir": {
+            "type": "string"
+          },
+          "env_vars": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "event_map": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "running",
+                "input",
+                "permission",
+                "stopped"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": {
+    "type": "object"
+  }
+}
