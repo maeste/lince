@@ -12,6 +12,7 @@ Status legend: `generated` (produced by a tool, do not hand-edit) | `hand-curate
 | `CONTRIBUTING.md` | root | stale (roadmap/issue list still framed around nono validation) | Refresh roadmap section; follow-up under #212 |
 | `CLAUDE.md` | root | hand-curated (`lince-config/` added to Project Structure in this PR) | Keep |
 | `prompt-quickstart-improvements.md` | root | orphaned (tracked work-note, not user docs) | Convert content to a backlog task, then delete file; follow-up under #212 |
+| `docs/README.md` | website (lince.sh) | hand-curated | Keep — local-preview/deploy notes for the GitHub Pages site |
 | `docs/index.html`, `docs/changelog/index.html`, `docs/install`, `docs/CNAME` | website (lince.sh) | hand-curated | Keep |
 | `docs/documentation/index.html` (Docsify shell) + `_sidebar.md` | website | hand-curated (missing nav entries added in this PR) | Keep |
 | `docs/documentation/README.md` | website | hand-curated (nono-integration link retargeted to migration doc in this PR) | Keep |
@@ -19,18 +20,20 @@ Status legend: `generated` (produced by a tool, do not hand-edit) | `hand-curate
 | `docs/documentation/sandbox/config-reference.md` | sandbox docs (canonical) | hand-curated | Keep; candidate for schema generation (#212 follow-up) |
 | `docs/documentation/sandbox/security-model.md` | sandbox docs (canonical) | hand-curated (`:186` nono claim fixed in this PR) | Keep |
 | `docs/documentation/sandbox/migration-nono-to-seatbelt.md` | sandbox docs | hand-curated | Keep — canonical nono-deprecation doc; now linked from sidebar |
-| `docs/documentation/dashboard/usage-guide.md` | dashboard docs (canonical) | hand-curated | Keep |
+| `docs/documentation/dashboard/usage-guide.md` | dashboard docs (canonical) | stale (`:84` wizard backend step says "Pick `bwrap` (agent-sandbox) or `nono`" — the wizard also offers `seatbelt` today, see `plugin/src/sandbox_backend.rs` and `sandbox-levels.md:278`) | DEFERRED — fix alongside the other backend-list updates; follow-up under #212 |
 | `docs/documentation/dashboard/config-reference.md` | dashboard docs (canonical) | stale (`:35` backend list lacks seatbelt; `:209,:222` claim agents-defaults.toml is "overwritten on update" while `update.sh:87-99` actually preserves it and writes a `.dist` sidecar) | DEFERRED — ownership/merge semantics fixed under [#199](https://github.com/RisorseArtificiali/lince/issues/199) |
 | `docs/documentation/dashboard/agent-examples.md` | dashboard docs | stale (`:28-47` backend choices bwrap/nono only) | DEFERRED — updated under #199 work |
 | `docs/documentation/dashboard/sandbox-levels.md` | dashboard docs (canonical) | hand-curated | Keep |
 | `docs/documentation/dashboard/sandbox-levels-testing.md` | dashboard docs | stale (nono-era manual test matrix, cells 3.2-3.9) | Rewrite matrix for seatbelt or archive; follow-up under #212 (sidebar entry added in this PR so it is at least reachable) |
 | `sandbox/README.md` | sandbox | hand-curated (macOS/nono guidance fixed in this PR) | Keep |
 | `sandbox/CHEATSHEET.md` | sandbox | hand-curated | Keep |
+| `sandbox/config.toml.example` (shipped-file comments) | sandbox | stale (drifts from the embedded `_DEFAULT_CONFIG` in `agent-sandbox`; doc surface read by users at install time) | DEFERRED — alignment + legacy-key migration tracked in [#205](https://github.com/RisorseArtificiali/lince/issues/205) |
 | `sandbox/to-be-validated.md` | sandbox | stale (nono 0.24.0-era validation plan) | Archive or rewrite; follow-up under #212 |
 | `sandbox/docs/nono-integration.md` | sandbox | deprecated-topic | Keep with deprecation banner pointing to migration doc; follow-up under #212 |
 | `sandbox/docs/comparison-agent-sandbox-vs-nono.md` | sandbox | deprecated-topic | Same as above |
-| `lince-dashboard/README.md` | dashboard | hand-curated | Keep |
+| `lince-dashboard/README.md` | dashboard | stale (`:21,:31` still present nono as a current backend and `:32` claims "macOS: nono (required)" — nono is deprecated and Seatbelt is the macOS default) | DEFERRED — same nono→seatbelt sweep as README/QUICKSTART; follow-up under #212 |
 | `lince-dashboard/MULTI-AGENT-GUIDE.md` | dashboard | partially stale (`[profiles.vertex]` example fixed to `[providers.vertex]` in this PR; `:214,:219` "overwritten on update" ownership claims remain) | Ownership claims DEFERRED to #199; consider folding guide into docs site |
+| `lince-dashboard/config.toml` (shipped-file comments) | dashboard | stale (`:8` says profiles are "auto-discovered from `[profiles.*]`" — renamed to `[providers.*]` in gh#81; `:37-40` says "auto" picks nono on macOS — nono is deprecated since #189) | DEFERRED — comment text fixed with the ownership/merge work in #199; follow-up under #212 |
 | `lince-dashboard/tests/MANUAL-5-STATE-VERIFICATION.md` | dashboard | hand-curated (m-15) | Keep |
 | `lince-config/README.md` | lince-config | hand-curated | Keep; linked from docs sidebar |
 | `lince-dashboard/skills/lince-configure/SKILL.md` + 5 reference files | dashboard skill | hand-curated, condensed duplicates of `docs/documentation` (drift demonstrated: `references/sandbox-config.md:15` lacked seatbelt until this PR) | Single-source via schema generation — #212 follow-up in epic #200 |
