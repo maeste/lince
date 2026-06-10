@@ -68,6 +68,21 @@
           "items": {
             "type": "string"
           }
+        },
+        "landlock": {
+          "type": "boolean"
+        },
+        "allow_connect_ports": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "allow_bind_ports": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
         }
       },
       "additionalProperties": false

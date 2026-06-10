@@ -148,6 +148,17 @@ block_git_push = true
 # Requires API keys to be configured in a [*.providers.*.env] section.
 credential_proxy = false
 
+# Landlock hardening layer (Linux, bwrap backend) — a kernel fence inside
+# the bwrap mount picture: filesystem rules mirror the bind mounts; TCP
+# port rules allow connect only to the credential proxy when it is active.
+# Defaults: paranoid = fs + net, normal = fs (+ net when proxy active),
+# permissive = off. On kernels without Landlock, normal degrades gracefully
+# (bwrap-only); paranoid FAILS CLOSED unless you opt out here.
+# landlock = true
+# Extra TCP ports the agent may connect to / bind (e.g. local dev servers):
+# allow_connect_ports = []
+# allow_bind_ports = [3000, 8080]
+
 # [credential_proxy]
 # # Extra hosts to block (cloud metadata endpoints are always blocked).
 # blocked_hosts = ["169.254.169.254", "metadata.google.internal", "metadata.azure.internal"]
