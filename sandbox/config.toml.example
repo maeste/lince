@@ -32,6 +32,11 @@ home_ro_dirs = [".config/gcloud"]
 # `agent-sandbox migrate-providers` rewrites your config to the new spelling.
 default_provider = ""
 
+# Sandbox backend: "agent-sandbox" (bubblewrap, Linux), "seatbelt" (macOS
+# sandbox-exec), "nono" (Landlock/Seatbelt, DEPRECATED), or "auto".
+# auto: prefers agent-sandbox on Linux, seatbelt on macOS, falls back to nono.
+backend = "auto"
+
 [claude]
 # Legacy section — still works for backward compatibility.
 # Prefer [agents.claude] for new setups. If [agents.claude] is not
