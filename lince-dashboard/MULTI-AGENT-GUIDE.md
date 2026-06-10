@@ -77,16 +77,16 @@ You can now run Claude Code (or any agent) without bwrap:
 
 Unsandboxed agents show a red `!` after their type label in every table row, a `[UNSANDBOXED]` warning in the detail panel, and `[NON-SANDBOXED]` in the Zellij pane title. Use this for trusted projects or systems without bwrap.
 
-**Profiles work for unsandboxed agents too.** When a profile is selected for a non-sandboxed agent, the dashboard:
+**Providers work for unsandboxed agents too.** When a provider is selected for a non-sandboxed agent, the dashboard:
 
-1. **Unsets** conflicting env vars listed in the profile's `env_unset` (e.g. `ANTHROPIC_API_KEY` when switching to Vertex)
-2. **Sets** the profile's env vars (API keys, endpoints, region, etc.)
+1. **Unsets** conflicting env vars listed in the provider's `env_unset` (e.g. `ANTHROPIC_API_KEY` when switching to Vertex)
+2. **Sets** the provider's env vars (API keys, endpoints, region, etc.)
 3. Launches the agent via `env -u VAR1 -u VAR2 VAR3=val ... <command>`
 
 This prevents provider confusion when multiple API keys exist in the host environment. The key difference from sandboxed agents:
 
-- **Sandboxed agents**: `agent-sandbox` does `--clearenv` — starts from a clean environment with no env leakage. Profile env vars are set explicitly into the clean namespace.
-- **Non-sandboxed agents**: Inherit the full host environment. Profiles help by setting the right vars AND unsetting conflicting ones via `env_unset`, so the agent sees only the intended provider configuration.
+- **Sandboxed agents**: `agent-sandbox` does `--clearenv` — starts from a clean environment with no env leakage. Provider env vars are set explicitly into the clean namespace.
+- **Non-sandboxed agents**: Inherit the full host environment. Providers help by setting the right vars AND unsetting conflicting ones via `env_unset`, so the agent sees only the intended provider configuration.
 
 ### 4. Status reporting for non-Claude agents
 
@@ -218,18 +218,18 @@ config.toml [agents.*]        ← your overrides + custom agents (never overwrit
 
 User config always wins. The defaults file is safe to overwrite on updates because your customizations live in `config.toml`.
 
-### env_vars on agent type vs env on profile
+### env_vars on agent type vs env on provider
 
 Two layers of env-var configuration interact at agent launch:
 
 1. **`[agents.<name>.env_vars]`** in `agents-defaults.toml` — the *passthrough universe* for that agent type. Every var listed gets forwarded from the host shell into the agent process. Listing a var here whose host value is unset is harmless (it expands to an empty string and is dropped). Use this to declare *which host env vars are eligible* for the agent. For multi-provider agents like Pi, this list is large by design (one entry per supported provider key + base URL + cloud project).
-2. **`[<agent>.profiles.<name>]`** in user config — *narrows* the universe per launch. `env` adds or overrides values for this specific run; `env_unset` strips host vars that would otherwise propagate. Use profiles when you want, e.g., "only ZAI active right now, no other provider keys leaking in."
+2. **`[providers.<name>]`** (or per-agent `[<agent>.providers.<name>]`) in user config — *narrows* the universe per launch. `env` adds or overrides values for this specific run; `env_unset` strips host vars that would otherwise propagate. Use a provider when you want, e.g., "only ZAI active right now, no other provider keys leaking in." (Providers were called "profiles" before gh#81; the legacy `[profiles.*]` spelling is still accepted.)
 
-This separation is why `env_unset` is profile-only: the agent type defines what *can* be present; the profile defines what *should* be present for this particular launch. Sandboxed agents (`--clearenv` baseline) only see what `env_vars` + profile `env` explicitly allow; non-sandboxed agents inherit the full host env, and `env_unset` is the tool for trimming it.
+This separation is why `env_unset` is provider-only: the agent type defines what *can* be present; the provider defines what *should* be present for this particular launch. Sandboxed agents (`--clearenv` baseline) only see what `env_vars` + provider `env` explicitly allow; non-sandboxed agents inherit the full host env, and `env_unset` is the tool for trimming it.
 
-### Profile `env_unset` field
+### Provider `env_unset` field
 
-Profiles can declare an `env_unset` list to remove conflicting environment variables before the profile's own vars are applied. This is essential for non-sandboxed agents that inherit the full host environment:
+Providers can declare an `env_unset` list to remove conflicting environment variables before the provider's own vars are applied. This is essential for non-sandboxed agents that inherit the full host environment:
 
 ```toml
 [providers.vertex]
@@ -241,7 +241,7 @@ CLAUDE_CODE_USE_VERTEX = "1"
 CLOUD_ML_REGION = "us-east5"
 ```
 
-For sandboxed agents, `env_unset` is a no-op because `--clearenv` already starts from a blank environment. For non-sandboxed agents, it ensures the host's existing variables don't conflict with the profile's intended provider.
+For sandboxed agents, `env_unset` is a no-op because `--clearenv` already starts from a blank environment. For non-sandboxed agents, it ensures the host's existing variables don't conflict with the selected provider's configuration.
 
 ### Agent config fields (sandbox)
 

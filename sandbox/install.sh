@@ -101,7 +101,7 @@ echo -e "${GREEN}[2/5] Installing agent-sandbox command...${NC}"
 mkdir -p "$HOME/.local/bin"
 if [ -f "$INSTALL_DST" ]; then
     echo -e "${YELLOW}  Existing command found, backing up...${NC}"
-    cp "$INSTALL_DST" "${INSTALL_DST}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp "$INSTALL_DST" "${INSTALL_DST}.bak.$(date +%Y%m%d-%H%M%S)"
 fi
 cp "$SANDBOX_CMD" "$INSTALL_DST"
 chmod +x "$INSTALL_DST"

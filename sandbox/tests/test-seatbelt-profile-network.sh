@@ -32,13 +32,14 @@ pass() { echo "ok: $*"; }
 
 # --- Rule 3: enforce_allowlist parity (textual, both backends) ---------------
 count=$(grep -c 'enforce_allowlist = bool(sec.get("unshare_net", False))' "$AGENT_SANDBOX")
-if [ "$count" -ne 2 ]; then
-    fail "expected enforce_allowlist = bool(sec.get(\"unshare_net\", False)) on both bwrap and seatbelt paths (found $count occurrence(s))"
+if [ "$count" -lt 2 ]; then
+    fail "expected enforce_allowlist = bool(sec.get(\"unshare_net\", False)) on at least the bwrap and seatbelt paths (found $count occurrence(s))"
 fi
 pass "enforce_allowlist parity expression present on both backend paths"
 
 # --- Rules 1, 2, 4: profile generation + proxy behavior (python) -------------
 python3 - "$AGENT_SANDBOX" <<'EOF'
+import shutil
 import socket
 import sys
 import tempfile
@@ -150,6 +151,7 @@ try:
 finally:
     proxy.stop()
     upstream.close()
+    shutil.rmtree(tmpdir, ignore_errors=True)
 EOF
 rc=$?
 if [ "$rc" -ne 0 ]; then

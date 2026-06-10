@@ -1173,9 +1173,13 @@ def _collect_proxy_rules(env_vars: dict[str, str]) -> tuple[list[dict], list[str
             else:
                 # Same header type (or existing already Authorization):
                 # keep the first match, warn about the ignored var.
+                if rule_tpl["header_name"] == existing["header_name"]:
+                    reason = "first match wins for same header type"
+                else:
+                    reason = "Authorization: Bearer takes precedence"
                 print(
                     f"Warning: both {existing['env_var']} and {env_key} are set for {domain}; "
-                    f"using {existing['env_var']} (first match wins for same header type)",
+                    f"using {existing['env_var']} ({reason})",
                     file=sys.stderr,
                 )
             continue

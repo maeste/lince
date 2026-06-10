@@ -289,6 +289,13 @@ a build script (mapping = §3.1 + §3.2), then becomes the hand-maintained sourc
 truth. Until the legacy shipped files are deleted from the repo, a diff-guard test
 (local suite; CI when workflows land per m-14) fails on divergence — no silent drift.
 
+Sandbox-only agents (`aider`, `amp`) have no entry in the dashboard
+agents-defaults file, so the build can't source the dashboard-required fields
+(`display_name`, `short_label`, `color`) from legacy data. The generator
+(`scripts/gen_registry.py`) carries a small supplemental table providing those
+values for exactly these agents; everything else (binary, sandbox keys) still
+comes from the sandbox legacy file.
+
 ### 3.4 `registry.d/providers.toml` — killing the Pi 4× duplication
 
 Today the identical 31-variable multi-provider env block exists **four times** (sandbox
@@ -322,8 +329,10 @@ resolver owns.
 
 Observed delta in every `<x>` / `<x>-unsandboxed` pair today: `command`,
 `pane_title_pattern`, `display_name`, `short_label`, `color`(→red),
-`sandboxed`(→false), dropped `sandbox_level`/`sandbox_levels`; `env_vars` +
-`event_map` are *identical copies*. The resolver synthesizes:
+`sandboxed`(→false), dropped `sandbox_level`/`sandbox_levels` plus the
+sandbox-coupled keys `home_ro_dirs` and `disable_inner_sandbox_args`
+(meaningless without a sandbox); `env_vars` + `event_map` are *identical
+copies*. The resolver synthesizes:
 
 ```
 unsandboxed(agent) = base(agent) with:
@@ -336,6 +345,7 @@ unsandboxed(agent) = base(agent) with:
                        BSH→BSU, ZSH→ZSU, FSH→FSU)
   pane_title_pattern = binary
   sandbox_level/levels = removed
+  home_ro_dirs / disable_inner_sandbox_args = removed (sandbox-coupled)
   env / event_map / has_native_hooks / providers = inherited
 ```
 
@@ -419,7 +429,7 @@ TOML entirely — its serde struct shrinks to this JSON shape, killing the
                "user": "~/.config/lince/lince.toml",
                "project": null },
   "network": { "default": "deny", "allowed_hosts": ["pypi.org"] },
-  "providers": { "anthropic": { "env_keys": ["ANTHROPIC_API_KEY"], "available": true } },
+  "providers": { "anthropic": { "env_keys": ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"], "available": true } },
   "agents": {
     "claude": {
       "display_name": "Claude Code", "short_label": "CLA", "color": "blue",
@@ -427,7 +437,7 @@ TOML entirely — its serde struct shrinks to this JSON shape, killing the
       "level": "normal", "levels": ["paranoid", "normal", "permissive"],
       "provider": "anthropic", "providers": ["__discover__"],
       "command": ["agent-sandbox", "run", "-p", "{project_dir}", "--id", "{agent_id}"],
-      "env_keys": ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
+      "env_keys": ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
       "event_map": { "PreToolUse": "running", "Stop": "input" },
       "dashboard": { "pane_title_pattern": "agent-sandbox",
                      "status_pipe_name": "claude-status",
