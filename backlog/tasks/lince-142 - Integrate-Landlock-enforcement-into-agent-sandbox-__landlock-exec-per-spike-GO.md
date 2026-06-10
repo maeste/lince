@@ -3,9 +3,10 @@ id: LINCE-142
 title: >-
   Integrate Landlock enforcement into agent-sandbox (__landlock-exec) per spike
   GO
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-10 08:01'
+updated_date: '2026-06-10 10:26'
 labels:
   - security
   - sandbox
@@ -36,3 +37,9 @@ Validation gates: re-run probe+demo+gate on Ubuntu 24.04 GA (ABI v4 floor — ci
 - [ ] #4 sandbox/tests/ check ported from the spike gate
 - [ ] #5 Validated on Ubuntu 24.04 GA ABI v4 and on a no-Landlock kernel path
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Merged via PR https://github.com/RisorseArtificiali/lince/pull/229 (Closes #222). __landlock-exec folded into agent-sandbox as the last bwrap argv element (ro-bound shim at /tmp/.lince/agent-sandbox): fs rules mirror the bwrap writable mounts mechanically, TCP CONNECT rules per spike defaults (paranoid → bridge 8118 only; normal → proxy port when active; permissive off). Fail-closed at paranoid on ABI 0 (host gate) and apply/net degradation (shim), explicit opt-out via [security] landlock=false; shim merges ground truth into the #221 record (inheritance upgraded to verified). Interim keys landlock/allow_connect_ports/allow_bind_ports in example+schema. sandbox/tests/test-landlock-exec.sh ports the spike gate: 10/10 on ABI 7 host + real bwrap E2E.
+<!-- SECTION:FINAL_SUMMARY:END -->

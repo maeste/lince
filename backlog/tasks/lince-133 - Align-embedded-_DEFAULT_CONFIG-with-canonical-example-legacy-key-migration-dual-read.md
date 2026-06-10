@@ -3,9 +3,10 @@ id: LINCE-133
 title: >-
   Align embedded _DEFAULT_CONFIG with canonical example + legacy-key migration
   (dual-read)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-09 20:52'
+updated_date: '2026-06-10 09:58'
 labels:
   - config-v2
 milestone: m-16
@@ -30,3 +31,9 @@ Single-source the default config: embedded _DEFAULT_CONFIG (agent-sandbox:57-200
 - [ ] #1 Fresh init passes lince config validate with zero deprecation warnings
 - [ ] #2 Test fails if embedded default and shipped example diverge
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Merged via PR https://github.com/RisorseArtificiali/lince/pull/227 (Closes #205). _DEFAULT_CONFIG and sandbox/config.toml.example are now byte-identical (canonical default_provider/[providers.*] spelling; example gains [sandbox].backend); fresh init is warning-free and passes lince-config validate with zero issues; scripts/tests/test_default_config.py guards equality. migrate-providers already covers the default_profile/[profiles.*] renames; v2 renames land with lince config migrate.
+<!-- SECTION:FINAL_SUMMARY:END -->
