@@ -389,21 +389,45 @@
     },
     "experimental": {
       "type": "object",
+      "description": "Raw mechanism passthroughs (#210). Each active key voids the validated default-deny guarantee VISIBLY: spawn banner + resolve guarantee = 'void:<key>'. Never offered by guided flows.",
       "properties": {
         "landlock": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Pre-#222 opt-in flag (Landlock now ships enabled by default via [security].landlock)"
         },
         "raw_bwrap_args": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Extra bwrap arguments appended LAST to the generated command (expert valve \u2014 e.g. one extra --bind)"
         },
         "seatbelt_extra": {
-          "type": "string"
+          "type": "string",
+          "description": "Seatbelt profile snippet appended verbatim to the generated .sb"
         },
         "permissive_network": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Required to set [network].default = 'allow'"
+        },
+        "agents": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "raw_bwrap_args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "seatbelt_extra": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": true
+          },
+          "description": "Per-agent overrides \u2014 appended after the global ones"
         }
       },
       "additionalProperties": true
