@@ -3719,7 +3719,17 @@ def cmd_run(args, agent_extra: list[str]) -> None:
                         f"host env var."
                     )
                 oauth_note = ""
-                if agent_name in OAUTH_CAPABLE_AGENTS:
+                if agent_name == "claude":
+                    oauth_note = (
+                        "\nNote: claude OAuth/subscription users can stay "
+                        "on paranoid — run `claude setup-token` and "
+                        "`export CLAUDE_CODE_OAUTH_TOKEN=<token>` in your "
+                        "host shell, then retry (see "
+                        "docs/documentation/dashboard/sandbox-levels.md). "
+                        "Otherwise pick `--sandbox-level normal` or "
+                        "`permissive`, or switch to API-key auth."
+                    )
+                elif agent_name in OAUTH_CAPABLE_AGENTS:
                     oauth_note = (
                         f"\nNote: {agent_name} OAuth/browser-login users "
                         f"have no API key in their host env, so paranoid "
