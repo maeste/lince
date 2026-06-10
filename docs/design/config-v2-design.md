@@ -58,6 +58,8 @@ version = "2.0"                 # REQUIRED. Schema contract, see §2.1.
 default = "deny"                # the only documented guarantee; "allow" requires
                                 # [experimental].permissive_network = true
 allowed_hosts = ["pypi.org"]    # GLOBAL extra hosts, appended for every agent
+blocked_hosts = []              # ADDITIVE only: appended to the built-in metadata
+                                # blocklist, which can never be removed (§2.2)
 
 [providers.anthropic]           # provider = env-var bundle (NAMES, never values)
 env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]
@@ -68,7 +70,8 @@ level = "paranoid"              # isolation level
 provider = "anthropic"          # default provider for spawn
 allowed_hosts = ["github.com"]  # per-agent additions (append, not replace)
 
-[agents.bob]                    # CUSTOM agent = registry-shaped entry (§2.3, §7.2)
+[agents.bob]                    # CUSTOM agent = registry-shaped entry, addressed per
+                                # the §2.3 lifting rule (worked example: §7.2)
 # ... wins over registry.d if name collides (decision 1)
 
 [dashboard]                     # absorbed from ~/.config/lince-dashboard/config.toml
@@ -96,7 +99,8 @@ permissive_network = false
 | `≤ 2.(N-2)` | **hard error**: `config schema 2.X is older than the supported window (2.N-1). Run: lince config migrate` |
 | `2.(N+k)` | **hard error (fail-closed)**: `config written by a newer lince. Run: lince update  (or pin: npx @risorseartificiali/lince-cli@<ver>)` — unknown policy keys may be security-relevant, never best-effort-parse (I3) |
 | major ≠ 2 | hard error, points at the migration doc for that major |
-| missing `version` | treated as legacy v1 input → dual-read path (§5), during the window only |
+| missing `version` in **`lince.toml` itself** | **hard error** (I6): `~/.config/lince/lince.toml is missing the required version key. Add: version = "2.0"` — never silently fall back to legacy files (the user's brand-new policy must not be ignored, §5.2) |
+| missing `version` in a **legacy file** (the six §5.1 inputs, which never had one) | treated as legacy v1 input → dual-read path (§5), during the window only |
 
 Unknown keys under known tables: warn-and-ignore (forward-compat inside the window).
 Under `[experimental]`: warn only, never an error, never covered by the contract.
@@ -111,30 +115,54 @@ Under `[experimental]`: warn only, never an error, never covered by the contract
   Therefore **hosts compile into credential-proxy config only**: kernel layers enforce
   *reachability* (loopback-only), the proxy enforces *identity* (which hosts). Proxy:
   `_is_allowed_host` = credential-rule domains ∪ `allowed_hosts`, non-allowed CONNECT
-  → 403, `DEFAULT_BLOCKED_HOSTS` (cloud metadata endpoints) always blocked, **not
-  configurable off — no key exists for it** (sandbox/agent-sandbox 467–508; #196 spec).
+  → 403, `DEFAULT_BLOCKED_HOSTS` (cloud metadata endpoints) always blocked.
+- **v2 design decision — metadata blocking becomes non-disableable.** In v1 it is
+  *not*: `[credential_proxy].blocked_hosts` is read at agent-sandbox:3398 and any
+  non-empty user list fully **replaces** `DEFAULT_BLOCKED_HOSTS` (constructor
+  `blocked_hosts or set(DEFAULT_BLOCKED_HOSTS)`, agent-sandbox:810) — e.g.
+  `blocked_hosts = ["example.com"]` silently drops the 169.254.169.254 block. v2
+  removes that replace semantics: the only key is `[network].blocked_hosts` in
+  `lince.toml`, which is **additive only** — entries are appended to
+  `DEFAULT_BLOCKED_HOSTS`, which can never be removed or overridden. Migration of
+  existing v1 customizations: §5.1.
 
-Per-backend mechanism compilation (same policy, four enforcers):
+Per-backend mechanism compilation (same policy, five enforcers):
 
-| Intent | bwrap | Seatbelt (#196) | Landlock (spike #211) | proxy |
-|---|---|---|---|---|
-| default-deny egress (no `[network]`) | `--unshare-net`, unix-socket bridge to proxy | `(deny network*)` + loopback-only allows | `LANDLOCK_ACCESS_NET_CONNECT_TCP` granted to the proxy port **only**; UDP not restrictable → DNS cut by netns/seccomp pairing (#211 decides) | `enforce_allowlist = bool(unshare_net)` (bwrap-parity expression on all backends, #196); empty rule set ⇒ everything 403 |
-| `allowed_hosts = ["pypi.org"]` | no kernel change | no kernel change | no kernel change | host added to forward allowlist (CONNECT tunneled) |
-| provider credential hosts | — | — | — | auto-included; header precedence per #194/#195 (Authorization/Bearer > x-api-key per domain, warn on conflict; `CLAUDE_CODE_OAUTH_TOKEN` = Bearer alias after `ANTHROPIC_AUTH_TOKEN`) |
-| level=normal/permissive | shared netns | `(allow network*)` | no net ruleset | allowlist not enforced (parity expr false) |
+| Intent | bwrap | Seatbelt (#196) | nono | Landlock (spike #211) | proxy |
+|---|---|---|---|---|---|
+| default-deny egress (no `[network]`) | `--unshare-net`, unix-socket bridge to proxy | `(deny network*)` + loopback-only allows | generated `nono/lince-*.json` sets `--block-net` semantics + a loopback open-port grant for the proxy port **only** (nono ≥0.24 network keys); enforcement is Landlock NET on Linux (kernel **6.6+**) / Seatbelt on macOS — older Linux kernels cannot enforce ⇒ the guard below **fails closed** instead of launching with zero egress enforcement | `LANDLOCK_ACCESS_NET_CONNECT_TCP` granted to the proxy port **only**; UDP not restrictable → DNS cut by netns/seccomp pairing (#211 decides) | `enforce_allowlist = bool(unshare_net)` (bwrap-parity expression on all backends, #196); empty rule set ⇒ everything 403 |
+| `allowed_hosts = ["pypi.org"]` | no kernel change | no kernel change | no kernel change | no kernel change | host added to forward allowlist (CONNECT tunneled) |
+| provider credential hosts | — | — | — | — | auto-included; header precedence per #194/#195 (Authorization/Bearer > x-api-key per domain, warn on conflict; `CLAUDE_CODE_OAUTH_TOKEN` = Bearer alias after `ANTHROPIC_AUTH_TOKEN`) |
+| level=normal/permissive | shared netns | `(allow network*)` | no net restriction in the generated JSON | no net ruleset | allowlist not enforced (parity expr false) |
 
 I1 is asserted by golden tests, not prose — see §4.4. Residual risks to document (per
 #196 checklist): loopback-only still exposes other local 127.0.0.1 services; DNS
 blocked at paranoid is intended bwrap parity; Seatbelt lacks PID namespace vs bwrap.
 Guard (all backends, #196): `level=paranoid` ∧ proxy disabled ⇒ clear error + exit 1
-*before* launching a zero-egress agent.
+*before* launching a zero-egress agent. Same fail-closed guard for
+`backend=nono` ∧ `level=paranoid` on Linux kernels < 6.6 (Landlock NET unavailable ⇒
+nono cannot enforce default-deny): clear error naming the kernel requirement, never a
+silent launch without egress enforcement (I1, I6).
 
 ### 2.3 `[agents.<name>]` — two modes
 
 | Mode | Trigger | Rules |
 |---|---|---|
-| **Overlay** of a shipped agent | name exists in registry.d | per-field override of any registry key, plus policy-only keys `level`, `provider`, `allowed_hosts`. **Lists append (LINCE-105 precedent), scalars replace, tables deep-merge.** This is a *resolver* guarantee — see §5.5 for the dual-read window caveat. |
-| **Custom agent** | name not in registry.d | entry must satisfy the registry schema (§3); **4 required keys only**: `binary`, `display_name`, `short_label`, `color` — derivation rules (§3.5) and defaults supply the rest. Wins over registry.d on name collision (decision 1). |
+| **Overlay** of a shipped agent | name exists in registry.d | per-field override of any registry key (addressed per the lifting rule below), plus policy-only keys `level`, `provider`, `allowed_hosts`. **Lists append (LINCE-105 precedent), scalars replace, tables deep-merge.** This is a *resolver* guarantee — see §5.5 for the dual-read window caveat. |
+| **Custom agent** | name not in registry.d | entry must satisfy the registry schema (§3) *as addressed in `lince.toml` per the lifting rule below*; **4 required keys only**: `binary`, `display_name`, `short_label`, `color` — derivation rules (§3.5) and defaults supply the rest. Wins over registry.d on name collision (decision 1). |
+
+**Lifting rule — how registry-shaped keys are addressed inside `[agents.<name>]`**
+(applies identically to overlay and custom entries, so §7.2 is well-formed):
+keys of the registry `[agent]` table (`binary`, `display_name`, `short_label`,
+`color`, `default_args`, …) are **lifted to the top level** of `[agents.<name>]`
+alongside the policy-only keys (`level`, `provider`, `allowed_hosts`); every other
+registry table keeps its sub-table form — `[agents.<name>.sandbox]`,
+`[agents.<name>.dashboard]`, `[agents.<name>.env]`, `[agents.<name>.event_map]`,
+`[agents.<name>.variants.unsandboxed]`, `[agents.<name>.sandbox.levels.<level>]`.
+Examples: a `home_ro_dirs` override is `[agents.claude.sandbox] home_ro_dirs = [...]`
+(NOT `[agents.claude].home_ro_dirs`); a color override is `[agents.claude]
+color = "green"`. The resolver rejects a lifted key placed at the wrong depth with a
+diagnostic naming the correct address (I6).
 
 One malformed custom agent fails *that agent only* with a diagnostic naming the key and
 file — never silently drops all user agents (today's `config.rs:829` `if let Ok`
@@ -298,7 +326,7 @@ Observed delta in every `<x>` / `<x>-unsandboxed` pair today: `command`,
 
 ```
 unsandboxed(agent) = base(agent) with:
-  command            = [binary, *default_args]                (raw, no wrapper)
+  command            = [binary]          (bare binary — default_args NOT appended, see below)
   sandboxed          = false
   color              = "red"
   display_name       = display_name + " (unsandboxed)"
@@ -310,13 +338,26 @@ unsandboxed(agent) = base(agent) with:
   env / event_map / has_native_hooks / providers = inherited
 ```
 
+**Why `[binary]` and not `[binary, *default_args]`**: `default_args` are
+sandbox-coupled permission flags and must never leak outside the sandbox. Shipped
+data confirms this: `claude-unsandboxed` today is `command = ["claude"]`
+(lince-dashboard/agents-defaults.toml:92) — it deliberately drops
+`--dangerously-skip-permissions` (sandbox/agents-defaults.toml:36). Deriving
+`[binary, *default_args]` would silently launch claude with permission prompts
+disabled and **no sandbox** — a security regression vs today. Verification status of
+the derivation, per field: labels/colors/titles/`sandboxed` follow the rule for all 8
+shipped pairs; the `command` field does **not** follow a single rule (claude drops
+its args, codex keeps `--full-auto`), so codex carries an explicit exception.
+
 Exceptions go in an optional `[variants.unsandboxed]` override table.
-**The rule is NOT exception-free**: today `codex-unsandboxed` flips
-`bwrap_conflict = true → false` (verified, lince-dashboard/agents-defaults.toml:123 vs
-:152), so `registry.d/codex.toml` ships:
+**The rule is NOT exception-free**: today `codex-unsandboxed` keeps `--full-auto`
+(`command = ["codex", "--full-auto"]`, lince-dashboard/agents-defaults.toml:144) and
+flips `bwrap_conflict = true → false` (verified, lince-dashboard/agents-defaults.toml:123
+vs :152), so `registry.d/codex.toml` ships:
 
 ```toml
 [variants.unsandboxed]
+command = ["codex", "--full-auto"]
 bwrap_conflict = false
 ```
 
@@ -417,6 +458,7 @@ per backend, that with `[network]` absent the canonical artifact contains:
 |---|---|
 | bwrap | `--unshare-net` present in `.args` |
 | Seatbelt | `(deny network*)` + loopback-only allows in `.sb` |
+| nono | generated `nono/lince-*.json` blocks outbound net and its open-port set = {proxy port} only (§2.2); a companion test asserts paranoid+nono on a kernel without Landlock NET fails closed |
 | Landlock | TCP-connect rule set = {proxy port} only |
 | proxy | `enforce_allowlist = true` at paranoid; empty allowlist ⇒ all 403 |
 
@@ -431,12 +473,25 @@ regress I1.
 
 | Legacy file | Custom-content detection | v2 destination |
 |---|---|---|
-| `~/.agent-sandbox/config.toml` | always user-owned | `[sandbox]`→`lince.toml [filesystem]`+`[sandbox]`; `[security]`→`[network]`+levels; `[env]`/`[env.extra]`→`[env]`; `[providers.*]`/legacy `[profiles.*]`→`[providers.*]`; legacy `[claude]`→`[agents.claude]`; `[git]`/`[snapshot]`/`[logging]`→kept 1:1 |
-| `~/.agent-sandbox/agents-defaults.toml` | **extra keys** vs shipped only (missing keys = quickstart filter, NOT custom — #199 rule) | extras → `lince.toml [agents.*]`; rest dropped (registry covers it) |
+| `~/.agent-sandbox/config.toml` | always user-owned | `[sandbox]`→`lince.toml [filesystem]`+`[sandbox]`; `[security]`→`[network]`+levels; `[env]`/`[env.extra]`→`[env]`; `[providers.*]`/legacy `[profiles.*]`→`[providers.*]`; `[agents.<name>]` (merge layer 3 of v1 `resolve_agent_config`, agent-sandbox:1444 — the primary per-agent override surface: command/env/home_ro_dirs…)→`lince.toml [agents.<name>]` per the §3.1 key mapping; legacy `[claude]`→`[agents.claude]`; `[credential_proxy]`→`blocked_hosts` handled per §2.2 (extras beyond defaults → `[network].blocked_hosts`; removed defaults re-blocked + warned), other proxy keys kept 1:1; `[git]`/`[snapshot]`/`[logging]`→kept 1:1 |
+| `~/.agent-sandbox/agents-defaults.toml` | **extra keys** vs shipped (missing keys = quickstart filter, NOT custom — #199 rule) **and field-level value diffs** vs the shipped entry (see below) | extras + mapped value diffs → `lince.toml [agents.*]`; identical-to-shipped content dropped (registry covers it) |
 | `~/.agent-sandbox/profiles/*.toml` | filename not in shipped set, or `extends =` files | custom levels → `lince.toml [levels.<name>]` (extends-chain preserved); shipped fragments dropped (now `[sandbox.levels.*]` in registry) |
 | `./.agent-sandbox/config.toml` + `profiles/` + `agents-defaults.toml` | always project-owned | `<project>/.lince/lince.toml` (same mapping) |
 | `~/.config/lince-dashboard/config.toml` | always user-owned | `[dashboard]` table + `[agents.*]` customs → `lince.toml` |
-| `~/.config/lince-dashboard/agents-defaults.toml` | extra keys only (same rule) | extras → `lince.toml [agents.*]`; quickstart *filtering* → `[dashboard].enabled_agents` (recovers the #199 accepted picker-bloat regression properly) |
+| `~/.config/lince-dashboard/agents-defaults.toml` | extra keys + field-level value diffs (same rule) | extras + mapped value diffs → `lince.toml [agents.*]`; quickstart *filtering* → `[dashboard].enabled_agents` (recovers the #199 accepted picker-bloat regression properly) |
+
+**Field-level value diffs are migrated, not silently dropped.** The #199 extra-keys
+rule governs update.sh overwrite detection only; migrate already diffs against the
+shipped files, so it also **value-diffs every shipped entry**. Edits to shipped
+agents-defaults entries are the workflow today's docs explicitly instruct
+(sandbox-levels.md:375, agent-examples.md:24), and some are security choices —
+e.g. a user who set `sandbox_level = "paranoid"` on `[agents.claude]` must not
+silently land back on registry `default_level = "normal"`. Rules: (a) a changed
+field with a v2 policy home is mapped via §3.1/§3.2 (`sandbox_level` →
+`lince.toml [agents.<x>].level`, `sandbox_backend` → `backend`, `env`/`env_vars` →
+`[agents.<x>.env]`, …); (b) a changed field with **no** v2 home (e.g. `command`,
+which is generated in v2) is listed in the migrate report as a dropped diff with
+old → new values — never silent (I6, §5 "100%" goal).
 
 ### 5.2 Read behavior during the window
 
@@ -444,6 +499,8 @@ regress I1.
 lince.toml exists?
 ├─ yes → v2 is the ONLY source. Legacy files ignored; one-line notice if any
 │        legacy file still exists ("run `lince config migrate --purge` to clean up").
+│        A lince.toml without `version` is a HARD ERROR per §2.1 ("Add:
+│        version = \"2.0\"") — it never demotes the install to the legacy path.
 └─ no  → DUAL-READ: synthesize the v2 view in-memory from legacy files using
          the exact §5.1 mapping (same code as migrate, minus the write).
          Print deprecation notice (once/day, state file). resolve --json works
@@ -466,7 +523,8 @@ bisectable and prevents drift between two live sources.
 
 ### 5.4 `lince config migrate`
 
-1. Read all §5.1 inputs; classify custom vs shipped (extra-keys rule).
+1. Read all §5.1 inputs; classify custom vs shipped (extra-keys rule **plus**
+   field-level value diffs of shipped entries, §5.1).
 2. `--dry-run` (default when interactive): print the §5.1 mapping with per-key origins.
 3. Write `lince.toml` containing **only deltas from registry defaults** — a migrated
    file must look hand-written (~10 lines typical), not a 400-line dump. Values equal
@@ -562,7 +620,11 @@ turn_end = "input"
 ```
 
 4 required keys (`binary`, `display_name`, `short_label`, `color`); everything else
-defaulted/derived — `bob-unsandboxed` (BOU, red) comes for free (§3.5).
+defaulted/derived — `bob-unsandboxed` (BOU, red) comes for free (§3.5). The shape
+follows the §2.3 lifting rule: registry `[agent]`-table keys (`binary`,
+`display_name`, `short_label`, `color`, `default_args`) sit flat under
+`[agents.bob]` next to policy keys (`provider`, `level`); the other registry tables
+keep their sub-table form (`[agents.bob.dashboard]`, `[agents.bob.event_map]`).
 `lince config resolve --json --agent bob` is the skill's validation step: a bad entry
 fails *bob only* with a named-key diagnostic, exit non-zero. Survives every update
 because registry.d overwrite never touches lince.toml.
