@@ -1,9 +1,10 @@
 ---
 id: LINCE-140
 title: 'Config v2 migration guides: users + developers (clear, schematic, minimal)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-09 21:06'
+updated_date: '2026-06-10 10:43'
 labels:
   - config-v2
   - documentation
@@ -35,3 +36,9 @@ Two documents, two audiences, same style constraints: schematic (tables/checklis
 - [ ] #2 A pre-v2 user can migrate following only the user guide, with no other doc
 - [ ] #3 Style: tables/checklists, no section longer than ~10 lines of prose
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Merged via PR https://github.com/RisorseArtificiali/lince/pull/233 (Closes #213). docs/migration-v2-users.md (one-screen, table-driven: dual-read, the lince.toml hard switch + apply guard, manual key mapping, verify/rollback, §5.6 timeline — self-contained) and docs/migration-v2-developers.md (contracts table, add-an-agent before→after, removal schedule, schema-first rules, skill-author rules, test entry points). Linked from README and the docs-site sidebar. Guides describe shipped behavior only; automatic migrate marked as the m-14 deliverable.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,9 +3,10 @@ id: LINCE-141
 title: >-
   Effective-policy attestation record: per-launch requested-vs-enforced boundary
   + dashboard badge
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-10 07:48'
+updated_date: '2026-06-10 10:10'
 labels:
   - config-v2
   - security
@@ -35,3 +36,9 @@ agent-sandbox emits a per-launch effective-policy JSON record (backend, requeste
 - [ ] #3 Dashboard shows the enforced boundary per agent (badge/column fed by the record)
 - [ ] #4 Record fields match the #221 schema incl. net limitation and digests
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Merged via PR https://github.com/RisorseArtificiali/lince/pull/228 (Closes #221). agent-sandbox writes a per-launch effective-policy record (§4.3.1) to ${LINCE_STATUS_DIR:-/tmp/lince-dashboard}/<id>.policy.json: backend, requested level/fs/net, landlock_abi probe, fs/net_enforced, digests, degraded_reason (required on any unenforced boundary — I7 asserted). enforce_paranoid_fail_closed() exits 1 naming the missing boundary (bwrap/seatbelt paths); nono recorded as delegated/not-attested with visible paranoid warning (its kernel gate lands with #222). Dashboard polls .policy.json in the same .state fork, AgentInfo.enforced feeds a detail-panel 'Enforced: fs✓ net✓ [backend]' line and a '!' Sbox-column marker. 8 new Python tests + 2 Rust tests (60 total under wasmtime); real bwrap E2E verified.
+<!-- SECTION:FINAL_SUMMARY:END -->

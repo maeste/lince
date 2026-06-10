@@ -3,9 +3,10 @@ id: LINCE-139
 title: >-
   Docs rationalization: single-source documentation system aligned with Config
   v2
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-09 21:04'
+updated_date: '2026-06-10 10:31'
 labels:
   - config-v2
   - documentation
@@ -33,3 +34,9 @@ Documentation drift is a root cause of real bugs (#199 was docs-vs-update.sh-vs-
 - [ ] #3 No shipped config file carries a comment contradicting current behavior
 - [ ] #4 Coordination note agreed with LINCE-115 on website/docs sequencing
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Remainder merged via PR https://github.com/RisorseArtificiali/lince/pull/230 (Closes #212; the inventory half had landed earlier). lince-config schemas enriched with per-key description/default; scripts/gen_config_reference.py generates the skill's sandbox-config.md/dashboard-config.md and docs/documentation/configuration-keys.md (all five schemas, in sidebar); scripts/tests/test_config_reference.py is the divergence check (incl. no-description-holes). Ubuntu 24.04+ AppArmor prerequisite note added to QUICKSTART.md and sandbox/README.md.
+<!-- SECTION:FINAL_SUMMARY:END -->

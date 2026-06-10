@@ -3,9 +3,10 @@ id: LINCE-130
 title: >-
   Versioned TOML schema + lince config validate + CI validation of shipped
   examples
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-09 20:52'
+updated_date: '2026-06-10 09:36'
 labels:
   - config-v2
 milestone: m-16
@@ -31,3 +32,9 @@ Publish a JSON Schema for lince.toml and registry.d/*.toml (Taplo-compatible for
 - [ ] #2 CI fails when a shipped example violates the schema
 - [ ] #3 Hand-written schema dicts in lince-config removed
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Merged via PR https://github.com/RisorseArtificiali/lince/pull/225 (Closes #203). Published Taplo-compatible JSON Schemas (schemas/*.schema.json) for lince.toml v2, registry.d agent/provider files, and the legacy v1 sandbox/dashboard configs; lince-config validate is now schema-driven (replaces hand-written dicts) with the §2.1 version contract (dual-read window, fail-closed older/newer, fixing command named); new targets lince/registry + --file/--overlay; `lince-config schema` emits the schemas; scripts/tests/test_schemas.py validates every shipped example with zero errors/warnings (17 tests).
+<!-- SECTION:FINAL_SUMMARY:END -->
