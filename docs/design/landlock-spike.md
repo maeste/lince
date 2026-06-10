@@ -9,10 +9,13 @@ Q4 composition question — and a working prototype gating one agent at
 Fedora 44, kernel 6.19.14-300.fc44.x86_64, Landlock ABI v7 — all checks
 green, output captured in the spike README).
 
-Landlock is evaluated as a **defense-in-depth layer inside the existing
-bubblewrap backend**, not a new backend: bwrap paints the mount picture,
+Landlock is evaluated as a **hardening layer for the existing bubblewrap
+backend — not a second sandbox product, not a new backend** (framing per
+the review discussion on #211): bwrap paints the mount picture,
 a Landlock ruleset applied just before the agent `exec` adds a second,
 kernel-enforced fence that holds even if something escapes that picture.
+It never replaces `unshare -n` or the credential proxy; it composes with
+them.
 Prior art: Codex CLI (Landlock + seccomp as its native Linux sandbox),
 landrun/nsjail (compose Landlock with namespaces). microsoft/mxc does
 **not** use Landlock (verified, zero references).
@@ -332,7 +335,31 @@ is deliberately untouched on this branch only to stay conflict-free with
 the in-flight credential-proxy (#194/#195) and Seatbelt (#196) PRs that
 edit the same file.
 
-**Next step** (follow-up implementation task): fold `landlock_exec.py`
+**Next step** — tracked as **#222**: fold `landlock_exec.py`
 into `sandbox/agent-sandbox` as the hidden `__landlock-exec` subcommand,
 have `build_bwrap_cmd()` append it for the levels in the table above,
 and add a `sandbox/tests/` check mirroring `gate_check.py`'s assertions.
+The effective-policy record's production assembly is tracked as **#221**.
+
+## Validation plan
+
+What is already validated, and what must be validated where, before the
+spike's conclusions are consumed by implementation (#222) and design
+(#201):
+
+| Check | Status | Where / how |
+|-------|--------|-------------|
+| fs rules: deny outside, allow inside, ro intact | ✅ validated | `demo.py`, Fedora 44 / ABI v7 (captured in README) |
+| Inheritance across fork+execve | ✅ validated | `demo.py` subprocess checks |
+| TCP net rules (connect/bind, port-based) | ✅ validated at ABI v7 | `demo.py` live listener checks |
+| bwrap composition (rules on bwrap-created tmpfs) | ✅ validated | README "Q4 experiment" — `demo.py` under bwrap |
+| Full paranoid chain (unshare/socat → bwrap → shim → agent) | ✅ validated | `paranoid_gate.sh`, 7 checks + record assertion |
+| Degraded path produces a record, fail-closed refuses | ✅ validated (simulated) | `LINCE_LANDLOCK_FORCE_ABI=0` / `--fail-closed` (README) |
+| **ABI v4 floor** (net rules at the *minimum* supported ABI) | ⏳ pending | run probe + demo + gate on **Ubuntu 24.04 GA (kernel 6.8 = ABI v4)** — the matrix row is source-cited, not probed; this is a merge gate for #222 |
+| Real no-Landlock kernel (not simulated) | ⏳ pending | boot/container with `lsm=` excluding landlock; degraded record + fail-closed must behave as in the simulation; gate for #222 |
+| Repeatable check in-repo | ⏳ pending | port `gate_check.py` assertions into `sandbox/tests/` with #222; wire into CI when the repo gains workflows (m-14, #104) |
+
+The two pending rows are listed as explicit validation gates in #222 —
+the spike's GO stands on the probed ABI v7 evidence plus the source-cited
+v4 floor; the v4 row is the one empirical hole to close before shipping
+default-on enforcement.
