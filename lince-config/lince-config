@@ -1542,6 +1542,691 @@ def cmd_validate(args) -> int:
     return 1 if errors else 0
 
 
+# ── resolve --json (#202, design §4.3/§4.1/§5.2) ─────────────────────────
+#
+# The single resolution point. Consumed by the dashboard via run_command
+# (WASI plugins cannot read arbitrary files), by agent-sandbox, and by
+# skills. Provider/env-var NAMES only — never secret VALUES (I4): any
+# provider/agent env value that looks like a secret is redacted to its
+# "$NAME" self-reference form, which consumers treat as "inherit from the
+# host environment".
+
+RESOLVE_SCHEMA = 1
+SHIPPED_LEVELS = ["paranoid", "normal", "permissive"]
+
+SANDBOX_CONFIG_PATH = SANDBOX_DIR / "config.toml"
+DASHBOARD_CONFIG_PATH = DASHBOARD_DIR / "config.toml"
+SANDBOX_PROFILES_DIR = SANDBOX_DIR / "profiles"
+NONO_PROFILES_DIR = Path.home() / ".config" / "nono" / "profiles"
+
+# Registry [agent]-table keys lifted to the top level of [agents.<name>]
+# in lince.toml (§2.3 lifting rule).
+_LIFTED_AGENT_KEYS = ("binary", "display_name", "short_label", "color", "default_args")
+# Registry sub-tables that keep their table form under [agents.<name>].
+_AGENT_SUBTABLES = ("sandbox", "dashboard", "env", "event_map", "variants")
+# Policy-only keys (not part of the registry schema).
+_POLICY_AGENT_KEYS = ("level", "provider", "allowed_hosts")
+
+
+def _is_env_self_ref(key: str, value: str) -> bool:
+    return value in (f"${key}", f"${{{key}}}")
+
+
+def _redact_env(env: dict) -> dict:
+    """Redact secret-looking VALUES to their $NAME self-reference form (I4).
+
+    A value is a secret when its key matches the sensitive-keyword list or
+    the value matches a known credential pattern. $NAME / ${NAME} references
+    pass through (they are already names, not values).
+    """
+    out: dict = {}
+    for key, value in env.items():
+        sval = str(value)
+        if sval.startswith("$"):
+            out[key] = sval
+        elif any(kw in key.upper() for kw in _SENSITIVE_KEY_KEYWORDS) or any(
+            p.match(sval) for p in _SENSITIVE_VALUE_PATTERNS
+        ):
+            out[key] = f"${key}"
+        else:
+            out[key] = sval
+    return out
+
+
+def _env_available(name: str) -> bool:
+    import os
+    return bool(os.environ.get(name))
+
+
+def _load_toml_or_empty(path: Path, warnings: list | None = None) -> dict:
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        if warnings is not None:
+            warnings.append(f"{path}: {exc}")
+        return {}
+
+
+# List keys with ADDITIVE cross-layer semantics (LINCE-105 precedent; the
+# §4.1 "lists append" rule exists so an overlay can never silently drop
+# provider hosts or shipped mounts). Every other list REPLACES — launch
+# vectors like default_args must stay removable by an override (a user must
+# be able to drop --dangerously-skip-permissions, §3.5 security note).
+_ADDITIVE_LIST_KEYS = frozenset({
+    "allowed_hosts", "allow_domains", "blocked_hosts", "passthrough",
+    "home_ro_dirs", "home_rw_dirs", "scratch_home_dirs", "scratch_home_files",
+})
+
+
+def _deep_overlay(base: dict, overlay: dict) -> dict:
+    """§4.1 merge semantics: accumulation lists append (deduplicated), other
+    lists and scalars replace, tables deep-merge."""
+    result = dict(base)
+    for key, val in overlay.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_overlay(result[key], val)
+        elif (
+            key in _ADDITIVE_LIST_KEYS
+            and key in result
+            and isinstance(result[key], list)
+            and isinstance(val, list)
+        ):
+            merged = list(result[key])
+            for item in val:
+                if item not in merged:
+                    merged.append(item)
+            result[key] = merged
+        else:
+            result[key] = val
+    return result
+
+
+def load_registry(registry_dir: Path, warnings: list) -> tuple[dict, dict]:
+    """Load registry.d → ({agent_name: registry_entry}, {provider: entry})."""
+    agents: dict = {}
+    providers: dict = {}
+    providers_path = registry_dir / "providers.toml"
+    if providers_path.is_file():
+        providers = _load_toml_or_empty(providers_path, warnings).get("providers", {})
+    for path in sorted(registry_dir.glob("*.toml")):
+        if path.name == "providers.toml":
+            continue
+        data = _load_toml_or_empty(path, warnings)
+        if not data:
+            continue
+        if not data.get("agent", {}).get("binary"):
+            warnings.append(f"{path.name}: missing [agent].binary — skipped")
+            continue
+        agents[data["agent"].get("name", path.stem)] = data
+    return agents, providers
+
+
+def _lince_agent_to_registry_shape(entry: dict) -> tuple[dict, dict]:
+    """Split a lince.toml [agents.<name>] entry (lifting rule, §2.3) into
+    (registry-shaped overlay, policy keys)."""
+    registry_shape: dict = {}
+    policy: dict = {}
+    agent_tbl: dict = {}
+    for key, val in entry.items():
+        if key in _LIFTED_AGENT_KEYS:
+            agent_tbl[key] = val
+        elif key in _POLICY_AGENT_KEYS:
+            policy[key] = val
+        elif key in _AGENT_SUBTABLES and isinstance(val, dict):
+            registry_shape[key] = val
+    if agent_tbl:
+        registry_shape["agent"] = agent_tbl
+    return registry_shape, policy
+
+
+def _discover_levels(base: str, allowed_levels: list) -> dict:
+    """Per-backend level lists: shipped trio + filesystem-discovered customs.
+
+    Mirrors the dashboard's (former) three globs and agent-sandbox's own
+    fragment lookup order. A non-empty allowed_levels pins the set and skips
+    discovery (shells, gh#91).
+    """
+    if allowed_levels:
+        return {"agent-sandbox": list(allowed_levels), "nono": list(allowed_levels)}
+    by_backend: dict = {}
+    for backend in ("agent-sandbox", "nono"):
+        levels = list(SHIPPED_LEVELS)
+        extras: set[str] = set()
+        if backend == "agent-sandbox" and SANDBOX_PROFILES_DIR.is_dir():
+            for p in SANDBOX_PROFILES_DIR.glob("*.toml"):
+                stem = p.stem
+                if stem.startswith(f"{base}-"):
+                    extras.add(stem[len(base) + 1:])
+                else:
+                    # agent-agnostic candidate; stems that are actually other
+                    # agents' fragments are dropped by _filter_agent_agnostic
+                    extras.add(stem)
+        if backend == "nono" and NONO_PROFILES_DIR.is_dir():
+            prefix = f"lince-{base}-"
+            for p in NONO_PROFILES_DIR.glob(f"lince-{base}-*.json"):
+                extras.add(p.name[len(prefix):-len(".json")])
+        for level in sorted(extras):
+            if level not in levels:
+                levels.append(level)
+        by_backend[backend] = levels
+    return by_backend
+
+
+def _filter_agent_agnostic(levels_by_backend: dict, all_bases: list[str], base: str) -> dict:
+    """Drop discovered 'levels' that are actually other agents' fragments
+    (e.g. codex-paranoid.toml must not register a 'codex-paranoid' level for
+    claude)."""
+    out: dict = {}
+    other_prefixes = tuple(f"{b}-" for b in all_bases if b != base)
+    for backend, levels in levels_by_backend.items():
+        out[backend] = [
+            lv for lv in levels
+            if not lv.startswith(other_prefixes)
+        ] if other_prefixes else list(levels)
+    return out
+
+
+_LEVEL_ORDER = {"permissive": 0, "normal": 1, "paranoid": 2}
+
+
+def _derive_unsandboxed(name: str, entry: dict, env: dict) -> dict:
+    """§3.5 variant derivation over a (merged) registry-shaped entry.
+    `env` is the base agent's already-expanded, already-redacted env table
+    (variants inherit it verbatim)."""
+    agent = entry.get("agent", {})
+    dashboard = entry.get("dashboard", {})
+    exc = entry.get("variants", {}).get("unsandboxed", {})
+    binary = agent.get("binary", name)
+    label = str(agent.get("short_label", name[:3].upper()))
+    return {
+        "command": list(exc.get("command", [binary])),
+        "pane_title_pattern": exc.get("pane_title_pattern", binary),
+        "status_pipe_name": dashboard.get("status_pipe_name", "lince-status"),
+        "display_name": exc.get(
+            "display_name", agent.get("display_name", name) + " (unsandboxed)"
+        ),
+        "short_label": exc.get("short_label", label[:2].strip() + "U"),
+        "color": exc.get("color", "red"),
+        "sandboxed": False,
+        "has_native_hooks": bool(dashboard.get("has_native_hooks", False)),
+        "providers": list(dashboard.get("providers", [])),
+        "env": dict(env),
+        "event_map": dict(entry.get("event_map", {})),
+        "bwrap_conflict": bool(
+            exc.get("bwrap_conflict", entry.get("sandbox", {}).get("bwrap_conflict", False))
+        ),
+    }
+
+
+def _expand_provider_env_all(env: dict, providers: dict) -> dict:
+    out = {k: v for k, v in env.items() if k != "provider_env"}
+    if env.get("provider_env") == "all":
+        for prov in providers.values():
+            for var in prov.get("env", []):
+                out.setdefault(var, f"${var}")
+    return out
+
+
+def build_resolved_view(
+    project_dir: Path | None = None,
+    agent_filter: str | None = None,
+    flag_level: str | None = None,
+    flag_provider: str | None = None,
+    flag_backend: str | None = None,
+    flag_allow_hosts: list[str] | None = None,
+) -> tuple[dict | None, dict | None]:
+    """Build the §4.3 resolved view. Returns (view, error) — exactly one set.
+
+    Layering (§4.1): registry.d → variant derivation → user policy
+    (lince.toml when present, else dual-read of the legacy files per §5.2)
+    → project overlay → CLI flags.
+    """
+    import platform
+
+    warnings: list[str] = []
+    registry_dir = find_registry_dir()
+    if registry_dir is None:
+        return None, {
+            "code": "no-registry",
+            "message": "No registry.d/ found. Run sandbox/install.sh (or update.sh) "
+                       "to install the agent registry.",
+        }
+    registry_agents, providers_tbl = load_registry(registry_dir, warnings)
+
+    lince_exists = LINCE_CONFIG_PATH.is_file()
+    config_version = f"{SCHEMA_VERSION_NATIVE[0]}.{SCHEMA_VERSION_NATIVE[1]}"
+    guarantee = "default-deny"
+    network: dict = {"default": "deny", "allowed_hosts": []}
+    agent_policy: dict[str, dict] = {}     # name -> policy keys (level/provider/allowed_hosts)
+    agent_origin: dict[str, dict] = {}     # name -> {key: origin}
+    user_provider_names_by_agent: dict[str, list] = {}
+    user_provider_details: dict[str, dict] = {}  # name -> {env, env_unset}
+    default_provider: str | None = None
+
+    if lince_exists:
+        # v2 is the ONLY source (§5.2 hard switch).
+        lince = _load_toml_or_empty(LINCE_CONFIG_PATH, warnings)
+        version_issues = check_version_contract(lince.get("version"), str(LINCE_CONFIG_PATH))
+        hard = [i for i in version_issues if i["level"] == "error"]
+        if hard:
+            return None, {"code": "version", "message": hard[0]["message"]}
+        for i in version_issues:
+            warnings.append(i["message"])
+        config_version = str(lince.get("version"))
+        net = lince.get("network", {})
+        network["default"] = net.get("default", "deny")
+        network["allowed_hosts"] = list(net.get("allowed_hosts", []))
+        for name, prov in lince.get("providers", {}).items():
+            providers_tbl = _deep_overlay(providers_tbl, {name: prov})
+        for name, entry in lince.get("agents", {}).items():
+            if not isinstance(entry, dict):
+                warnings.append(f"[agents.{name}]: not a table — skipped")
+                continue
+            registry_shape, policy = _lince_agent_to_registry_shape(entry)
+            if name in registry_agents:
+                registry_agents[name] = _deep_overlay(registry_agents[name], registry_shape)
+            else:
+                issues = schema_validate(entry, _LINCE_AGENT_SCHEMA, f"agents.{name}", [])
+                missing = [
+                    k for k in ("binary", "display_name", "short_label", "color")
+                    if k not in entry
+                ]
+                if missing:
+                    warnings.append(
+                        f"[agents.{name}]: custom agent missing required key(s) "
+                        f"{', '.join(missing)} — skipped"
+                    )
+                    continue
+                if any(i["level"] == "error" for i in issues):
+                    warnings.append(
+                        f"[agents.{name}]: {issues[0]['message']} — skipped"
+                    )
+                    continue
+                registry_agents[name] = registry_shape
+            agent_policy[name] = policy
+            agent_origin[name] = {k: "user" for k in policy}
+        experimental = lince.get("experimental", {})
+        active = [k for k, v in experimental.items() if v not in (False, "", [], {}, None)]
+        if active:
+            guarantee = f"void:{active[0]}"
+        sb = lince.get("sandbox", {})
+        default_provider = sb.get("default_provider") or None
+        legacy_present = [
+            str(p) for p in (SANDBOX_CONFIG_PATH, DASHBOARD_CONFIG_PATH)
+            if p.is_file()
+        ]
+        if legacy_present:
+            warnings.append(
+                "legacy config files still present (ignored): "
+                + ", ".join(legacy_present)
+                + " — run `lince config migrate --purge` to clean up"
+            )
+    else:
+        # DUAL-READ (§5.2): synthesize the v2 view in-memory from legacy files.
+        sandbox_cfg = _load_toml_or_empty(SANDBOX_CONFIG_PATH, warnings)
+        if project_dir is not None:
+            local = _load_toml_or_empty(
+                Path(project_dir) / ".agent-sandbox" / "config.toml", warnings
+            )
+            if local:
+                sandbox_cfg = _deep_overlay(sandbox_cfg, local)
+        dashboard_cfg = _load_toml_or_empty(DASHBOARD_CONFIG_PATH, warnings)
+
+        security = sandbox_cfg.get("security", {})
+        network["allowed_hosts"] = list(security.get("allow_domains", []))
+        sb = sandbox_cfg.get("sandbox", {})
+        default_provider = sb.get("default_provider") or sb.get("default_profile") or None
+
+        # Legacy providers, with v1 per-agent attribution (resolve_providers
+        # semantics: legacy [profiles.*] and top-level [providers.*] belong
+        # to claude; [<agent>.providers/profiles.*] to that agent).
+        def _collect_providers(agent: str) -> dict:
+            merged: dict = {}
+            if agent == "claude":
+                for key in ("profiles", "providers"):
+                    tbl = sandbox_cfg.get(key)
+                    if isinstance(tbl, dict):
+                        merged.update(tbl)
+            section = sandbox_cfg.get(agent, {})
+            if isinstance(section, dict):
+                for key in ("profiles", "providers"):
+                    tbl = section.get(key)
+                    if isinstance(tbl, dict):
+                        merged.update(tbl)
+            return merged
+
+        for base in list(registry_agents):
+            provs = _collect_providers(base)
+            if provs:
+                user_provider_names_by_agent[base] = sorted(provs)
+                for pname, ptbl in provs.items():
+                    if not isinstance(ptbl, dict):
+                        continue
+                    user_provider_details[pname] = {
+                        "env": _redact_env(ptbl.get("env", {}) or {}),
+                        "env_unset": list(ptbl.get("env_unset", []) or []),
+                    }
+
+        # User [agents.*] overrides: sandbox config first (jail keys), then
+        # dashboard config (UI keys), both as per-field overlays (§5.5 end
+        # state — the full-entry-replacement footgun dies here).
+        for name, entry in (sandbox_cfg.get("agents", {}) or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            overlay: dict = {}
+            agent_tbl = {}
+            if "command" in entry:
+                agent_tbl["binary"] = entry["command"]
+            if "default_args" in entry:
+                agent_tbl["default_args"] = entry["default_args"]
+            if agent_tbl:
+                overlay["agent"] = agent_tbl
+            sandbox_tbl = {
+                k: entry[k]
+                for k in ("home_ro_dirs", "home_rw_dirs", "bwrap_conflict",
+                          "disable_inner_sandbox_args")
+                if k in entry
+            }
+            if sandbox_tbl:
+                overlay["sandbox"] = sandbox_tbl
+            if isinstance(entry.get("env"), dict):
+                overlay["env"] = entry["env"]
+            if name in registry_agents:
+                registry_agents[name] = _deep_overlay(registry_agents[name], overlay)
+            elif overlay.get("agent", {}).get("binary"):
+                overlay.setdefault("agent", {}).setdefault("name", name)
+                overlay["agent"].setdefault("display_name", name)
+                overlay["agent"].setdefault("short_label", name[:3].upper())
+                overlay["agent"].setdefault("color", "blue")
+                registry_agents[name] = overlay
+        for name, entry in (dashboard_cfg.get("agents", {}) or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            if name.endswith("-unsandboxed"):
+                base = name[: -len("-unsandboxed")]
+                if base in registry_agents:
+                    variant = {
+                        k: entry[k]
+                        for k in ("command", "bwrap_conflict", "display_name",
+                                  "short_label", "color", "pane_title_pattern")
+                        if k in entry
+                    }
+                    if variant:
+                        registry_agents[base] = _deep_overlay(
+                            registry_agents[base],
+                            {"variants": {"unsandboxed": variant}},
+                        )
+                    continue
+            overlay = {}
+            agent_tbl = {
+                rk: entry[lk]
+                for lk, rk in (
+                    ("display_name", "display_name"), ("short_label", "short_label"),
+                    ("color", "color"),
+                )
+                if lk in entry
+            }
+            if isinstance(entry.get("command"), list) and entry["command"]:
+                agent_tbl.setdefault("binary", entry["command"][0])
+            if agent_tbl:
+                overlay["agent"] = agent_tbl
+            dash_tbl = {
+                k: entry[k]
+                for k in ("pane_title_pattern", "status_pipe_name",
+                          "has_native_hooks", "providers")
+                if k in entry
+            }
+            # pre-#81 alias
+            if "profiles" in entry and "providers" not in dash_tbl:
+                dash_tbl["providers"] = entry["profiles"]
+            if dash_tbl:
+                overlay["dashboard"] = dash_tbl
+            sandbox_tbl = {}
+            if "sandbox_level" in entry:
+                agent_policy.setdefault(name, {})["level"] = entry["sandbox_level"]
+                agent_origin.setdefault(name, {})["level"] = "user"
+            if "sandbox_levels" in entry:
+                sandbox_tbl["allowed_levels"] = entry["sandbox_levels"]
+            if "sandbox_backend" in entry:
+                sandbox_tbl["backend"] = entry["sandbox_backend"]
+            if "sandbox_home_subdir" in entry:
+                sandbox_tbl["home_subdir"] = entry["sandbox_home_subdir"]
+            for k in ("bwrap_conflict", "disable_inner_sandbox_args",
+                      "home_ro_dirs", "home_rw_dirs"):
+                if k in entry:
+                    sandbox_tbl[k] = entry[k]
+            if sandbox_tbl:
+                overlay["sandbox"] = sandbox_tbl
+            if isinstance(entry.get("env_vars"), dict):
+                overlay["env"] = entry["env_vars"]
+            if isinstance(entry.get("event_map"), dict):
+                overlay["event_map"] = entry["event_map"]
+            if name in registry_agents:
+                registry_agents[name] = _deep_overlay(registry_agents[name], overlay)
+            else:
+                if not overlay.get("agent", {}).get("binary"):
+                    warnings.append(
+                        f"[agents.{name}] (dashboard config): custom agent has no "
+                        f"usable command — skipped"
+                    )
+                    continue
+                overlay["agent"].setdefault("name", name)
+                overlay["agent"].setdefault("display_name", name)
+                overlay["agent"].setdefault("short_label", name[:3].upper())
+                overlay["agent"].setdefault("color", "blue")
+                registry_agents[name] = overlay
+
+    # Project overlay (<project>/.lince/lince.toml, §2.4 — clamped).
+    if project_dir is not None:
+        overlay_path = Path(project_dir) / ".lince" / "lince.toml"
+        if overlay_path.is_file():
+            overlay_cfg = _load_toml_or_empty(overlay_path, warnings)
+            trusted = False
+            if lince_exists:
+                lince = _load_toml_or_empty(LINCE_CONFIG_PATH, [])
+                trust = lince.get("trust", {}).get("projects", {})
+                entry = trust.get(str(Path(project_dir).resolve()), {})
+                trusted = bool(entry.get("allow_loosening"))
+            if "experimental" in overlay_cfg and not trusted:
+                warnings.append(
+                    f"{overlay_path}: [experimental] ignored (untrusted overlay). "
+                    f'To allow: add [trust.projects."{Path(project_dir).resolve()}"] '
+                    f"allow_loosening = true to {LINCE_CONFIG_PATH}"
+                )
+            extra_hosts = list(overlay_cfg.get("network", {}).get("allowed_hosts", []))
+            if extra_hosts:
+                if trusted:
+                    for h in extra_hosts:
+                        if h not in network["allowed_hosts"]:
+                            network["allowed_hosts"].append(h)
+                else:
+                    warnings.append(
+                        f"{overlay_path}: extra allowed_hosts ignored (untrusted overlay). "
+                        f'To allow: add [trust.projects."{Path(project_dir).resolve()}"] '
+                        f"allow_loosening = true to {LINCE_CONFIG_PATH}"
+                    )
+            for name, entry in (overlay_cfg.get("agents", {}) or {}).items():
+                if not isinstance(entry, dict) or name not in registry_agents:
+                    continue
+                lvl = entry.get("level")
+                if lvl is not None:
+                    # Clamp against the EFFECTIVE level (user policy, else the
+                    # registry default) — never against "unset".
+                    current = agent_policy.get(name, {}).get("level") or (
+                        registry_agents[name].get("sandbox", {}).get("default_level", "normal")
+                    )
+                    cur_rank = _LEVEL_ORDER.get(current, -1)
+                    new_rank = _LEVEL_ORDER.get(lvl, -1)
+                    if trusted or new_rank >= cur_rank:
+                        agent_policy.setdefault(name, {})["level"] = lvl
+                        agent_origin.setdefault(name, {})["level"] = "project"
+                    else:
+                        warnings.append(
+                            f"{overlay_path}: looser level '{lvl}' for {name} ignored "
+                            f"(untrusted overlay)"
+                        )
+
+    # Provider availability (env NAMES checked against the host env; a
+    # configured literal value also counts as available).
+    providers_out: dict = {}
+    for pname in sorted(set(providers_tbl) | set(user_provider_details)):
+        shipped = providers_tbl.get(pname, {})
+        details = user_provider_details.get(pname, {})
+        env_map = dict(details.get("env", {}))
+        env_keys = sorted(set(shipped.get("env", [])) | set(env_map))
+        available = any(_env_available(k) for k in env_keys) or any(
+            not _is_env_self_ref(k, str(v)) and not str(v).startswith("$")
+            for k, v in env_map.items()
+        )
+        providers_out[pname] = {
+            "env_keys": env_keys,
+            "hosts": list(shipped.get("hosts", [])),
+            "available": available,
+            "env": env_map,
+            "env_unset": list(details.get("env_unset", [])),
+            "source": "user" if pname in user_provider_details else "registry",
+        }
+
+    # Assemble agents.
+    is_macos = platform.system() == "Darwin"
+    all_bases = sorted(registry_agents)
+    agents_out: dict = {}
+    for name in all_bases:
+        if agent_filter and name != agent_filter:
+            continue
+        entry = registry_agents[name]
+        agent = entry.get("agent", {})
+        sandbox = entry.get("sandbox", {})
+        dashboard = entry.get("dashboard", {})
+        policy = agent_policy.get(name, {})
+        origin = agent_origin.get(name, {})
+
+        backend = flag_backend or sandbox.get("backend", "auto")
+        if backend == "auto":
+            backend = "seatbelt" if is_macos else "bwrap"
+        level = flag_level or policy.get("level") or sandbox.get("default_level", "normal")
+        if flag_level:
+            origin = {**origin, "level": "flag"}
+        elif "level" not in origin:
+            origin = {**origin, "level": "registry"}
+        provider = flag_provider or policy.get("provider") or default_provider
+        if flag_provider:
+            origin = {**origin, "provider": "flag"}
+        elif "provider" not in origin:
+            origin = {**origin, "provider": "user" if policy.get("provider") or default_provider else "registry"}
+
+        env = _redact_env(_expand_provider_env_all(entry.get("env", {}), providers_tbl))
+        levels_by_backend = _filter_agent_agnostic(
+            _discover_levels(name, list(sandbox.get("allowed_levels", []))),
+            all_bases, name,
+        )
+        backend_key = "agent-sandbox" if backend in ("bwrap", "agent-sandbox") else backend
+        levels = levels_by_backend.get(backend_key) or list(SHIPPED_LEVELS)
+
+        # Per-agent provider list (window semantics: user-configured only, so
+        # every offered name resolves inside agent-sandbox's own config).
+        raw_providers = list(dashboard.get("providers", ["__discover__"]))
+        if raw_providers == ["__discover__"]:
+            providers_available = list(user_provider_names_by_agent.get(name, []))
+        else:
+            providers_available = [
+                p for p in raw_providers if p in providers_out
+            ] if raw_providers else []
+
+        allowed_hosts = list(network["allowed_hosts"])
+        for h in policy.get("allowed_hosts", []):
+            if h not in allowed_hosts:
+                allowed_hosts.append(h)
+        if flag_allow_hosts:
+            for h in flag_allow_hosts:
+                if h not in allowed_hosts:
+                    allowed_hosts.append(h)
+        if provider and provider in providers_out:
+            for h in providers_out[provider]["hosts"]:
+                if h not in allowed_hosts:
+                    allowed_hosts.insert(0, h)
+
+        agents_out[name] = {
+            "display_name": agent.get("display_name", name),
+            "short_label": agent.get("short_label", name[:3].upper()),
+            "color": agent.get("color", "blue"),
+            "binary": agent.get("binary", name),
+            "default_args": list(agent.get("default_args", [])),
+            "backend": backend,
+            "level": level,
+            "levels": levels,
+            "levels_by_backend": levels_by_backend,
+            "allowed_levels": list(sandbox.get("allowed_levels", [])),
+            "provider": provider,
+            "providers": raw_providers,
+            "providers_available": providers_available,
+            "command": [
+                "agent-sandbox", "run", "-p", "{project_dir}",
+                "--id", "{agent_id}", "--agent", name,
+            ],
+            "env": env,
+            "env_keys": sorted(env),
+            "event_map": dict(entry.get("event_map", {})),
+            "bwrap_conflict": bool(sandbox.get("bwrap_conflict", False)),
+            "disable_inner_sandbox_args": list(sandbox.get("disable_inner_sandbox_args", [])),
+            "home_subdir": sandbox.get("home_subdir", ""),
+            "dashboard": {
+                "pane_title_pattern": dashboard.get("pane_title_pattern", "agent-sandbox"),
+                "status_pipe_name": dashboard.get("status_pipe_name", "lince-status"),
+                "has_native_hooks": bool(dashboard.get("has_native_hooks", False)),
+                "sandboxed": True,
+            },
+            "variants": {"unsandboxed": _derive_unsandboxed(name, entry, env)},
+            "allowed_hosts_effective": allowed_hosts,
+            "origin": origin,
+        }
+
+    view = {
+        "schema": RESOLVE_SCHEMA,
+        "config_version": config_version,
+        "guarantee": guarantee,
+        "sources": {
+            "registry": [str(registry_dir)],
+            "user": str(LINCE_CONFIG_PATH) if lince_exists else None,
+            "legacy": None if lince_exists else [
+                str(p) for p in (SANDBOX_CONFIG_PATH, DASHBOARD_CONFIG_PATH) if p.is_file()
+            ],
+            "project": str(project_dir) if project_dir else None,
+        },
+        "network": network,
+        "providers": providers_out,
+        "agents": agents_out,
+        "warnings": warnings,
+    }
+    return view, None
+
+
+def cmd_resolve(args) -> int:
+    """Emit the fully-resolved configuration view as JSON (#202, §4.3)."""
+    view, error = build_resolved_view(
+        project_dir=Path(args.project).expanduser() if args.project else None,
+        agent_filter=args.agent,
+        flag_level=args.level,
+        flag_provider=args.provider,
+        flag_backend=args.backend,
+        flag_allow_hosts=args.allow_host or None,
+    )
+    if error is not None:
+        print(json.dumps({"error": error}, indent=2, sort_keys=True))
+        return 1
+    if args.agent and args.agent not in view["agents"]:
+        print(json.dumps({"error": {
+            "code": "unknown-agent",
+            "message": f"agent '{args.agent}' not found in the registry or user config",
+        }}, indent=2, sort_keys=True))
+        return 1
+    print(json.dumps(view, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_schema(args) -> int:
     """Print or write the published JSON Schemas (#203)."""
     if args.write:
@@ -1685,6 +2370,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_flag(p_validate)
     p_validate.set_defaults(func=cmd_validate)
+
+    # ── resolve ─────────────────────────────────────────────────
+    p_resolve = sub.add_parser(
+        "resolve",
+        help="Emit the fully-resolved configuration view as JSON (#202)",
+    )
+    p_resolve.add_argument("--json", "-j", action="store_true", default=True,
+                           help="JSON output (the only format; flag kept for clarity)")
+    p_resolve.add_argument("--agent", "-a", help="Restrict output to one agent")
+    p_resolve.add_argument("--project", "-p", help="Project directory (applies project overlays)")
+    p_resolve.add_argument("--level", help="Override isolation level (never persisted)")
+    p_resolve.add_argument("--provider", "-P", help="Override provider (never persisted)")
+    p_resolve.add_argument("--backend", help="Override backend (never persisted)")
+    p_resolve.add_argument("--allow-host", action="append", metavar="HOST",
+                           help="Extra allowed host (repeatable, never persisted)")
+    p_resolve.set_defaults(func=cmd_resolve)
 
     # ── schema ──────────────────────────────────────────────────
     p_schema = sub.add_parser("schema", help="Print or write the published JSON Schemas")
