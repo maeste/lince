@@ -613,6 +613,7 @@ fn spawn_inner(
         sandbox_level: resolved_sandbox_level,
         sandbox_backend: resolved_sandbox_backend,
         transcript_path: None,
+        enforced: None,
         icon,
     })
 }
@@ -834,6 +835,7 @@ mod tests {
             sandbox_level: None,
             sandbox_backend: None,
             transcript_path: None,
+            enforced: None,
             icon: icon.to_string(),
         }
     }

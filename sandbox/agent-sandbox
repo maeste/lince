@@ -3472,6 +3472,137 @@ def cmd_init(args) -> None:
     print("Run Claude in sandbox:\n  agent-sandbox run\n")
 
 
+# ---------------------------------------------------------------------------
+# Effective-policy attestation record (#221, design config-v2 §4.3.1)
+#
+# `lince config resolve --json` is the REQUESTED view; this record is the
+# ENFORCED view: per launch, which boundary the kernel actually enforced,
+# with which mechanism. Written next to the dashboard `.state` file so the
+# plugin can surface it as a badge. Best-effort: a record-write failure must
+# never break a launch — but a *degraded boundary at paranoid* must (I7).
+# ---------------------------------------------------------------------------
+
+_SYS_LANDLOCK_CREATE_RULESET = 444
+_LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
+
+
+def probe_landlock_abi() -> int:
+    """Landlock ABI version supported by the running kernel (0 = unavailable).
+
+    Same probe as the #211 spike: landlock_create_ruleset(NULL, 0, VERSION).
+    """
+    if sys.platform != "linux":
+        return 0
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        res = libc.syscall(
+            _SYS_LANDLOCK_CREATE_RULESET,
+            None,
+            ctypes.c_size_t(0),
+            ctypes.c_uint32(_LANDLOCK_CREATE_RULESET_VERSION),
+        )
+        return int(res) if res > 0 else 0
+    except Exception:
+        return 0
+
+
+def policy_record_path(agent_id: str) -> Path:
+    """Record location: next to the dashboard `.state` files (same contract
+    as the status hooks: ${LINCE_STATUS_DIR:-/tmp/lince-dashboard})."""
+    status_dir = Path(os.environ.get("LINCE_STATUS_DIR", "/tmp/lince-dashboard"))
+    return status_dir / f"{agent_id}.policy.json"
+
+
+def build_policy_record(
+    *,
+    backend: str,
+    agent_name: str,
+    agent_id: str | None,
+    level: str | None,
+    requested_fs: str,
+    requested_net: str,
+    fs_enforced: bool,
+    net_enforced: bool,
+    net_limitation: str | None = None,
+    bwrap_args_digest: str | None = None,
+    profile_digest: str | None = None,
+    helper_version: str | None = None,
+    helper_digest: str | None = None,
+    applied_before_exec: bool = True,
+    inherited_by_subprocesses: str = "by-design (kernel namespaces)",
+    degraded_reason: str | None = None,
+) -> dict:
+    """Assemble the §4.3.1 record. degraded_reason is REQUIRED whenever any
+    *_enforced is false — asserted here so the degraded path can never be
+    silent (I7)."""
+    if (not fs_enforced or not net_enforced) and not degraded_reason:
+        raise ValueError("degraded_reason required when a boundary is not enforced (I7)")
+    return {
+        "schema": 1,
+        "agent": agent_name,
+        "agent_id": agent_id,
+        "backend": backend,
+        # Symbolic refs until the §4.2 generated-artifacts pipeline lands;
+        # then these become the <hash8> policy-slice references.
+        "requested": {
+            "level": level or "normal",
+            "filesystem": requested_fs,
+            "network": requested_net,
+        },
+        "landlock_abi": probe_landlock_abi(),
+        "fs_enforced": fs_enforced,
+        "net_enforced": net_enforced,
+        "net_limitation": net_limitation,
+        "bwrap_args_digest": bwrap_args_digest,
+        "profile_digest": profile_digest,
+        "helper_version": helper_version,
+        "helper_digest": helper_digest,
+        "applied_before_exec": applied_before_exec,
+        "inherited_by_subprocesses": inherited_by_subprocesses,
+        "degraded_reason": degraded_reason,
+        "written_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+
+
+def write_policy_record(agent_id: str | None, record: dict) -> None:
+    """Write the record next to the dashboard .state file (best-effort)."""
+    if not agent_id:
+        return
+    try:
+        path = policy_record_path(agent_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"agent-sandbox: warning: could not write policy record: {exc}", file=sys.stderr)
+
+
+def enforce_paranoid_fail_closed(level: str | None, record: dict) -> None:
+    """I7: paranoid never degrades silently. If any requested boundary is not
+    enforced at level=paranoid, refuse to launch, naming the boundary."""
+    if level != "paranoid":
+        return
+    missing = [
+        name
+        for name, ok in (("filesystem", record["fs_enforced"]), ("network", record["net_enforced"]))
+        if not ok
+    ]
+    if missing:
+        print(
+            f"Error: sandbox level 'paranoid' requested but the "
+            f"{' and '.join(missing)} boundary cannot be enforced "
+            f"({record.get('degraded_reason') or 'no enforcing mechanism available'}). "
+            f"Refusing to launch (paranoid fails closed — design invariant I7). "
+            f"Pick --sandbox-level normal/permissive to opt into degraded operation.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _argv_digest(cmd: list[str]) -> str:
+    return hashlib.sha256("\0".join(cmd).encode("utf-8", "replace")).hexdigest()
+
+
 def cmd_run(args, agent_extra: list[str]) -> None:
     config, config_path = load_config()
 
@@ -3620,6 +3751,34 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             f"{'ask (safe mode)' if args.safe else 'per agent defaults'}"
         )
         print()
+
+        # Effective-policy record (#221). nono enforces via its own profiles;
+        # agent-sandbox cannot attest what it applied — recorded as such, and
+        # surfaced loudly at paranoid (the nono fail-closed gate per design
+        # §2.2 kernel checks lands with the Landlock backend work, #222).
+        nono_record = build_policy_record(
+            backend="nono",
+            agent_name=agent_name,
+            agent_id=args.id,
+            level=sandbox_level,
+            requested_fs=f"nono profile {nono_profile_name}",
+            requested_net=f"per nono profile {nono_profile_name}",
+            fs_enforced=False,
+            net_enforced=False,
+            net_limitation="unavailable",
+            applied_before_exec=False,
+            inherited_by_subprocesses="delegated to nono",
+            degraded_reason="enforcement delegated to the deprecated nono backend — "
+                            "not attested by agent-sandbox",
+        )
+        write_policy_record(args.id, nono_record)
+        if sandbox_level == "paranoid":
+            print(
+                "\033[33m⚠  paranoid on the deprecated nono backend: enforcement "
+                "is delegated to nono and not attested by agent-sandbox. "
+                "Prefer the bwrap (Linux) or seatbelt (macOS) backend.\033[0m",
+                file=sys.stderr,
+            )
 
         try:
             result = subprocess.run(cmd, cwd=str(project_dir))
@@ -3856,6 +4015,33 @@ def cmd_run(args, agent_extra: list[str]) -> None:
             f"{'ask (safe mode)' if args.safe else 'per agent defaults'}"
         )
         print()
+
+        # Effective-policy record (#221): Seatbelt applies the profile to the
+        # whole process tree before exec; the #196 pre-launch guard has
+        # already failed closed if paranoid's proxy precondition was missing.
+        try:
+            sb_profile_digest = hashlib.sha256(
+                Path(runtime_profile).read_bytes()
+            ).hexdigest()
+        except OSError:
+            sb_profile_digest = None
+        sb_record = build_policy_record(
+            backend="seatbelt",
+            agent_name=agent_name,
+            agent_id=args.id,
+            level=sandbox_level,
+            requested_fs=f"seatbelt profile {sb_profile_name}",
+            requested_net=(
+                "loopback-only (deny network* + loopback allows; egress via proxy)"
+                if sb_unshare_net else "shared (no kernel restriction requested)"
+            ),
+            fs_enforced=True,
+            net_enforced=True,
+            profile_digest=sb_profile_digest,
+            inherited_by_subprocesses="by-design (Seatbelt process tree)",
+        )
+        enforce_paranoid_fail_closed(sandbox_level, sb_record)
+        write_policy_record(args.id, sb_record)
 
         try:
             result = subprocess.run(cmd, cwd=str(project_dir))
@@ -4272,6 +4458,27 @@ def cmd_run(args, agent_extra: list[str]) -> None:
     _auto_snapshot(config, project_dir, agent_name)
 
     print()
+
+    # Effective-policy record (#221): bwrap applies mount + (optionally) net
+    # namespaces before exec'ing the agent; both are kernel-inherited by
+    # every subprocess.
+    bwrap_unshare_net = bool(sec.get("unshare_net", False))
+    bwrap_record = build_policy_record(
+        backend="bwrap",
+        agent_name=agent_name,
+        agent_id=args.id,
+        level=sandbox_level,
+        requested_fs="bwrap bind mounts (project rw, system ro, clearenv)",
+        requested_net=(
+            "loopback-only via credential proxy (netns --unshare-net)"
+            if bwrap_unshare_net else "shared (no kernel restriction requested)"
+        ),
+        fs_enforced=True,
+        net_enforced=True,
+        bwrap_args_digest=_argv_digest(cmd),
+    )
+    enforce_paranoid_fail_closed(sandbox_level, bwrap_record)
+    write_policy_record(args.id, bwrap_record)
 
     try:
         result = subprocess.run(cmd, cwd=str(project_dir))

@@ -477,7 +477,18 @@ impl ZellijPlugin for State {
                         let output = String::from_utf8_lossy(&stdout);
                         let mut file_events: std::collections::HashMap<&str, &str> =
                             std::collections::HashMap::new();
+                        // Effective-policy records (#221): `POLICY\t<id>\t<json>`.
+                        let mut policy_records: std::collections::HashMap<&str, &str> =
+                            std::collections::HashMap::new();
                         for line in output.lines() {
+                            if let Some(rest) = line.strip_prefix("POLICY\t") {
+                                if let Some((id, json)) = rest.split_once('\t') {
+                                    if !json.trim().is_empty() {
+                                        policy_records.insert(id, json);
+                                    }
+                                }
+                                continue;
+                            }
                             if let Some((name, event)) = line.split_once('\t') {
                                 let event = event.trim();
                                 if !event.is_empty() {
@@ -487,6 +498,14 @@ impl ZellijPlugin for State {
                         }
                         let mut changed = false;
                         for agent in self.agents.iter_mut() {
+                            if let Some(json) = policy_records.get(agent.id.as_str()) {
+                                if let Ok(p) = serde_json::from_str::<types::EnforcedPolicy>(json) {
+                                    if agent.enforced.as_ref() != Some(&p) {
+                                        agent.enforced = Some(p);
+                                        changed = true;
+                                    }
+                                }
+                            }
                             let claude_key = format!("claude-{}", agent.id);
                             let event = file_events
                                 .get(claude_key.as_str())
