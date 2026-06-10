@@ -65,15 +65,16 @@ agent-sandbox builds a [bubblewrap](https://github.com/containers/bubblewrap) co
 | Backend | Isolation | Platform | Kernel | Dependencies | Default |
 |---------|-----------|----------|--------|-------------|---------|
 | **agent-sandbox** (bubblewrap) | Linux namespaces | Linux only | 3.8+ | Zero (Python stdlib + bwrap) | Default on Linux |
-| **[nono](https://github.com/always-further/nono)** | Landlock LSM / Seatbelt | Linux + macOS | 5.13+ | Rust binary | Required on macOS |
+| **seatbelt** (`sandbox-exec`) | macOS Seatbelt | macOS only | — | Zero (built into macOS) | Default on macOS |
+| **[nono](https://github.com/always-further/nono)** (deprecated) | Landlock LSM / Seatbelt | Linux + macOS | 5.13+ | Rust binary | Deprecated |
 
-**macOS users** (experimental): agent-sandbox is Linux-only. Install nono (`brew install nono`) and set `backend = "nono"` in config.toml. See [#19](https://github.com/RisorseArtificiali/lince/issues/19).
+**macOS users** (experimental): use the native Seatbelt backend — run `agent-sandbox seatbelt-sync` and set `backend = "seatbelt"` (or leave `backend = "auto"`, which prefers Seatbelt on macOS) in config.toml. The legacy nono backend is deprecated; see [Migrating from nono to Seatbelt](../docs/documentation/sandbox/migration-nono-to-seatbelt.md).
 
 ## Requirements
 
-- **Linux** (kernel 3.8+ for user namespaces) or **macOS** (via nono)
+- **Linux** (kernel 3.8+ for user namespaces) or **macOS** (via the built-in Seatbelt backend)
 - **Python 3.11+** (for `tomllib`)
-- **bubblewrap** (Linux) or **nono** (macOS)
+- **bubblewrap** (Linux) or **sandbox-exec** (macOS, ships with the OS)
 - **An AI coding agent** (Claude Code, Codex, Gemini, OpenCode, Aider, [Pi](https://pi.dev), etc.)
 
 **Install bubblewrap:** `sudo dnf install bubblewrap` (Fedora) | `sudo apt install bubblewrap` (Ubuntu/Debian) | `sudo pacman -S bubblewrap` (Arch)
@@ -181,7 +182,7 @@ Lists (e.g. `extra_rw`, `allow_domains`) are **appended**, not replaced, so proj
 
 3. **Not a VM**: bubblewrap uses Linux namespaces, which are a kernel feature. A kernel vulnerability in namespace handling could theoretically allow escape. For higher assurance, run the sandbox inside a VM.
 
-4. **Linux only**: agent-sandbox requires bubblewrap, which depends on Linux kernel namespaces. It does not work on macOS or Windows. macOS users should consider [nono](https://github.com/always-further/nono), which uses macOS Seatbelt for sandboxing and offers similar protections. See `docs/comparison-agent-sandbox-vs-nono.md` for a detailed comparison.
+4. **Linux only (bwrap backend)**: the bubblewrap backend depends on Linux kernel namespaces and does not work on macOS or Windows. macOS users should use the native Seatbelt backend (`sandbox-exec`, built into macOS) — `agent-sandbox seatbelt-sync` generates the profiles. The legacy [nono](https://github.com/always-further/nono) backend is deprecated; see the [migration guide](../docs/documentation/sandbox/migration-nono-to-seatbelt.md).
 
 5. **Read-only build tools**: Tools installed under `$HOME` (like `~/.cargo/bin/cargo`) are available read-only. `cargo install new-tool` inside the sandbox will fail. Use system package managers to install new tools, or add specific writable directories via `extra_rw` in config.
 

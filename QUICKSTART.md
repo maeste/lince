@@ -168,12 +168,12 @@ Option 2 — Via GUI: open **Terminator → Preferences → Keybindings**, find 
 | Component | Required For | Notes |
 |-----------|--------------|-------|
 | Linux | All | Tested on Fedora 43, Ubuntu |
-| macOS | Experimental | Via nono sandbox backend |
+| macOS | Experimental | Via native Seatbelt sandbox backend (`sandbox-exec`) |
 | Zellij >= 0.40 | Dashboard | Terminal multiplexer |
 | Rust + wasm32-wasip1 | Dashboard | For building plugin |
 | Claude Code | Sandbox | AI coding agent |
 | bubblewrap | Sandbox (Linux) | Isolation technology |
-| nono | Sandbox (macOS) | Alternative sandbox backend |
+| sandbox-exec (Seatbelt) | Sandbox (macOS) | Built into macOS; legacy nono backend is [deprecated](docs/documentation/sandbox/migration-nono-to-seatbelt.md) |
 | Python 3.11+ | Sandbox | Runtime |
 
 ---

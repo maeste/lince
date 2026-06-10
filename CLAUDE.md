@@ -3,6 +3,7 @@
 ## Project Structure
 - `sandbox/` — Bubblewrap sandbox for Claude Code (Python 3.11+, single-file script)
 - `lince-dashboard/` — Multi-agent TUI dashboard (Zellij WASM plugin, Rust)
+- `lince-config/` — Structured CLI for reading/editing LINCE TOML configs (also powers the `/lince-configure` skill)
 
 ## Build / Test
 - **sandbox**: No build step. `python3 sandbox/agent-sandbox --help` to verify.

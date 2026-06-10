@@ -32,4 +32,4 @@ Structured CLI for reading and editing LINCE TOML configuration files. Also powe
 - [Cheat Sheet](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/CHEATSHEET.md)
 - [Multi-Agent Guide](https://github.com/RisorseArtificiali/lince/blob/main/lince-dashboard/MULTI-AGENT-GUIDE.md)
 - [lince-config README](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md)
-- [nono Integration](https://github.com/RisorseArtificiali/lince/blob/main/sandbox/docs/nono-integration.md)
+- [Migrating from nono to Seatbelt](sandbox/migration-nono-to-seatbelt.md)
