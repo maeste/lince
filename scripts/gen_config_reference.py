@@ -172,6 +172,14 @@ def generate_files() -> dict[Path, str]:
             "Edit via `lince-config set <key> <value> --target dashboard`; "
             "validate with `lince-config validate --target dashboard`.",
         ),
+        SKILL_REFS / "lince-policy.md": gen_skill_reference(
+            mod, "lince", "LINCE v2 Policy File Reference",
+            "Key reference for `~/.config/lince/lince.toml` (and the project "
+            "overlay `<project>/.lince/lince.toml`, same schema without "
+            "`version`). Compose with `lince-config apply`; edit with "
+            "`lince-config set <key> <value> --target lince`; validate with "
+            "`lince-config validate --target lince`.",
+        ),
         REPO_ROOT / "docs" / "documentation" / "configuration-keys.md": gen_docs_page(mod),
     }
 
