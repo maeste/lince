@@ -59,6 +59,10 @@ CONFIG_FILES = {
     "dashboard": [
         DASHBOARD_DIR / "config.toml",
     ],
+    # Config v2 policy file (#207): the write surface for apply/set/skills.
+    "lince": [
+        Path.home() / ".config" / "lince" / "lince.toml",
+    ],
 }
 
 AGENTS_DEFAULTS_SEARCH = [
@@ -1091,11 +1095,21 @@ def cmd_set(args) -> int:
                     file=sys.stderr,
                 )
                 return 1
+        elif target == "lince":
+            # Writes create the v2 policy file (§5.3: v2 tools write only
+            # lince.toml). The §5.2 v2 switch is guarded like `apply`.
+            config_path = LINCE_CONFIG_PATH
+            blockers = describe_legacy_intent()
+            if blockers and not getattr(args, "force_v2", False):
+                _print_v2_switch_refusal(blockers)
+                return 1
         else:
             print(f"Error: no {target} config file found.", file=sys.stderr)
             return 1
 
-    doc = _load_tomlkit(config_path)
+    doc = _load_tomlkit(config_path) if config_path.is_file() else tomlkit.document()
+    if target == "lince" and "version" not in doc:
+        doc["version"] = f"{SCHEMA_VERSION_NATIVE[0]}.{SCHEMA_VERSION_NATIVE[1]}"
     _dotted_set(doc, key, value)
     _save_tomlkit(doc, config_path)
 
@@ -1916,6 +1930,7 @@ def build_resolved_view(
     user_provider_names_by_agent: dict[str, list] = {}
     user_provider_details: dict[str, dict] = {}  # name -> {env, env_unset}
     default_provider: str | None = None
+    enabled_agents: set[str] | None = None  # [dashboard].enabled_agents (v2)
 
     if lince_exists:
         # v2 is the ONLY source (§5.2 hard switch).
@@ -1965,6 +1980,9 @@ def build_resolved_view(
             guarantee = f"void:{active[0]}"
         sb = lince.get("sandbox", {})
         default_provider = sb.get("default_provider") or None
+        enabled = lince.get("dashboard", {}).get("enabled_agents")
+        if isinstance(enabled, list) and enabled:
+            enabled_agents = set(enabled)
         legacy_present = [
             str(p) for p in (SANDBOX_CONFIG_PATH, DASHBOARD_CONFIG_PATH)
             if p.is_file()
@@ -2208,6 +2226,14 @@ def build_resolved_view(
     for name in all_bases:
         if agent_filter and name != agent_filter:
             continue
+        # [dashboard].enabled_agents (§2): absent = all registry agents;
+        # custom agents defined in lince.toml are always shown.
+        if (
+            enabled_agents is not None
+            and name not in enabled_agents
+            and name not in agent_policy
+        ):
+            continue
         entry = registry_agents[name]
         agent = entry.get("agent", {})
         sandbox = entry.get("sandbox", {})
@@ -2315,6 +2341,238 @@ def build_resolved_view(
     return view, None
 
 
+# ── apply / templates (#207 — guided configuration over the policy layer) ──
+
+def describe_legacy_intent() -> list[str]:
+    """User intent living in the legacy v1 files that the §5.2 v2 hard switch
+    would silently stop reading. Empty list = safe to create lince.toml."""
+    findings: list[str] = []
+    sandbox_cfg = _load_toml_or_empty(SANDBOX_CONFIG_PATH, None)
+    provider_sections = []
+    for key in ("providers", "profiles"):
+        if isinstance(sandbox_cfg.get(key), dict) and sandbox_cfg[key]:
+            provider_sections.append(f"[{key}.*]")
+    for top, val in sandbox_cfg.items():
+        if isinstance(val, dict):
+            for key in ("providers", "profiles"):
+                if isinstance(val.get(key), dict) and val[key]:
+                    provider_sections.append(f"[{top}.{key}.*]")
+    if provider_sections:
+        findings.append(
+            f"{SANDBOX_CONFIG_PATH}: provider definitions "
+            f"({', '.join(sorted(set(provider_sections)))})"
+        )
+    if isinstance(sandbox_cfg.get("agents"), dict) and sandbox_cfg["agents"]:
+        findings.append(
+            f"{SANDBOX_CONFIG_PATH}: [agents.*] overrides "
+            f"({', '.join(sorted(sandbox_cfg['agents']))})"
+        )
+    dashboard_cfg = _load_toml_or_empty(DASHBOARD_CONFIG_PATH, None)
+    if isinstance(dashboard_cfg.get("agents"), dict) and dashboard_cfg["agents"]:
+        findings.append(
+            f"{DASHBOARD_CONFIG_PATH}: [agents.*] overrides "
+            f"({', '.join(sorted(dashboard_cfg['agents']))})"
+        )
+    return findings
+
+
+def _print_v2_switch_refusal(blockers: list[str]) -> None:
+    print(
+        "Error: creating ~/.config/lince/lince.toml switches resolution to "
+        "v2-only (§5.2 hard switch) — the following legacy customizations "
+        "would stop being read:",
+        file=sys.stderr,
+    )
+    for b in blockers:
+        print(f"  - {b}", file=sys.stderr)
+    print(
+        "Migrate them into lince.toml first (see docs/migration-v2-users.md), "
+        "or pass --force-v2 to proceed anyway.",
+        file=sys.stderr,
+    )
+
+
+def cmd_templates(args) -> int:
+    """List the composition bricks for `apply` (#207): agents from registry.d,
+    isolation levels (shipped + discovered customs), providers."""
+    view, error = build_resolved_view()
+    if error is not None:
+        print(json.dumps({"error": error}, indent=2) if args.json
+              else f"Error: {error['message']}", file=sys.stderr)
+        return 1
+
+    levels: dict[str, str] = {
+        "paranoid": "kernel isolation + ephemeral FS + credential proxy (keys never enter the sandbox)",
+        "normal": "read-only system, writable project, shared network",
+        "permissive": "adds gh/github access, direct network, keys in env",
+    }
+    for agent in view["agents"].values():
+        for backend_levels in agent.get("levels_by_backend", {}).values():
+            for lv in backend_levels:
+                levels.setdefault(lv, "custom level (discovered from profiles)")
+
+    data = {
+        "agents": [
+            {"name": name, "description": a["display_name"]}
+            for name, a in sorted(view["agents"].items())
+        ],
+        "levels": [
+            {"name": name, "description": desc} for name, desc in levels.items()
+        ],
+        "providers": [
+            {
+                "name": name,
+                "available": prov["available"],
+                "source": prov["source"],
+                "description": ", ".join(prov["env_keys"][:3])
+                               + ("…" if len(prov["env_keys"]) > 3 else ""),
+            }
+            for name, prov in sorted(view["providers"].items())
+        ],
+    }
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return 0
+    print("Compose with:  lince-config apply <agent>[+<level>][+<provider>]\n")
+    for kind in ("agents", "levels", "providers"):
+        print(f"{kind.capitalize()}:")
+        for item in data[kind]:
+            extra = ""
+            if kind == "providers":
+                extra = "  [configured]" if item["source"] == "user" else (
+                    "  [key detected]" if item["available"] else "")
+            print(f"  {item['name']:<14} {item['description']}{extra}")
+        print()
+    return 0
+
+
+def cmd_apply(args) -> int:
+    """`lince-config apply <agent>[+<level>][+<provider>]` — compose policy
+    bricks into lince.toml (#207). Never touches registry.d or generated
+    files; the result must validate before anything is written."""
+    parts = [tok.strip() for tok in args.combo.split("+") if tok.strip()]
+    if not parts:
+        print("Error: empty combination. Usage: lince-config apply "
+              "<agent>[+<level>][+<provider>]", file=sys.stderr)
+        return 1
+
+    project_dir = Path(args.project).expanduser() if args.project else None
+    view, error = build_resolved_view(project_dir=project_dir)
+    if error is not None:
+        print(f"Error: {error['message']}", file=sys.stderr)
+        return 1
+
+    agent = parts[0]
+    if agent not in view["agents"]:
+        avail = ", ".join(sorted(view["agents"]))
+        print(f"Error: unknown agent '{agent}'. Available: {avail}", file=sys.stderr)
+        return 1
+
+    known_levels = set(SHIPPED_LEVELS)
+    for backend_levels in view["agents"][agent].get("levels_by_backend", {}).values():
+        known_levels.update(backend_levels)
+    level = provider = None
+    for tok in parts[1:]:
+        if tok in known_levels:
+            if level is not None:
+                print(f"Error: two isolation levels given ('{level}' and '{tok}').",
+                      file=sys.stderr)
+                return 1
+            level = tok
+        elif tok in view["providers"]:
+            if provider is not None:
+                print(f"Error: two providers given ('{provider}' and '{tok}').",
+                      file=sys.stderr)
+                return 1
+            provider = tok
+        else:
+            print(
+                f"Error: '{tok}' is neither an isolation level "
+                f"({', '.join(sorted(known_levels))}) nor a known provider "
+                f"({', '.join(sorted(view['providers'])) or 'none configured'}).",
+                file=sys.stderr,
+            )
+            return 1
+    if level is not None and view["agents"][agent].get("allowed_levels") and \
+            level not in view["agents"][agent]["allowed_levels"]:
+        allowed = ", ".join(view["agents"][agent]["allowed_levels"])
+        print(f"Error: agent '{agent}' only supports level(s): {allowed}.",
+              file=sys.stderr)
+        return 1
+
+    # Target file: user policy, or the clamped project overlay (§2.4).
+    if project_dir is not None:
+        target_path = project_dir / ".lince" / "lince.toml"
+        is_user_file = False
+    else:
+        target_path = LINCE_CONFIG_PATH
+        is_user_file = True
+
+    if is_user_file and not target_path.is_file():
+        blockers = describe_legacy_intent()
+        if blockers and not args.force_v2:
+            _print_v2_switch_refusal(blockers)
+            return 1
+
+    doc = _load_tomlkit(target_path) if target_path.is_file() else tomlkit.document()
+    before = tomlkit.dumps(doc)
+    if is_user_file and "version" not in doc:
+        doc["version"] = f"{SCHEMA_VERSION_NATIVE[0]}.{SCHEMA_VERSION_NATIVE[1]}"
+    if "agents" not in doc:
+        doc["agents"] = tomlkit.table()
+    if agent not in doc["agents"]:
+        doc["agents"][agent] = tomlkit.table()
+    if level is not None:
+        doc["agents"][agent]["level"] = level
+    if provider is not None:
+        doc["agents"][agent]["provider"] = provider
+    after = tomlkit.dumps(doc)
+
+    # The composed result must validate BEFORE anything is written.
+    issues: list[dict] = []
+    parsed = tomllib.loads(after)
+    issues.extend(check_version_contract(parsed.get("version"), str(target_path),
+                                         required=is_user_file))
+    # project overlays carry no version key (§2.4)
+    schema = LINCE_SCHEMA if is_user_file else {**LINCE_SCHEMA, "required": []}
+    schema_validate(parsed, schema, "", issues)
+    errors = [i for i in issues if i["level"] == "error"]
+    if errors:
+        print("Error: the composed configuration does not validate — nothing "
+              "was written:", file=sys.stderr)
+        for i in errors:
+            print(f"  ✗ {i['message']}", file=sys.stderr)
+        return 1
+
+    if before == after:
+        print(f"Already applied — {target_path} unchanged (no-op).")
+        return 0
+
+    if args.dry_run:
+        import difflib
+        diff = difflib.unified_diff(
+            before.splitlines(keepends=True), after.splitlines(keepends=True),
+            fromfile=str(target_path), tofile=f"{target_path} (after apply)",
+        )
+        sys.stdout.writelines(diff)
+        print("\n(dry-run — nothing written)")
+        return 0
+
+    created = not target_path.is_file()
+    _save_tomlkit(doc, target_path)
+    summary = " + ".join(x for x in (agent, level, provider) if x)
+    print(f"Applied {summary} → {target_path}")
+    if created and is_user_file:
+        print(
+            "Note: this created your v2 policy file — resolution now reads "
+            "lince.toml (legacy config.toml files are no longer consulted "
+            "for agents/providers)."
+        )
+    print("Verify with:  lince-config validate --target lince  &&  "
+          "lince-config resolve --agent " + agent)
+    return 0
+
+
 def cmd_resolve(args) -> int:
     """Emit the fully-resolved configuration view as JSON (#202, §4.3)."""
     view, error = build_resolved_view(
@@ -2374,9 +2632,10 @@ def _check_permissions(path: Path, quiet: bool = False) -> None:
 def _add_target_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--target", "-t",
-        choices=["sandbox", "dashboard"],
+        choices=["sandbox", "dashboard", "lince"],
         default="sandbox",
-        help="Which config to operate on (default: sandbox)",
+        help="Which config to operate on (default: sandbox; "
+             "lince = the v2 policy file ~/.config/lince/lince.toml)",
     )
 
 
@@ -2419,6 +2678,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_set = sub.add_parser("set", help="Set a config value")
     p_set.add_argument("key", help="Dotted key path (e.g. providers.vertex.description)")
     p_set.add_argument("value", help="Value to set (auto-coerced: bool, int, list, string)")
+    p_set.add_argument("--force-v2", action="store_true",
+                       help="With --target lince: create lince.toml even when legacy "
+                            "files carry unmigrated customizations")
     _add_target_flag(p_set)
     _add_quiet_flag(p_set)
     p_set.set_defaults(func=cmd_set)
@@ -2481,6 +2743,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_flag(p_validate)
     p_validate.set_defaults(func=cmd_validate)
+
+    # ── apply ───────────────────────────────────────────────────
+    p_apply = sub.add_parser(
+        "apply",
+        help="Compose policy bricks into lince.toml: <agent>[+<level>][+<provider>] (#207)",
+    )
+    p_apply.add_argument("combo", help="e.g. claude+normal+anthropic")
+    p_apply.add_argument("--project", "-p",
+                         help="Write the project overlay (<dir>/.lince/lince.toml) instead")
+    p_apply.add_argument("--dry-run", action="store_true",
+                         help="Show the resulting diff without writing")
+    p_apply.add_argument("--force-v2", action="store_true",
+                         help="Create lince.toml even when legacy files carry "
+                              "unmigrated customizations")
+    p_apply.set_defaults(func=cmd_apply)
+
+    # ── templates ───────────────────────────────────────────────
+    p_templates = sub.add_parser(
+        "templates", help="List the composition bricks for apply (agents/levels/providers)",
+    )
+    _add_json_flag(p_templates)
+    p_templates.set_defaults(func=cmd_templates)
 
     # ── resolve ─────────────────────────────────────────────────
     p_resolve = sub.add_parser(

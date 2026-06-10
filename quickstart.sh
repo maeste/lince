@@ -514,7 +514,7 @@ select_shells() {
         fi
     done
 
-    # Append to SELECTED_AGENTS so generate_agent_defaults / generate_sandbox_defaults
+    # Append to SELECTED_AGENTS so configure_agent_selection
     # emit their TOML blocks. De-dup in case the user runs interactively twice.
     for sh in "${SELECTED_SHELLS[@]}"; do
         local already=0
@@ -715,98 +715,6 @@ confirm_installation() {
     fi
 }
 
-# ── Generate filtered agents-defaults.toml ───────────────────────────
-#
-# Schema note: since the SandboxBackend wizard step shipped, agents-defaults.toml
-# has ONE canonical sandboxed entry per agent (e.g. `[agents.claude]`) plus an
-# optional `[agents.<agent>-unsandboxed]` sibling. The runtime backend (bwrap vs
-# nono) is picked by the user at spawn time in the N wizard, so install-time no
-# longer needs separate `<agent>-bwrap` / `<agent>-nono` entries — they don't
-# exist in the source file.
-#
-# The user's backend selection in quickstart therefore boils down to:
-#   - any sandboxed backend (bwrap or nono) → emit the canonical `[agents.<x>]`
-#   - "unsandboxed" → emit the `[agents.<x>-unsandboxed]` sibling
-# Picking both bwrap AND nono produces a single canonical entry (no dupe).
-generate_agent_defaults() {
-    local src="$SCRIPT_DIR/lince-dashboard/agents-defaults.toml"
-    local dst="$1"
-
-    if [ ! -f "$src" ]; then
-        echo -e "  ${YELLOW}⚠ agents-defaults.toml not found — using empty config${NC}"
-        echo "# No agent types configured. Add agents via /lince-add-supported-agent or edit this file." > "$dst"
-        return
-    fi
-
-    # Start with header
-    head -13 "$src" > "$dst"
-
-    # Decide once which entry types we need from the user's backend selection.
-    local need_sandboxed=false
-    local need_unsandboxed=false
-    for backend in "${SELECTED_BACKENDS[@]}"; do
-        case "$backend" in
-            bwrap|nono) need_sandboxed=true ;;
-            unsandboxed) need_unsandboxed=true ;;
-        esac
-    done
-
-    for agent in "${SELECTED_AGENTS[@]}"; do
-        if [ "$need_sandboxed" = true ]; then
-            echo "" >> "$dst"
-            extract_agent_block "$src" "agents.${agent}" >> "$dst"
-        fi
-        if [ "$need_unsandboxed" = true ]; then
-            echo "" >> "$dst"
-            extract_agent_block "$src" "agents.${agent}-unsandboxed" >> "$dst"
-        fi
-    done
-}
-
-# Extract a TOML block from [agents.X] to the next TOML section or EOF.
-#
-# Captures the matched [agents.X] header plus any of its sub-tables
-# (e.g. [agents.X.env_vars]). Trailing blank lines and standalone `#`
-# comments after the section's last in-section line are buffered and
-# dropped on the next section boundary — without that, a freestanding
-# comment block before the *next* [agents.Y] would leak into this
-# extraction (see gh#91 regression).
-extract_agent_block() {
-    local file="$1"
-    local section="$2"
-
-    awk -v sec="[$section]" -v secpfx="[$section." '
-        BEGIN { printing=0; buf="" }
-        # Any TOML section header is a potential boundary — not just [agents.*],
-        # so future top-level sections (e.g. [providers]) cant slip through.
-        /^\[/ {
-            if ($0 == sec || (printing && index($0, secpfx) == 1)) {
-                # Flush buffered blanks/comments (they belong inside the section
-                # since real content followed them).
-                if (buf != "") { printf "%s", buf; buf="" }
-                printing=1
-            } else if (printing) {
-                # Crossed into a different section. Discard the trailing buffer
-                # — those blanks/comments belong to whatever comes next.
-                printing=0
-                buf=""
-            }
-        }
-        printing {
-            if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
-                # Buffer; emit only if more in-section content follows.
-                buf = buf $0 "\n"
-            } else {
-                if (buf != "") { printf "%s", buf; buf="" }
-                print
-            }
-        }
-        # Intentionally no END flush: a section that runs to EOF with only
-        # trailing blanks/comments still drops them, which is what we want
-        # for clean output.
-    ' "$file"
-}
-
 # ── Install VoxCode ──────────────────────────────────────────────────
 do_install_voxcode() {
     if [ "$INSTALL_VOXCODE" = false ]; then
@@ -845,35 +753,6 @@ do_install_voxcode() {
     fi
 }
 
-# Filter sandbox/agents-defaults.toml the same way we filter the dashboard's,
-# so `agent-sandbox run --agent <x>` only resolves the agents the user picked.
-# Sandbox schema is one block per agent (no `-unsandboxed` siblings) so this is
-# simpler than generate_agent_defaults — we just emit each [agents.<name>]
-# block. install.sh writes the file to two locations; we overwrite both.
-generate_sandbox_defaults() {
-    local src="$SCRIPT_DIR/sandbox/agents-defaults.toml"
-    local dst="$1"
-
-    if [ ! -f "$src" ]; then
-        return
-    fi
-
-    # Preserve the file header (top comment block) so the schema docs survive.
-    # The header runs from line 1 until the first [agents.*] line.
-    local header_end
-    header_end=$(grep -n '^\[agents\.' "$src" | head -1 | cut -d: -f1)
-    if [ -z "$header_end" ]; then
-        # No agent blocks in source — nothing to filter, leave file alone.
-        return
-    fi
-    head -n $((header_end - 1)) "$src" > "$dst"
-
-    for agent in "${SELECTED_AGENTS[@]}"; do
-        echo "" >> "$dst"
-        extract_agent_block "$src" "agents.${agent}" >> "$dst"
-    done
-}
-
 # ── Install sandbox ─────────────────────────────────────────────────
 do_install_sandbox() {
     # Only install agent-sandbox if bwrap backend is selected
@@ -894,21 +773,6 @@ do_install_sandbox() {
         if ! confirm "Continue anyway?"; then exit 1; fi
     fi
 
-    # Overwrite both copies install.sh wrote with a SELECTED_AGENTS-filtered
-    # version. Without this, the sandbox would happily resolve agents the
-    # user explicitly opted out of (e.g. zsh on a bash-only Linux setup).
-    if [ ${#SELECTED_AGENTS[@]} -gt 0 ]; then
-        local sandbox_targets=(
-            "$HOME/.agent-sandbox/agents-defaults.toml"
-            "$HOME/.local/bin/agents-defaults.toml"
-        )
-        for target in "${sandbox_targets[@]}"; do
-            if [ -f "$target" ]; then
-                generate_sandbox_defaults "$target"
-            fi
-        done
-        echo -e "  ${GREEN}✓ Sandbox agents filtered: ${SELECTED_AGENTS[*]}${NC}"
-    fi
 }
 
 # ── Install lince-config CLI ────────────────────────────────────────
@@ -928,6 +792,55 @@ do_install_lince_config() {
     fi
 }
 
+# ── Agent selection → lince.toml (#207) ─────────────────────────────
+#
+# Selection used to be implemented by awk-filtering COPIES of the shipped
+# agents-defaults files — installed files then differed from shipped ones in
+# ways that were not user customization (#199/#204). Selection is now DATA:
+# `lince-config apply <agent>+<level>` per picked agent plus
+# [dashboard].enabled_agents in ~/.config/lince/lince.toml. The shipped
+# registry/defaults stay complete; the dashboard picker reads the policy.
+configure_agent_selection() {
+    if [ ${#SELECTED_AGENTS[@]} -eq 0 ]; then
+        return
+    fi
+    local LC="$HOME/.local/bin/lince-config"
+    command -v lince-config >/dev/null 2>&1 && LC="lince-config"
+    if ! "$LC" --version >/dev/null 2>&1; then
+        echo -e "  ${YELLOW}⚠ lince-config unavailable — agent selection not persisted"
+        echo -e "    (all registry agents will appear in the dashboard picker)${NC}"
+        return
+    fi
+
+    echo ""
+    echo -e "${CYAN}Persisting agent selection to ~/.config/lince/lince.toml...${NC}"
+    local ok=true
+    for agent in "${SELECTED_AGENTS[@]}"; do
+        if ! "$LC" apply "${agent}+normal" >/dev/null 2>&1; then
+            ok=false
+        fi
+    done
+    # Restrict the dashboard picker to the selection (absent = all agents).
+    local json="["
+    local first=true
+    for agent in "${SELECTED_AGENTS[@]}"; do
+        if [ "$first" = true ]; then first=false; else json="$json, "; fi
+        json="$json\"$agent\""
+    done
+    json="$json]"
+    if ! "$LC" set dashboard.enabled_agents "$json" --target lince --quiet >/dev/null 2>&1; then
+        ok=false
+    fi
+    if [ "$ok" = true ]; then
+        echo -e "${GREEN}✓ Agents enabled: ${SELECTED_AGENTS[*]}${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ Could not persist the agent selection (existing legacy"
+        echo -e "    customizations detected?). All registry agents stay available;"
+        echo -e "    run 'lince-config apply <agent>+<level>' manually after migrating"
+        echo -e "    (see docs/migration-v2-users.md).${NC}"
+    fi
+}
+
 # ── Install dashboard ───────────────────────────────────────────────
 do_install_dashboard() {
     echo ""
@@ -943,16 +856,6 @@ do_install_dashboard() {
     else
         echo -e "${RED}✗ lince-dashboard installation failed${NC}"
         if ! confirm "Continue anyway?"; then exit 1; fi
-    fi
-
-    # Overwrite agents-defaults.toml with filtered version
-    local defaults_dst="$HOME/.config/lince-dashboard/agents-defaults.toml"
-    if [ ${#SELECTED_AGENTS[@]} -gt 0 ]; then
-        echo ""
-        echo -e "${CYAN}Configuring selected agents...${NC}"
-        generate_agent_defaults "$defaults_dst"
-        echo -e "${GREEN}✓ Agent defaults written: $defaults_dst${NC}"
-        echo -e "  ${DIM}Configured: ${SELECTED_AGENTS[*]}${NC}"
     fi
 
     # Hardcode the chosen default shell into lince-viewport-placeholder.
@@ -1272,4 +1175,5 @@ do_install_sandbox
 do_install_voxcode        # before dashboard so step 14 detects voxcode
 do_install_dashboard
 do_install_lince_config   # CLI required by the lince-configure skill
+configure_agent_selection # selection becomes data in lince.toml (#207)
 print_summary
