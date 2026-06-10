@@ -11,17 +11,28 @@ Usage (everything before `--` is shim policy, everything after is the
 agent command):
 
     landlock_exec.py [--rw DIR]... [--ro DIR]... \
-                     [--connect-port N]... [--bind-port N]... -- ARGV...
+                     [--connect-port N]... [--bind-port N]... \
+                     [--fail-closed] -- ARGV...
 
 Behaviour mirrors the recommendation in the design doc:
-  - probe once; ABI 0 -> log and exec unrestricted (never fail);
+  - probe once; ABI 0 -> log and exec unrestricted (never fail), unless
+    --fail-closed / LINCE_LANDLOCK_FAIL_CLOSED=1 (paranoid contract);
   - ABI 1-3 -> fs rules only, log that net is not enforced;
   - ABI >= 4 -> fs + TCP connect/bind port rules (deny-by-default).
+
+Every run emits a single-line JSON **effective-policy record** to stderr
+(prefix `LINCE_EFFECTIVE_POLICY: `; also written to the file named by
+LINCE_POLICY_RECORD_PATH when set) stating what was *requested* vs what
+the kernel actually *enforced* — see docs/design/landlock-spike.md
+"Effective policy: requested vs enforced". LINCE_LANDLOCK_FORCE_ABI=N
+caps the probed ABI to simulate older kernels (degraded-path demo).
 """
 
 import argparse
 import ctypes
 import errno
+import hashlib
+import json
 import os
 import sys
 import time
@@ -169,12 +180,27 @@ def apply_landlock(abi: int, rw_dirs: list, ro_dirs: list,
     return (time.perf_counter_ns() - t0) / 1000.0
 
 
+def _self_digest() -> str:
+    """sha256 of this shim file — the record's helper_digest field."""
+    with open(__file__, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def emit_record(record: dict, record_file) -> None:
+    """Single-line JSON to stderr (+ optional pre-opened record file)."""
+    line = json.dumps(record, ensure_ascii=False)
+    print(f"LINCE_EFFECTIVE_POLICY: {line}", file=sys.stderr, flush=True)
+    if record_file is not None:
+        record_file.write(line + "\n")
+        record_file.close()
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if "--" not in argv:
         print("landlock_exec: usage: landlock_exec.py [--rw DIR]... "
               "[--ro DIR]... [--connect-port N]... [--bind-port N]... "
-              "-- ARGV...", file=sys.stderr)
+              "[--fail-closed] -- ARGV...", file=sys.stderr)
         return 2
     sep = argv.index("--")
     shim_argv, agent_argv = argv[:sep], argv[sep + 1:]
@@ -189,14 +215,62 @@ def main() -> int:
                         default=[], metavar="N")
     parser.add_argument("--bind-port", action="append", type=int,
                         default=[], metavar="N")
+    parser.add_argument("--fail-closed", action="store_true")
     args = parser.parse_args(shim_argv)
+    fail_closed = (args.fail_closed
+                   or os.environ.get("LINCE_LANDLOCK_FAIL_CLOSED") == "1")
 
     # Defaults mirror the design doc Q4.4: ro+execute on the whole ro-bound
     # system view; rw must be explicit (project dir + binds).
     ro_dirs = args.ro if args.ro else ["/"]
 
     abi = probe_abi()
+    forced = os.environ.get("LINCE_LANDLOCK_FORCE_ABI")
+    if forced is not None:
+        # Degraded-path demo: pretend the kernel is older than it is. Can
+        # only lower the probed ABI, never raise it.
+        abi = min(abi, int(forced))
+
+    # Effective-policy record (rpelevin, #211): requested vs enforced.
+    # Built BEFORE restriction (digest needs a file read; design doc Q4.3).
+    record = {
+        "backend": os.environ.get("LINCE_BACKEND", "bwrap"),
+        "requested_level": os.environ.get("LINCE_SANDBOX_LEVEL"),
+        "requested_fs": {"rw": args.rw, "ro": ro_dirs},
+        "requested_net": {"connect_ports": args.connect_port,
+                          "bind_ports": args.bind_port},
+        "landlock_abi": abi,
+        "fs_enforced": False,
+        "net_enforced": False,
+        # Landlock net rules (ABI >= 4) are TCP+port-based only — they can
+        # never express host allowlists; that stays the proxy's job.
+        "net_limitation": "unavailable",
+        "applied_before_exec": False,
+        # The shim cannot observe the agent after execvp; inheritance
+        # across fork+execve is a kernel property, verified empirically by
+        # demo.py / gate_check.py — stay honest about who verified what.
+        "inherited_by_subprocesses": "by-design; verified by gate_check",
+        "helper_digest": _self_digest(),
+        # Only the launcher (agent-sandbox build_bwrap_cmd) knows the bwrap
+        # argv; the in-sandbox shim never sees it. Production home for this
+        # field is #221, where agent-sandbox assembles the full record.
+        "bwrap_args_digest": None,
+        "degraded_reason": None,
+    }
+    # Open the optional record file BEFORE restriction: its parent dir may
+    # not be writable afterwards (the already-open fd still is).
+    record_path = os.environ.get("LINCE_POLICY_RECORD_PATH")
+    record_file = open(record_path, "w") if record_path else None
+
     if abi == 0:
+        record["degraded_reason"] = ("landlock unavailable (ABI 0 — kernel "
+                                     "without Landlock or LSM disabled)")
+        emit_record(record, record_file)
+        if fail_closed:
+            print("landlock_exec: FAIL-CLOSED — requested filesystem and "
+                  "network boundaries cannot be enforced (Landlock ABI 0); "
+                  "refusing to exec the agent", file=sys.stderr)
+            return 1
         print("landlock: not available — bwrap-only containment",
               file=sys.stderr)
         os.execvp(agent_argv[0], agent_argv)
@@ -207,8 +281,25 @@ def main() -> int:
                               connect_ports=args.connect_port,
                               bind_ports=args.bind_port)
 
+    record["fs_enforced"] = True
+    record["applied_before_exec"] = True
+    net_requested = bool(args.connect_port or args.bind_port)
+    if abi >= 4:
+        record["net_enforced"] = True
+        record["net_limitation"] = "port-only, host-unaware"
+    elif net_requested:
+        record["degraded_reason"] = (f"network rules not enforced "
+                                     f"(ABI {abi} < 4)")
+    emit_record(record, record_file)
+
+    if fail_closed and net_requested and not record["net_enforced"]:
+        print(f"landlock_exec: FAIL-CLOSED — requested network boundary "
+              f"cannot be enforced (ABI {abi} < 4); refusing to exec the "
+              f"agent", file=sys.stderr)
+        return 1
+
     enforced = "fs+net" if abi >= 4 else "fs only"
-    if abi < 4 and (args.connect_port or args.bind_port):
+    if abi < 4 and net_requested:
         print(f"landlock: network rules not enforced (ABI {abi} < 4)",
               file=sys.stderr)
     print(f"landlock: {enforced} (ABI {abi}) applied in {setup_us:.1f} us — "

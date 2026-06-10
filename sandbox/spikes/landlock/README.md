@@ -11,9 +11,9 @@ dependencies — the same constraint as `sandbox/agent-sandbox`.
 |---|---|
 | `landlock_probe.py` | Queries the kernel's Landlock ABI version via `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` and prints the implied feature set. This is the startup probe agent-sandbox would run to decide what to enforce. |
 | `demo.py` | Working self-restriction demo: a child process applies a Landlock ruleset (rw beneath a temp project dir, ro+execute on system paths, TCP connect allowed only to one port), then proves the fence holds — including across `fork`+`execve` into a fresh subprocess. |
-| `landlock_exec.py` | The launcher shim (prototype of the future `agent-sandbox __landlock-exec` subcommand): runs as the last element of the bwrap argv, opens its rule FDs in the final mount namespace, applies fs (+net if ABI ≥ 4) rules, then `execvp`s the agent argv. Graceful on ABI 0. |
+| `landlock_exec.py` | The launcher shim (prototype of the future `agent-sandbox __landlock-exec` subcommand): runs as the last element of the bwrap argv, opens its rule FDs in the final mount namespace, applies fs (+net if ABI ≥ 4) rules, then `execvp`s the agent argv. Graceful on ABI 0 by default, fail-closed on demand (`--fail-closed` / `LINCE_LANDLOCK_FAIL_CLOSED=1`). Every run emits a single-line JSON **effective-policy record** (`LINCE_EFFECTIVE_POLICY: ` on stderr, optionally to `LINCE_POLICY_RECORD_PATH`) — requested vs enforced, see the design doc. `LINCE_LANDLOCK_FORCE_ABI=N` caps the probed ABI to simulate older kernels. |
 | `gate_check.py` | In-sandbox assertion payload run by the shim in place of a real agent binary: proves the fence inside the actual paranoid sandbox (denied write to bwrap's own rw tmpfs `/tmp`, connect allowed only to the socat bridge on 8118, bind denied, inheritance). |
-| `paranoid_gate.sh` | **The prototype gate**: gates agent `landlock-demo` at `--sandbox-level paranoid` through the shim using only existing agent-sandbox mechanisms (project-local config + custom agent command — `sandbox/agent-sandbox` is NOT modified). Chain: `unshare`/socat wrapper → bwrap → `landlock_exec.py` → `gate_check.py`. |
+| `paranoid_gate.sh` | **The prototype gate**: gates agent `landlock-demo` at `--sandbox-level paranoid` through the shim using only existing agent-sandbox mechanisms (project-local config + custom agent command — `sandbox/agent-sandbox` is NOT modified). Chain: `unshare`/socat wrapper → bwrap → `landlock_exec.py` → `gate_check.py`. Also captures the effective-policy record from the gated run and asserts `fs_enforced=true`, `net_enforced=true`, `net_limitation="port-only, host-unaware"`. |
 
 ## How to run
 
@@ -120,9 +120,10 @@ bwrap setup and the agent exec:
 
 ```
 $ bash sandbox/spikes/landlock/paranoid_gate.sh
-landlock: fs+net (ABI 7) applied in 47.5 us — rw=['/tmp/landlock_gate_sj7Vzj'] connect=[8118] bind=[]
-gate_check: pid 2 inside paranoid sandbox, project /tmp/landlock_gate_sj7Vzj
-  [PASS] fs: write inside project dir succeeds — /tmp/landlock_gate_sj7Vzj/inside.txt
+LINCE_EFFECTIVE_POLICY: {"backend": "bwrap", "requested_level": "paranoid", "requested_fs": {"rw": ["/tmp/landlock_gate_LoteBP"], "ro": ["/"]}, "requested_net": {"connect_ports": [8118], "bind_ports": []}, "landlock_abi": 7, "fs_enforced": true, "net_enforced": true, "net_limitation": "port-only, host-unaware", "applied_before_exec": true, "inherited_by_subprocesses": "by-design; verified by gate_check", "helper_digest": "4f8c5c8da5907e4efdae7f2bf35642f5941dfb967a3be9f4ba064faac44f296d", "bwrap_args_digest": null, "degraded_reason": null}
+landlock: fs+net (ABI 7) applied in 47.4 us — rw=['/tmp/landlock_gate_LoteBP'] connect=[8118] bind=[]
+gate_check: pid 2 inside paranoid sandbox, project /tmp/landlock_gate_LoteBP
+  [PASS] fs: write inside project dir succeeds — /tmp/landlock_gate_LoteBP/inside.txt
   [PASS] fs: write to bwrap rw tmpfs /tmp denied by Landlock — errno=EACCES
   [PASS] fs: read /etc (ro rule) still works
   [PASS] net: connect to proxy bridge port 8118 succeeds — socat listener reached
@@ -131,6 +132,11 @@ gate_check: pid 2 inside paranoid sandbox, project /tmp/landlock_gate_sj7Vzj
   [PASS] inherit: subprocess still denied /tmp write — rc=1
 
 GATE RESULT: ALL CHECKS PASSED
+[...agent-sandbox banner...]
+
+gate: effective-policy record from the gated run:
+  LINCE_EFFECTIVE_POLICY: {... same record as above ...}
+gate: record asserts fs_enforced=true, net_enforced=true, net_limitation="port-only, host-unaware" — OK
 ```
 
 Two details make this run self-proving:
@@ -149,6 +155,44 @@ modified, keeping this branch conflict-free with the in-flight
 credential-proxy and seatbelt PRs. Productizing means moving
 `landlock_exec.py` into the script as a hidden `__landlock-exec`
 subcommand appended to the bwrap argv by `build_bwrap_cmd()`.
+
+### Degraded path + fail-closed (rpelevin test 3)
+
+`LINCE_LANDLOCK_FORCE_ABI=0` makes the shim behave as on a kernel without
+Landlock. By default it stays graceful — the payload still runs, but the
+effective-policy record says exactly which boundaries were NOT enforced:
+
+```
+$ LINCE_LANDLOCK_FORCE_ABI=0 LINCE_SANDBOX_LEVEL=paranoid \
+    python3 sandbox/spikes/landlock/landlock_exec.py \
+    --rw /tmp --connect-port 8118 -- echo "payload ran (degraded, fail-open)"
+LINCE_EFFECTIVE_POLICY: {"backend": "bwrap", "requested_level": "paranoid", "requested_fs": {"rw": ["/tmp"], "ro": ["/"]}, "requested_net": {"connect_ports": [8118], "bind_ports": []}, "landlock_abi": 0, "fs_enforced": false, "net_enforced": false, "net_limitation": "unavailable", "applied_before_exec": false, "inherited_by_subprocesses": "by-design; verified by gate_check", "helper_digest": "4f8c5c8da5907e4efdae7f2bf35642f5941dfb967a3be9f4ba064faac44f296d", "bwrap_args_digest": null, "degraded_reason": "landlock unavailable (ABI 0 — kernel without Landlock or LSM disabled)"}
+landlock: not available — bwrap-only containment
+payload ran (degraded, fail-open)
+$ echo $?
+0
+```
+
+With `--fail-closed` (or `LINCE_LANDLOCK_FAIL_CLOSED=1`) the same
+degradation refuses to exec — the recommended contract for paranoid
+(see the design doc, "Effective policy: requested vs enforced"):
+
+```
+$ LINCE_LANDLOCK_FORCE_ABI=0 LINCE_SANDBOX_LEVEL=paranoid LINCE_LANDLOCK_FAIL_CLOSED=1 \
+    python3 sandbox/spikes/landlock/landlock_exec.py \
+    --rw /tmp --connect-port 8118 -- echo "payload must NOT run"
+LINCE_EFFECTIVE_POLICY: {"backend": "bwrap", "requested_level": "paranoid", "requested_fs": {"rw": ["/tmp"], "ro": ["/"]}, "requested_net": {"connect_ports": [8118], "bind_ports": []}, "landlock_abi": 0, "fs_enforced": false, "net_enforced": false, "net_limitation": "unavailable", "applied_before_exec": false, "inherited_by_subprocesses": "by-design; verified by gate_check", "helper_digest": "4f8c5c8da5907e4efdae7f2bf35642f5941dfb967a3be9f4ba064faac44f296d", "bwrap_args_digest": null, "degraded_reason": "landlock unavailable (ABI 0 — kernel without Landlock or LSM disabled)"}
+landlock_exec: FAIL-CLOSED — requested filesystem and network boundaries cannot be enforced (Landlock ABI 0); refusing to exec the agent
+$ echo $?
+1
+```
+
+Note the payload is never executed and the record is emitted *before*
+the refusal — degraded is only ever explicit + recorded, never silent.
+(The forced ABI can only lower the probed value: `min(probed, forced)`.
+Forcing 1–3 with net ports requested demonstrates the partial case:
+`fs_enforced: true, net_enforced: false, degraded_reason: "network rules
+not enforced (ABI n < 4)"` — fail-closed refuses there too.)
 
 ## What this proves
 

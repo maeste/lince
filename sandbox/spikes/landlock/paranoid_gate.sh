@@ -15,7 +15,10 @@
 #      unshare/socat wrapper -> bwrap <mounts> -> landlock_exec.py
 #      (rw=project, connect=8118) -> gate_check.py assertions;
 #   3. gate_check.py proves fs + net fences hold inside the real
-#      paranoid sandbox (see its docstring), exit 0 = all pass.
+#      paranoid sandbox (see its docstring), exit 0 = all pass;
+#   4. captures the shim's LINCE_EFFECTIVE_POLICY record from the gated
+#      run and asserts fs_enforced=true, net_enforced=true,
+#      net_limitation="port-only, host-unaware" (#211, rpelevin).
 #
 # Run from anywhere:  bash sandbox/spikes/landlock/paranoid_gate.sh
 set -euo pipefail
@@ -57,10 +60,41 @@ allow_domains = []
 # Dummy credential so the proxy has a rule and the socat bridge is live;
 # never sent anywhere (gate_check only TCP-connects to the bridge).
 ANTHROPIC_API_KEY = "sk-test-landlock-spike"
+# Launch context for the shim's effective-policy record (#211): in
+# production agent-sandbox itself would export these (#221).
+LINCE_SANDBOX_LEVEL = "paranoid"
 EOF
 
 cd "$PROJ"
+LOG="$PROJ/gate.log"
 python3 "$REPO/sandbox/agent-sandbox" run -a landlock-demo \
   --sandbox-level paranoid -p "$PROJ" -- \
   --rw "$PROJ" --connect-port 8118 -- \
-  python3 "$PROJ/gate_check.py" "$PROJ"
+  python3 "$PROJ/gate_check.py" "$PROJ" 2>&1 | tee "$LOG"
+
+# --- Effective-policy record: capture + assert (#211, rpelevin) ----------
+RECORD_LINE="$(grep -m1 'LINCE_EFFECTIVE_POLICY: ' "$LOG" || true)"
+if [[ -z "$RECORD_LINE" ]]; then
+  echo "gate: FAIL — no LINCE_EFFECTIVE_POLICY record in gated run output" >&2
+  exit 1
+fi
+echo
+echo "gate: effective-policy record from the gated run:"
+echo "  $RECORD_LINE"
+python3 - "${RECORD_LINE#*LINCE_EFFECTIVE_POLICY: }" <<'PY'
+import json
+import sys
+
+rec = json.loads(sys.argv[1])
+want = {
+    "fs_enforced": True,
+    "net_enforced": True,
+    "net_limitation": "port-only, host-unaware",
+}
+bad = {k: rec.get(k) for k, v in want.items() if rec.get(k) != v}
+if bad:
+    print(f"gate: FAIL — record assertions: {bad}", file=sys.stderr)
+    sys.exit(1)
+print('gate: record asserts fs_enforced=true, net_enforced=true, '
+      'net_limitation="port-only, host-unaware" — OK')
+PY

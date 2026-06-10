@@ -219,6 +219,71 @@ installed files.
 
 ---
 
+## Effective policy: requested vs enforced
+
+Review input on #211 (rpelevin): the spike result must make explicit the
+difference between the policy a launch *requested* and the policy the
+kernel actually *enforced* — per launch, machine-readable. The spike shim
+now emits exactly that: a single-line JSON **effective-policy record** on
+stderr, prefixed `LINCE_EFFECTIVE_POLICY: ` (and mirrored to the file
+named by `LINCE_POLICY_RECORD_PATH` when set). `paranoid_gate.sh`
+captures the record from the real gated run and asserts the enforced
+flags; the captured records are in the spike README.
+
+### Record schema (as emitted by the spike shim)
+
+| Field | Type | Meaning |
+|---|---|---|
+| `backend` | string | Sandbox backend; `LINCE_BACKEND` env, default `"bwrap"`. |
+| `requested_level` | string \| null | Requested isolation level (`LINCE_SANDBOX_LEVEL` env; null if unset). |
+| `requested_fs` | `{rw: [], ro: []}` | Path lists the shim was asked to enforce (`--rw`/`--ro`). |
+| `requested_net` | `{connect_ports: [], bind_ports: []}` | TCP port lists requested (`--connect-port`/`--bind-port`). |
+| `landlock_abi` | int | Probed Landlock ABI (0 = unavailable; capped by `LINCE_LANDLOCK_FORCE_ABI` for the degraded demo). |
+| `fs_enforced` | bool | Filesystem ruleset actually applied. |
+| `net_enforced` | bool | TCP net ruleset actually applied (requires ABI ≥ 4). |
+| `net_limitation` | string | `"port-only, host-unaware"` whenever net rules are active — Landlock can never express host allowlists (rpelevin test 4: no pretending); `"unavailable"` when ABI < 4 or degraded. |
+| `applied_before_exec` | bool | `landlock_restrict_self()` succeeded before `execvp` of the agent. |
+| `inherited_by_subprocesses` | string | `"by-design; verified by gate_check"` — the shim cannot observe the agent after exec; inheritance across fork+execve is a kernel property verified empirically by `demo.py`/`gate_check.py`, not per-run. |
+| `helper_digest` | string | sha256 of the shim file itself, computed at runtime. |
+| `bwrap_args_digest` | null | Always null in the spike: only the launcher knows the bwrap argv; production home is #221 where agent-sandbox assembles the record. |
+| `degraded_reason` | string \| null | Null, or exactly which enforcement dropped and why (e.g. `"landlock unavailable (ABI 0 — …)"`, `"network rules not enforced (ABI 3 < 4)"`). |
+
+### Can paranoid degrade? Fail closed.
+
+Recommendation (decided early, as the review asked): **paranoid never
+degrades silently** — same philosophy as the #196 Seatbelt pre-launch
+guard. When the requested fs boundary cannot be enforced at paranoid,
+the launch fails closed; degraded operation is only ever an explicit
+opt-in, and then the record must name exactly which boundary was not
+enforced. The spike shim demonstrates the contract: by default ABI 0
+stays graceful (record says `fs_enforced: false`, `degraded_reason`
+set), while `--fail-closed` / `LINCE_LANDLOCK_FAIL_CLOSED=1` makes any
+degradation (fs at ABI 0, net at ABI < 4 with ports requested) exit
+non-zero *after* emitting the record, naming the missing boundary. In
+production, paranoid maps to fail-closed; normal/permissive may run
+degraded-but-recorded.
+
+### Coverage of the five review tests
+
+| # | rpelevin test | Where covered |
+|---|---|---|
+| 1 | Denied path stays denied to the agent process *and* a child process | `demo.py` (inherit checks across fork+execve) + `gate_check.py` check 7, inside the real paranoid chain — pre-existing. |
+| 2 | Allowed bind mount stays readable/writable as intended | `demo.py` (rw inside project dir, incl. on bwrap-created tmpfs in the Q4 run) + `gate_check.py` check 1 — pre-existing. |
+| 3 | Old-kernel/no-Landlock path records a degraded effective policy | `LINCE_LANDLOCK_FORCE_ABI=0` demo (spike README, "Degraded path + fail-closed"): record shows `fs_enforced: false, net_enforced: false, degraded_reason` set — new. |
+| 4 | Net rules on ABI ≥ 4 must not pretend to enforce host allowlists | Machine-readable `net_limitation: "port-only, host-unaware"` in every record with active net rules; hosts stay the proxy's job (Q3) — new. |
+| 5 | Config v2 policy compiles to bwrap mounts *and* Landlock rules from one source intent | Adopted as a golden-test requirement in the Config v2 design doc (§4.4); out of spike scope — the policy-key sketch below is the shared source intent. |
+
+### Production home
+
+Tracked as **#221**: agent-sandbox assembles the full record (it is the
+only party that knows the bwrap argv → real `bwrap_args_digest`, the
+level, and the proxy state) and the dashboard surfaces it as a per-run
+badge — the exact boundary the kernel enforced, not just "sandbox
+enabled". Division of labour with Config v2: `lince config resolve
+--json` (#202) is the **requested** view (what policy says should
+happen); the effective-policy record is the **enforced** view (what the
+kernel actually did for that run). Comparing the two is the drift check.
+
 ## Recommendation
 
 **GO.** Ship Landlock as default hardening of the bwrap backend:
