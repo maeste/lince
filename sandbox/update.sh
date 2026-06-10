@@ -29,15 +29,33 @@ cp "$SANDBOX_CMD" "$INSTALL_DST"
 chmod +x "$INSTALL_DST"
 echo -e "${GREEN}  ✓ Command updated${NC}"
 
-# Update agents-defaults.toml in both locations:
-#   ~/.agent-sandbox/  (search path #2, highest-priority installed location)
-#   ~/.local/bin/      (search path #3, fallback alongside binary)
+# Update the unified agent registry (Config v2, #204). Shipped data —
+# always overwritten (#199); custom agents never live here.
+REGISTRY_SRC="$SCRIPT_DIR/../registry.d"
+REGISTRY_DST="$HOME/.local/share/lince/registry.d"
+if [ -d "$REGISTRY_SRC" ]; then
+    mkdir -p "$REGISTRY_DST"
+    count=0
+    for entry in "$REGISTRY_SRC"/*.toml; do
+        [ -f "$entry" ] || continue
+        cp "$entry" "$REGISTRY_DST/"
+        count=$((count + 1))
+    done
+    echo -e "${GREEN}  ✓ Agent registry updated: $count file(s) in $REGISTRY_DST${NC}"
+fi
+
+# Legacy agents-defaults.toml — kept during the Config v2 dual-read window so
+# not-yet-updated consumers keep working; agent-sandbox itself now prefers
+# the registry.
 DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 if [ -f "$DEFAULTS_SRC" ]; then
     cp "$DEFAULTS_SRC" "$HOME/.agent-sandbox/agents-defaults.toml"
-    echo -e "${GREEN}  ✓ Agent defaults updated: ~/.agent-sandbox/agents-defaults.toml${NC}"
-    cp "$DEFAULTS_SRC" "$HOME/.local/bin/agents-defaults.toml"
-    echo -e "${GREEN}  ✓ Agent defaults updated: ~/.local/bin/agents-defaults.toml${NC}"
+    echo -e "${GREEN}  ✓ Agent defaults updated: ~/.agent-sandbox/agents-defaults.toml (legacy)${NC}"
+fi
+# Remove the stale double-install location (#204).
+if [ -f "$HOME/.local/bin/agents-defaults.toml" ]; then
+    rm -f "$HOME/.local/bin/agents-defaults.toml"
+    echo -e "${GREEN}  ✓ Removed stale ~/.local/bin/agents-defaults.toml${NC}"
 fi
 
 # Update built-in sandbox-policy fragments. New fragments shipped with this
