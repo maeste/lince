@@ -28,10 +28,24 @@ import json
 import os
 import sys
 
-# Make the co-located ``lince_lab/`` package importable when this executable is
-# run directly from the module tree (mirrors how lince-config resolves bundled
-# data: a sys.path insert at the executable header). Absolute imports only.
+# Make the co-located ``lince_lab/`` package importable in BOTH modes (mirrors
+# how lince-config resolves bundled data: sys.path inserts at the executable
+# header). Absolute imports only.
+#
+# * dev / repo mode  — the package lives next to this executable in the module
+#   tree, so the executable's own directory is on the path.
+# * installed mode   — install.sh copies this CLI to ~/.local/bin/lince-lab and
+#   the package to ~/.local/share/lince/lince-lab/, so that share dir is added
+#   too. (`$XDG_DATA_HOME` is honored, falling back to ~/.local/share.)
+#
+# Both inserts are additive and harmless when the path is absent, so the repo
+# tests keep resolving ``lince_lab`` from the tree.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+_installed_pkg_dir = os.path.join(_data_home, "lince", "lince-lab")
+if os.path.isdir(_installed_pkg_dir):
+    sys.path.append(_installed_pkg_dir)
 
 from lince_lab import __version__, config as labconfig  # noqa: E402
 from lince_lab.client import BrokerClient  # noqa: E402

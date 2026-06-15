@@ -20,3 +20,10 @@
 
 - **Configuration CLI (lince-config)**
   - [README & Commands](https://github.com/RisorseArtificiali/lince/blob/main/lince-config/README.md)
+
+- **Lab VMs (lince-lab)**
+  - [Overview](lince-lab/index.md)
+  - [CLI Reference](lince-lab/cli.md)
+  - [Recipes](lince-lab/recipes.md)
+  - [Presets](lince-lab/presets.md)
+  - [Bisect](lince-lab/bisect.md)
