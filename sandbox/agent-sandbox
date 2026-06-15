@@ -3191,6 +3191,17 @@ def build_bwrap_cmd(config: dict, project_dir: Path,
         else:
             print(f"Warning: --rw directory does not exist, skipping: {d}", file=sys.stderr)
 
+    # --- 10d. lince-lab broker socket (read-write) ---------------------------
+    # Expose the host-side lince-lab broker socket so the in-sandbox agent can
+    # drive disposable test VMs via `lince-lab` (see lince-lab/, GH #255). The
+    # broker is a UNIX socket, so a plain bind reaches it at every sandbox level
+    # — including paranoid `unshare_net`, since unix sockets are netns-agnostic
+    # (no socat TCP bridge needed, unlike the credential proxy). Strictly
+    # additive: a no-op unless lince-lab is installed and its broker is running.
+    lince_lab_sock = SANDBOX_DIR / "lince-lab.sock"
+    if lince_lab_sock.exists():
+        cmd += ["--bind", str(lince_lab_sock), str(lince_lab_sock)]
+
     # --- 11. Security options ------------------------------------------------
     if sec.get("unshare_pid", True):
         cmd += ["--unshare-pid"]
