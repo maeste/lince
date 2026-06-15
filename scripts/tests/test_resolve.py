@@ -167,6 +167,17 @@ class ResolveTestCase(unittest.TestCase):
         self.assertEqual(bob["variants"]["unsandboxed"]["short_label"], "BOU")
         self.assertEqual(bob["variants"]["unsandboxed"]["color"], "red")
 
+    def test_legacy_dashboard_enabled_agents_filters_in_dual_read(self):
+        """v2 bridge: [dashboard].enabled_agents in the legacy dashboard config
+        restricts the wizard's agent list in dual-read mode (no lince.toml), so
+        a legacy user with unmigrated [providers.*] can filter the picker
+        without forcing the §5.2 v2 switch (which would drop those providers)."""
+        self.dashboard_cfg.write_text(
+            '[dashboard]\nenabled_agents = ["claude", "bash"]\n', encoding="utf-8"
+        )
+        view = self.resolve()
+        self.assertEqual(sorted(view["agents"].keys()), ["bash", "claude"])
+
     def test_legacy_per_level_agent_blocks_are_folded(self):
         """#202 regression: apply-sandbox-levels.py wrote [agents.<base>-<level>]
         blocks into the legacy dashboard config. They must NOT become standalone

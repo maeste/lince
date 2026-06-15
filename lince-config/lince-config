@@ -623,6 +623,12 @@ DASHBOARD_CONFIG_SCHEMA = {
                 "default_project_dir": _d(_STR, "Default working directory for new agents"),
                 "default_agent_type": _d(_STR, "Agent type preselected by the n "
                                                "shortcut and the N wizard"),
+                "enabled_agents": _d(_STR_LIST, "Restrict the New Agent wizard's "
+                                                "agent list to these names (absent = "
+                                                "all registry agents). v2 bridge: lets "
+                                                "legacy users filter the picker without "
+                                                "migrating to lince.toml; the same key "
+                                                "in lince.toml takes precedence."),
                 "sandbox_command": _d(_STR, "Path to the agent-sandbox binary",
                                       "agent-sandbox"),
                 "agent_layout": _d({"type": "string", "enum": ["tiled", "floating"]},
@@ -2061,6 +2067,16 @@ def build_resolved_view(
             if local:
                 sandbox_cfg = _deep_overlay(sandbox_cfg, local)
         dashboard_cfg = _load_toml_or_empty(DASHBOARD_CONFIG_PATH, warnings)
+
+        # v2 bridge: honor [dashboard].enabled_agents from the legacy dashboard
+        # config in dual-read too, so a user can restrict the wizard's agent
+        # list without switching to v2 (which their unmigrated legacy
+        # customizations — e.g. [providers.*] — would block via the §5.2 hard
+        # switch). When a v2 lince.toml exists it is the only source (handled in
+        # the branch above) and takes precedence over this.
+        legacy_enabled = dashboard_cfg.get("dashboard", {}).get("enabled_agents")
+        if isinstance(legacy_enabled, list) and legacy_enabled:
+            enabled_agents = set(legacy_enabled)
 
         security = sandbox_cfg.get("security", {})
         network["allowed_hosts"] = list(security.get("allow_domains", []))

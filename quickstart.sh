@@ -732,31 +732,10 @@ configure_agent_selection() {
     fi
 
     echo ""
-    echo -e "${CYAN}Persisting agent selection to ~/.config/lince/lince.toml...${NC}"
+    echo -e "${CYAN}Persisting agent selection...${NC}"
 
-    # Probe the v2 switch up front with a dry-run: if pre-existing legacy
-    # customizations would be silently dropped, `apply` refuses (asking for
-    # --force-v2). Detect that once and stop with a single clear, actionable
-    # message instead of looping a refusal per agent (#222 review).
-    local probe_err
-    probe_err="$("$LC" apply "${SELECTED_AGENTS[0]}+normal" --dry-run 2>&1 >/dev/null)"
-    if echo "$probe_err" | grep -q -- "--force-v2"; then
-        echo -e "  ${YELLOW}⚠ Existing legacy customizations block the Config v2 switch —"
-        echo -e "    your agent selection was NOT persisted. All registry agents stay"
-        echo -e "    available in the dashboard picker.${NC}"
-        echo -e "    To apply your picks (${SELECTED_AGENTS[*]}): migrate your legacy"
-        echo -e "    config first (see docs/migration-v2-users.md), then run e.g."
-        echo -e "      lince-config apply ${SELECTED_AGENTS[0]}+normal"
-        return
-    fi
-
-    local ok=true
-    for agent in "${SELECTED_AGENTS[@]}"; do
-        if ! "$LC" apply "${agent}+normal" >/dev/null 2>&1; then
-            ok=false
-        fi
-    done
-    # Restrict the dashboard picker to the selection (absent = all agents).
+    # enabled_agents restricts the New Agent wizard's picker to the selection
+    # (absent = all registry agents).
     local json="["
     local first=true
     for agent in "${SELECTED_AGENTS[@]}"; do
@@ -764,6 +743,33 @@ configure_agent_selection() {
         json="$json\"$agent\""
     done
     json="$json]"
+
+    # Creating ~/.config/lince/lince.toml switches resolution to v2-only (§5.2
+    # hard switch). If unmigrated legacy customizations would be dropped (e.g.
+    # [providers.*] in ~/.agent-sandbox/config.toml), `apply` refuses and asks
+    # for --force-v2. Rather than force a lossy switch, persist the selection
+    # into the legacy dashboard config — the resolver honors
+    # [dashboard].enabled_agents in dual-read mode too (the v2 bridge).
+    local probe_err
+    probe_err="$("$LC" apply "${SELECTED_AGENTS[0]}+normal" --dry-run 2>&1 >/dev/null)"
+    if echo "$probe_err" | grep -q -- "--force-v2"; then
+        if "$LC" set dashboard.enabled_agents "$json" --target dashboard --quiet >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ Agents enabled: ${SELECTED_AGENTS[*]}${NC} ${DIM}(legacy config — your providers are kept)${NC}"
+        else
+            echo -e "  ${YELLOW}⚠ Could not persist the agent selection — all registry"
+            echo -e "    agents stay available in the dashboard picker.${NC}"
+        fi
+        return
+    fi
+
+    # No legacy blockers → write the v2 policy file.
+    echo -e "  ${DIM}→ ~/.config/lince/lince.toml${NC}"
+    local ok=true
+    for agent in "${SELECTED_AGENTS[@]}"; do
+        if ! "$LC" apply "${agent}+normal" >/dev/null 2>&1; then
+            ok=false
+        fi
+    done
     if ! "$LC" set dashboard.enabled_agents "$json" --target lince --quiet >/dev/null 2>&1; then
         ok=false
     fi
@@ -771,8 +777,7 @@ configure_agent_selection() {
         echo -e "${GREEN}✓ Agents enabled: ${SELECTED_AGENTS[*]}${NC}"
     else
         echo -e "  ${YELLOW}⚠ Could not fully persist the agent selection. All registry"
-        echo -e "    agents stay available; re-run 'lince-config apply <agent>+<level>'"
-        echo -e "    manually (see docs/migration-v2-users.md).${NC}"
+        echo -e "    agents stay available.${NC}"
     fi
 }
 
