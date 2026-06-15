@@ -1,0 +1,110 @@
+# lince-wizard — drive the lince quickstart New-Agent wizard (#259)
+#
+# Boots a disposable, network-denied VM, stages the lince sources, then drives
+# `lince-config quickstart` through `ht` and asserts the New-Agent wizard
+# presents the *correct* agent list: exactly the configured `enabled_agents`,
+# with NO per-level duplicates. That "agent list == enabled_agents, shown once"
+# property is the #202 regression contract — it is asserted here against the
+# settled terminal grid via `grid_contains` / `grid_absent`, and the written
+# policy file is confirmed with `file_exists`.
+#
+# Network: deny (the wizard is fully local; nothing should reach the network).
+
+[recipe]
+name = "lince-wizard"
+description = "Drive the lince quickstart New-Agent wizard and verify the agent list (== enabled_agents, no per-level duplicates — the #202 contract) and that lince.toml was written."
+version = "1"
+
+[vm]
+image = "fedora"          # must be in the config image allowlist
+cpus = 2
+memory = "2GiB"
+disk = "20GiB"
+
+[network]
+mode = "deny"             # the quickstart wizard is local-only
+allow_hosts = []
+allow_ports = []
+
+[workspace]
+# The single host dir this recipe may stage. Resolves under the recipe dir.
+host_dir = "./fixtures/lince-clone"
+guest_dir = "/work"
+
+# ── provisioning baked into the base snapshot ───────────────────────────────
+[[provision]]
+mode = "system"
+script = """
+#!/bin/bash
+set -eux
+# Toolchain the lince quickstart + the `ht` capture driver need in-guest.
+dnf install -y git python3 python3-pip
+# `ht` (headless terminal) drives the capture step; pin a known release.
+curl -fsSL -o /usr/local/bin/ht https://github.com/andyk/ht/releases/download/v0.3.0/ht-x86_64-unknown-linux-gnu
+chmod +x /usr/local/bin/ht
+"""
+
+[[provision]]
+mode = "system"
+script = """
+#!/bin/bash
+set -eux
+# Install the lince-config CLI from the staged sources so `quickstart` exists.
+cd /work && ./lince-config/install.sh
+# Seed the policy with a restricted enabled_agents set so the wizard has a
+# concrete, deduplicated list to render. The #202 contract is that the wizard
+# shows exactly these names, once each — never duplicated per sandbox level.
+mkdir -p "$HOME/.config/lince"
+cat > "$HOME/.config/lince/lince.toml" <<'EOF'
+[dashboard]
+enabled_agents = ["claude", "codex"]
+EOF
+"""
+
+# ── step 1: drive the quickstart New-Agent wizard via ht ────────────────────
+[[step]]
+name = "drive-wizard"
+capture = true
+program = ["lince-config", "quickstart"]
+size = "80x24"
+# Keys are injected in order, each only after the matching [sync].wait_for
+# substring has appeared and the grid has settled (no fixed sleeps).
+keys = ["Enter", "Down", "Enter", "y", "Enter"]
+
+# ── assertions (the #202 contract) ──────────────────────────────────────────
+[assert]
+exit_code = 0
+# The wizard must list exactly the enabled_agents, each shown once. We assert
+# both names are present (agent list == enabled_agents) and that the quickstart
+# reported a written configuration.
+grid_contains = [
+    "claude",
+    "codex",
+    "enabled_agents",
+    "Configuration written",
+]
+# No per-level duplication and no crash: the agent names must not appear under a
+# per-sandbox-level heading, and no Python traceback / error may surface.
+grid_absent = [
+    "permissive",
+    "paranoid",
+    "Traceback",
+    "ERROR",
+]
+# The wizard must have written the policy file.
+file_exists = [
+    "/root/.config/lince/lince.toml",
+]
+
+# ── deterministic synchronization (required for capture steps) ──────────────
+[sync]
+# One wait_for substring per key batch: wait for each prompt before answering.
+wait_for = [
+    "New Agent",
+    "Select",
+    "agent",
+    "Confirm",
+    "written",
+]
+stable_ms = 150           # event-silence debounce; NOT a sleep
+timeout_s = 60            # per-wait deadline

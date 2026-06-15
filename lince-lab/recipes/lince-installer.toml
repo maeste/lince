@@ -1,0 +1,65 @@
+# lince-installer — assert install.sh idempotency (#259)
+#
+# Boots a disposable, network-denied VM, stages the lince sources, then runs the
+# installer TWICE. The repo rule is that every module's install.sh must be
+# idempotent and safe to re-run; this recipe is the executable oracle for that.
+# A second `install.sh` run must exit 0 and leave the same expected state (the
+# CLI on PATH and runnable), proving re-running neither errors nor corrupts the
+# install.
+#
+# Network: deny (install copies local files; nothing should reach the network).
+
+[recipe]
+name = "lince-installer"
+description = "Run the lince installer twice in a disposable VM and assert idempotency: the second run exits 0 and leaves the same expected state (CLI installed and runnable)."
+version = "1"
+
+[vm]
+image = "fedora"          # must be in the config image allowlist
+cpus = 2
+memory = "2GiB"
+disk = "20GiB"
+
+[network]
+mode = "deny"             # installation is local; no network needed
+allow_hosts = []
+allow_ports = []
+
+[workspace]
+host_dir = "./fixtures/lince-clone"
+guest_dir = "/work"
+
+# ── provisioning baked into the base snapshot ───────────────────────────────
+[[provision]]
+mode = "system"
+script = """
+#!/bin/bash
+set -eux
+# Minimal toolchain the installer + CLI need in-guest.
+dnf install -y git python3 python3-pip
+"""
+
+# ── step 1: first install ───────────────────────────────────────────────────
+[[step]]
+name = "install-first-run"
+run = ["sh", "-c", "cd /work && ./lince-config/install.sh"]
+
+# ── step 2: second install — must be idempotent (exit 0, no error) ──────────
+[[step]]
+name = "install-second-run"
+run = ["sh", "-c", "cd /work && ./lince-config/install.sh"]
+
+# ── step 3: confirm the expected end state after the re-run ─────────────────
+[[step]]
+name = "verify-installed-state"
+run = ["sh", "-c", "command -v lince-config && lince-config --help >/dev/null"]
+
+# ── assertions ──────────────────────────────────────────────────────────────
+[assert]
+# Every step (including the second install run) must exit 0 — that IS the
+# idempotency proof: re-running the installer neither errors nor breaks the CLI.
+exit_code = 0
+# The installer must have placed the CLI at the documented install target.
+file_exists = [
+    "/root/.local/bin/lince-config",
+]
