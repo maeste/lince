@@ -32,6 +32,28 @@ config files stop being read for agents/providers. If they still contain
 real customizations, `apply` **refuses** and lists them — migrate those keys
 first (table below), or pass `--force-v2` to proceed anyway.
 
+## Restricting the New Agent wizard's agent list
+
+The wizard (`N`) lists every agent in the registry by default. To show only the
+agents you actually use, set `enabled_agents` (absent = all). There are two
+places, by design:
+
+- **On v2** (`lince.toml` exists): `[dashboard].enabled_agents` in `lince.toml`.
+  `quickstart.sh` writes this automatically from your agent selection.
+- **Still on legacy** (no `lince.toml` — e.g. you kept `[providers.*]` in the
+  sandbox config and haven't migrated): the v2 switch is blocked, so you can't
+  use `lince.toml` yet. Instead set it in the **legacy dashboard config**, which
+  the resolver also honors in dual-read mode (the *bridge*):
+
+  ```bash
+  lince-config set dashboard.enabled_agents '["claude","codex","bash"]' --target dashboard
+  ```
+
+  `quickstart.sh` does this for you automatically when it detects the v2 switch
+  is blocked — your selection is persisted without dropping your legacy
+  providers. When you later migrate to `lince.toml`, the `enabled_agents` there
+  takes precedence.
+
 ## What you must migrate manually
 
 | Legacy (where) | New location (how) |

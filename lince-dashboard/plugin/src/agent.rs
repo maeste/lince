@@ -28,13 +28,27 @@ const AGENT_TYPE_SUFFIXES: &[&str] = &[
 
 /// Extract base agent type name, stripping sandbox variant suffixes.
 /// e.g. "claude-unsandboxed" → "claude", "codex-bwrap" → "codex", "gemini" → "gemini".
+///
+/// Stripping is repeated so *compound* variant suffixes collapse to the base:
+/// "claude-paranoid-unsandboxed" → "claude" (level + backend), not "claude-paranoid".
+/// Without this, a per-level entry that also carries a derived `-unsandboxed`
+/// variant survives as its own base and shows up as a duplicate wizard row
+/// (#202 regression — defence-in-depth alongside the resolver-side fold).
 pub fn agent_type_base_name(agent_type: &str) -> &str {
-    for suffix in AGENT_TYPE_SUFFIXES {
-        if let Some(base) = agent_type.strip_suffix(suffix) {
-            return base;
+    let mut name = agent_type;
+    loop {
+        let mut matched = false;
+        for suffix in AGENT_TYPE_SUFFIXES {
+            if let Some(base) = name.strip_suffix(suffix) {
+                name = base;
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return name;
         }
     }
-    agent_type
 }
 
 /// Glyph for a sandbox isolation level. Fixed mapping (not user-overridable),
@@ -872,6 +886,28 @@ mod tests {
         assert!(backend_rides_agent_sandbox(&SandboxBackend::Seatbelt));
         assert!(!backend_rides_agent_sandbox(&SandboxBackend::Nono));
         assert!(!backend_rides_agent_sandbox(&SandboxBackend::None));
+    }
+
+    #[test]
+    fn base_name_strips_single_variant_suffix() {
+        assert_eq!(agent_type_base_name("claude-unsandboxed"), "claude");
+        assert_eq!(agent_type_base_name("codex-bwrap"), "codex");
+        assert_eq!(agent_type_base_name("claude-paranoid"), "claude");
+        assert_eq!(agent_type_base_name("claude-permissive"), "claude");
+    }
+
+    #[test]
+    fn base_name_strips_compound_level_plus_backend_suffix() {
+        // #202: a per-level entry carrying a derived `-unsandboxed` variant must
+        // collapse all the way to the base, not stop at "claude-paranoid".
+        assert_eq!(agent_type_base_name("claude-paranoid-unsandboxed"), "claude");
+        assert_eq!(agent_type_base_name("codex-permissive-unsandboxed"), "codex");
+    }
+
+    #[test]
+    fn base_name_leaves_plain_names_untouched() {
+        assert_eq!(agent_type_base_name("gemini"), "gemini");
+        assert_eq!(agent_type_base_name("claude"), "claude");
     }
 
     #[test]

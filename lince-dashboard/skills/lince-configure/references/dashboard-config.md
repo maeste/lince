@@ -18,6 +18,7 @@ Dashboard behavior and defaults.
 | `sandbox_config_path` | str | `"~/.agent-sandbox/config.toml"` | Path to the sandbox config |
 | `default_project_dir` | str | — | Default working directory for new agents |
 | `default_agent_type` | str | — | Agent type preselected by the n shortcut and the N wizard |
+| `enabled_agents` | list[string] | — | Restrict the New Agent wizard's agent list to these names (absent = all registry agents). v2 bridge: lets legacy users filter the picker without migrating to lince.toml; the same key in lince.toml takes precedence. |
 | `sandbox_command` | str | `"agent-sandbox"` | Path to the agent-sandbox binary |
 | `agent_layout` | `"tiled"` \| `"floating"` | `"tiled"` | How agent panes are created |
 | `focus_mode` | `"replace"` \| `"floating"` | `"floating"` | How focusing an agent works |

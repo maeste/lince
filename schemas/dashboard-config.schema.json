@@ -28,6 +28,13 @@
           "type": "string",
           "description": "Agent type preselected by the n shortcut and the N wizard"
         },
+        "enabled_agents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Restrict the New Agent wizard's agent list to these names (absent = all registry agents). v2 bridge: lets legacy users filter the picker without migrating to lince.toml; the same key in lince.toml takes precedence."
+        },
         "sandbox_command": {
           "type": "string",
           "description": "Path to the agent-sandbox binary",

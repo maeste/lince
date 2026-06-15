@@ -167,6 +167,49 @@ class ResolveTestCase(unittest.TestCase):
         self.assertEqual(bob["variants"]["unsandboxed"]["short_label"], "BOU")
         self.assertEqual(bob["variants"]["unsandboxed"]["color"], "red")
 
+    def test_legacy_dashboard_enabled_agents_filters_in_dual_read(self):
+        """v2 bridge: [dashboard].enabled_agents in the legacy dashboard config
+        restricts the wizard's agent list in dual-read mode (no lince.toml), so
+        a legacy user with unmigrated [providers.*] can filter the picker
+        without forcing the §5.2 v2 switch (which would drop those providers)."""
+        self.dashboard_cfg.write_text(
+            '[dashboard]\nenabled_agents = ["claude", "bash"]\n', encoding="utf-8"
+        )
+        view = self.resolve()
+        self.assertEqual(sorted(view["agents"].keys()), ["bash", "claude"])
+
+    def test_legacy_per_level_agent_blocks_are_folded(self):
+        """#202 regression: apply-sandbox-levels.py wrote [agents.<base>-<level>]
+        blocks into the legacy dashboard config. They must NOT become standalone
+        agents (the wizard would show duplicate "<Agent> (<level>)" rows); the
+        level stays available on the base via the shipped trio. A genuine custom
+        agent that merely contains a dash must still survive."""
+        self.dashboard_cfg.write_text(
+            '[agents.claude-paranoid]\n'
+            'command = ["agent-sandbox", "run"]\n'
+            'display_name = "Claude Code (paranoid)"\nshort_label = "CLP"\n'
+            'color = "green"\nsandboxed = true\nsandbox_level = "paranoid"\n'
+            '[agents.claude-permissive]\n'
+            'command = ["agent-sandbox", "run"]\n'
+            'display_name = "Claude Code (permissive)"\nshort_label = "CL+"\n'
+            'color = "yellow"\nsandboxed = true\nsandbox_level = "permissive"\n'
+            '[agents.my-tool]\n'   # genuine custom agent with a dash — must survive
+            'command = ["my-tool", "go"]\n'
+            'display_name = "My Tool"\nshort_label = "MYT"\ncolor = "cyan"\n'
+            'sandboxed = true\n',
+            encoding="utf-8",
+        )
+        view = self.resolve()
+        self.assertNotIn("claude-paranoid", view["agents"])
+        self.assertNotIn("claude-permissive", view["agents"])
+        # the base agent still offers all three shipped levels at step 3
+        self.assertEqual(
+            view["agents"]["claude"]["levels"], ["paranoid", "normal", "permissive"]
+        )
+        # a custom agent whose name merely contains a dash is NOT folded
+        self.assertIn("my-tool", view["agents"])
+        self.assertEqual(view["agents"]["my-tool"]["binary"], "my-tool")
+
     def test_malformed_custom_agent_fails_that_agent_only(self):
         self.dashboard_cfg.write_text(
             '[agents.broken]\ndisplay_name = "No Command"\n'
