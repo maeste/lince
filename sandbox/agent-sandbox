@@ -77,9 +77,15 @@ persist_toolchains = true
 # ~/Applications/apache-maven-3.9.14/bin).
 auto_expose_path = true
 
-# Extra home subdirectories to expose read-only (relative to $HOME)
-# .config/gcloud is needed for Vertex AI / Google Cloud authentication
-home_ro_dirs = [".config/gcloud"]
+# Extra home subdirectories to expose read-only (relative to $HOME).
+# Each is mounted only if it exists on the host, so listing a dir you
+# don't use is harmless.
+# .config/gcloud is needed for Vertex AI / Google Cloud authentication.
+# .serena lets the Serena MCP server read your host config (so it honors
+# web_dashboard_open_on_launch and won't pop a browser on every launch);
+# Serena's writable data (memories/caches) lives in the project's own
+# .serena dir, which is already read-write inside the sandbox.
+home_ro_dirs = [".config/gcloud", ".serena"]
 
 # Default provider — env-var bundle used when -P / --provider is not given.
 # Set to a name defined in [providers.*] / [<agent>.providers.*] below.
