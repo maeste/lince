@@ -1,0 +1,60 @@
+# generic-npm — install + smoke-test an npm package under the networked posture (#261)
+#
+# The generalization recipe: lince-lab is not Lince-specific. This boots a
+# disposable VM under the `networked` preset, installs a small npm package from
+# the registry (the one legitimate reason to allow egress), and runs a smoke
+# test that requires the package. It demonstrates the deny-by-default network
+# with an explicit per-recipe allowlist — only registry.npmjs.org:443 is opened;
+# everything else stays denied and no host credentials are injected.
+#
+# Run under the `networked` preset:  lince-lab run recipe generic-npm.toml --preset networked
+
+[recipe]
+name = "generic-npm"
+description = "Install a small npm package from the registry and run a smoke test against it, under the networked posture (allowlisted egress to registry.npmjs.org:443 only)."
+version = "1"
+
+[vm]
+image = "fedora"          # must be in the config image allowlist
+cpus = 2
+memory = "2GiB"
+disk = "20GiB"
+
+# ── network: allow, but ONLY the explicit allowlist (deny-by-default else) ──
+[network]
+mode = "allow"
+allow_hosts = ["registry.npmjs.org"]
+allow_ports = [443]
+
+[workspace]
+host_dir = "./fixtures/npm-smoke"
+guest_dir = "/work"
+
+# ── provisioning baked into the base snapshot ───────────────────────────────
+[[provision]]
+mode = "system"
+script = """
+#!/bin/bash
+set -eux
+# Node toolchain for the npm install + smoke test.
+dnf install -y nodejs npm
+"""
+
+# ── step 1: install a small package from the allowlisted registry ───────────
+[[step]]
+name = "npm-install"
+run = ["sh", "-c", "cd /work && npm install --no-audit --no-fund is-odd@3.0.1"]
+
+# ── step 2: smoke-test that the installed package actually works ────────────
+[[step]]
+name = "npm-smoke-test"
+run = ["sh", "-c", "cd /work && node -e \"const isOdd=require('is-odd'); if(isOdd(3)!==true||isOdd(2)!==false){process.exit(1)} console.log('is-odd smoke OK')\""]
+
+# ── assertions ──────────────────────────────────────────────────────────────
+[assert]
+# Both the install (allowlisted fetch) and the smoke test must succeed.
+exit_code = 0
+# The package must have been installed into the staged workspace.
+file_exists = [
+    "/work/node_modules/is-odd/package.json",
+]
