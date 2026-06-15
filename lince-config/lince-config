@@ -2159,6 +2159,20 @@ def build_resolved_view(
                             {"variants": {"unsandboxed": variant}},
                         )
                     continue
+            # Legacy per-level agent blocks (#202 regression): apply-sandbox-levels.py
+            # wrote [agents.<base>-<level>] entries so the pre-v2 dashboard could list
+            # paranoid/permissive as separate rows. Under v2 the level is a dimension
+            # of the base agent (chosen at wizard step 3) and is already offered via
+            # the shipped trio — so drop these blocks instead of emitting a standalone
+            # agent. Otherwise they surface as duplicate "<Agent> (<level>)" rows AND,
+            # via their derived `unsandboxed` variant, as a distinct base the dashboard
+            # cannot fold. Only fold KNOWN levels on KNOWN bases, so a genuine custom
+            # agent that merely contains a dash (e.g. [agents.my-tool]) is untouched.
+            if any(
+                name.endswith(f"-{lv}") and name[: -(len(lv) + 1)] in registry_agents
+                for lv in SHIPPED_LEVELS
+            ):
+                continue
             overlay = {}
             agent_tbl = {
                 rk: entry[lk]
