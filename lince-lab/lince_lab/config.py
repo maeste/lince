@@ -37,16 +37,23 @@ DEFAULTS: dict[str, Any] = {
     "network": {
         "mode": "deny",
     },
+    # Pinned base images. Digests are SHA-256 of the qcow2, copied verbatim from
+    # each distro's official CHECKSUM file (cross-checked against a 2nd mirror).
+    # Fedora Cloud Base 44 (1.7), x86_64 — released 2026-04-28.
+    #   CHECKSUM: https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-44-1.7-x86_64-CHECKSUM
+    #   verified via mirrors ftp.fau.de + mirror.init7.net (same digest).
+    # Ubuntu 24.04 LTS (Noble) cloud image, amd64 — release dir [20260518].
+    #   SHA256SUMS: https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS
     "images": {
         "fedora": {
-            "location": "https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-40-1.14.x86_64.qcow2",
+            "location": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
             "arch": "x86_64",
-            "digest": "",
+            "digest": "sha256:28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f",
         },
         "ubuntu": {
-            "location": "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img",
+            "location": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img",
             "arch": "x86_64",
-            "digest": "",
+            "digest": "sha256:53fdde898feed8b027d94baa9cfe8229867f330a1d9c49dc7d84465ee7f229f7",
         },
     },
 }

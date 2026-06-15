@@ -1,0 +1,75 @@
+# lab-base.yaml — REFERENCE skeleton of the policy-forced Lima template.
+#
+# THIS FILE IS FOR HUMAN REFERENCE ONLY. lince-lab does NOT read it at runtime.
+# The actual instance template is generated dynamically, server-side, by
+# lince_lab/templates.py:build_template() from a recipe's declared needs + the
+# config image allowlist. Generating it server-side (never accepting a template
+# from the agent/client) is what makes the isolation invariants below
+# non-overridable. This skeleton documents what that generated template looks
+# like so a human can read the contract without running the builder.
+#
+# build_template() emits the equivalent of this YAML as JSON (JSON is valid
+# YAML, so no YAML library is needed at runtime).
+
+# ── policy-forced isolation invariants (NON-OVERRIDABLE) ─────────────────────
+# A recipe cannot weaken any of these — they are forced by the builder.
+
+plain: true        # strip port-forwarding / host mounts / guest-agent extras.
+                   # Even if a recipe asked for mounts, plain:true ignores them.
+
+mounts: []         # no host filesystem is exposed to the VM. The single recipe
+                   # workspace is staged via `limactl copy` (broker-bounded),
+                   # never bind-mounted, so $HOME / secrets never reach the guest.
+
+ssh:
+  loadDotSSHPubKeys: false   # do NOT inject the host's ~/.ssh/*.pub keys.
+  forwardAgent: false        # do NOT forward the host's ssh-agent.
+
+# ── base image (from the config image allowlist; pinned) ─────────────────────
+# A recipe may only name a short image key (e.g. "fedora"); the builder resolves
+# it to a pinned location/arch/digest from config. Unknown images are rejected.
+images:
+  - location: "https://download.fedoraproject.org/pub/fedora/linux/releases/40/Cloud/x86_64/images/Fedora-Cloud-Base-40-1.14.x86_64.qcow2"
+    arch: "x86_64"
+    # digest: "sha256:..."   # emitted only when the config pins one.
+
+# ── resource caps (from recipe needs, falling back to config vm defaults) ────
+cpus: 2
+memory: "2GiB"
+disk: "20GiB"
+
+# ── provisioning (the FORCED egress posture is always provision[0]) ──────────
+# The builder always prepends a `boot` provision that sets the network posture:
+#
+#   * deny-by-default (the common case): bring the NIC down and install a
+#     drop-all nftables egress rule (loopback only). Marker:
+#     "lince-lab: egress cut (deny-by-default)".
+#
+#   * allowlisted (only when a recipe carries a non-empty allow_hosts/allow_ports):
+#     a drop-all egress policy that accepts loopback, established/related, and the
+#     explicit allowed TCP dports; allowed hosts are recorded as comment markers.
+#     Marker: "lince-lab: egress allowlist".
+#
+# Any [[provision]] entries the recipe declares are appended AFTER this forced
+# boot script (default mode "system" unless the recipe says otherwise).
+provision:
+  # provision[0] — FORCED by the builder (deny-by-default shown here):
+  - mode: boot
+    script: |
+      #!/bin/sh
+      set -eu
+      # lince-lab: egress cut (deny-by-default)
+      # Bring the default NIC down and install a drop-all egress rule so the
+      # disposable lab VM cannot reach the network.
+      ip link set dev eth0 down 2>/dev/null || true
+      if command -v nft >/dev/null 2>&1; then
+        nft add table inet lince_lab 2>/dev/null || true
+        nft add chain inet lince_lab output '{ type filter hook output priority 0 ; policy drop ; }' 2>/dev/null || true
+        nft add rule inet lince_lab output oif lo accept 2>/dev/null || true
+      fi
+  # provision[1..] — appended from the recipe's [[provision]] entries, e.g.:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      dnf install -y git python3
