@@ -32,7 +32,6 @@ NC='\033[0m'
 # ── State ────────────────────────────────────────────────────────────
 SELECTED_BACKENDS=()       # populated by select_backends(): "bwrap", "nono", "unsandboxed"
 SELECTED_AGENTS=()
-SELECTED_LEVELS=""         # comma-csv of extra sandbox levels (e.g. "paranoid,permissive")
 INSTALL_VOXCODE=false
 USE_DEFAULTS=false
 
@@ -55,14 +54,6 @@ BACKENDS=(
 )
 # Track backend selection state (1=selected, 0=not)
 BACKEND_SELECTED=(1 0 0)  # bwrap on by default
-
-# Sandbox levels: name|description. Index 0 (normal) is locked on.
-LEVELS=(
-    "normal|always on — the default level"
-    "paranoid|kernel-isolated network, ephemeral home scratch"
-    "permissive|gh CLI + GitHub allowlist"
-)
-LEVEL_SELECTED=(1 0 0)
 
 # Shell agents (gh#91): key|display|description. Pre-selection is computed
 # at runtime from $SHELL by select_shells() so it tracks the host's actual
@@ -259,74 +250,6 @@ select_backends() {
     echo -e "  ${GREEN}✓${NC} Backends: ${BOLD}${SELECTED_BACKENDS[*]}${NC}"
 }
 
-# ── TUI: Sandbox-level selection (multi-select) ─────────────────────
-select_sandbox_levels() {
-    echo ""
-    print_separator
-    echo -e "${BOLD}Step 2: Sandbox levels${NC}"
-    echo ""
-    echo -e "  Each agent ships with the ${BOLD}normal${NC} level enabled. You can"
-    echo -e "  also expose ${BOLD}paranoid${NC} and/or ${BOLD}permissive${NC} as separate entries"
-    echo -e "  in the N-picker. Variants are pulled from agents-template.toml"
-    echo -e "  and added to your config.toml."
-    echo ""
-    echo -e "  ${DIM}Agents that don't ship a block for a level are skipped.${NC}"
-    echo ""
-    echo -e "  ${DIM}Toggle with number keys, press Enter when done:${NC}"
-    echo ""
-
-    while true; do
-        for i in "${!LEVELS[@]}"; do
-            IFS='|' read -r name desc <<< "${LEVELS[$i]}"
-            if [ $i -eq 0 ]; then
-                echo -e "  ${GREEN}[x]${NC} ${BOLD}$((i+1))) $name${NC} ${DIM}— $desc${NC} ${DIM}(locked)${NC}"
-            elif [ "${LEVEL_SELECTED[$i]}" = "1" ]; then
-                echo -e "  ${GREEN}[x]${NC} ${BOLD}$((i+1))) $name${NC} ${DIM}— $desc${NC}"
-            else
-                echo -e "  ${DIM}[ ] $((i+1))) $name — $desc${NC}"
-            fi
-        done
-        echo ""
-        echo -e "  ${DIM}Press 2-${#LEVELS[@]} to toggle, Enter to confirm${NC}"
-        read -p "  > " -n 1 -r
-        echo ""
-
-        case "$REPLY" in
-            [1-9])
-                local idx=$((REPLY - 1))
-                # idx 0 (normal) is locked.
-                if [ $idx -gt 0 ] && [ $idx -lt ${#LEVELS[@]} ]; then
-                    if [ "${LEVEL_SELECTED[$idx]}" = "1" ]; then
-                        LEVEL_SELECTED[$idx]=0
-                    else
-                        LEVEL_SELECTED[$idx]=1
-                    fi
-                fi
-                ;;
-            "")
-                break
-                ;;
-        esac
-
-        redraw_up $(( ${#LEVELS[@]} + 3 ))
-    done
-
-    SELECTED_LEVELS=""
-    for i in "${!LEVELS[@]}"; do
-        [ $i -eq 0 ] && continue
-        if [ "${LEVEL_SELECTED[$i]}" = "1" ]; then
-            IFS='|' read -r name _ <<< "${LEVELS[$i]}"
-            SELECTED_LEVELS="${SELECTED_LEVELS:+$SELECTED_LEVELS,}$name"
-        fi
-    done
-
-    if [ -z "$SELECTED_LEVELS" ]; then
-        echo -e "  ${GREEN}✓${NC} Levels: ${BOLD}normal${NC} ${DIM}(only)${NC}"
-    else
-        echo -e "  ${GREEN}✓${NC} Levels: ${BOLD}normal, $SELECTED_LEVELS${NC}"
-    fi
-}
-
 # Helper: check if a backend is selected
 has_backend() {
     local target="$1"
@@ -340,7 +263,7 @@ has_backend() {
 select_agents() {
     echo ""
     print_separator
-    echo -e "${BOLD}Step 3: Select agents to configure${NC}"
+    echo -e "${BOLD}Step 2: Select agents to configure${NC}"
     echo ""
     echo -e "  ${DIM}These are sandboxing wrappers and dashboard entries for each agent.${NC}"
     echo -e "  ${DIM}The agents themselves (claude, codex, gemini, etc.) must be${NC}"
@@ -416,7 +339,7 @@ select_agents() {
 select_shells() {
     echo ""
     print_separator
-    echo -e "${BOLD}Step 4: Select shell agents${NC}"
+    echo -e "${BOLD}Step 3: Select shell agents${NC}"
     echo ""
     echo -e "  ${DIM}Shell agents open a raw shell pane in the project dir —${NC}"
     echo -e "  ${DIM}useful for quick command execution alongside coding agents.${NC}"
@@ -535,7 +458,7 @@ select_default_shell() {
 
     echo ""
     print_separator
-    echo -e "${BOLD}Step 4b: Default shell for the dashboard placeholder${NC}"
+    echo -e "${BOLD}Step 3b: Default shell for the dashboard placeholder${NC}"
     echo ""
     echo -e "  ${DIM}The right-hand pane in the tiled layout (the ASCII-art one)${NC}"
     echo -e "  ${DIM}drops into a shell after the banner. Pick which one:${NC}"
@@ -598,7 +521,7 @@ select_default_shell() {
 select_voxcode() {
     echo ""
     print_separator
-    echo -e "${BOLD}Step 5: Voice input (VoxCode)${NC}"
+    echo -e "${BOLD}Step 4: Voice input (VoxCode)${NC}"
     echo ""
     echo -e "  VoxCode lets you speak to your agents — transcriptions are"
     echo -e "  routed to the focused agent via the dashboard."
@@ -665,11 +588,7 @@ confirm_installation() {
         echo -e "  ${GREEN}✓${NC} agent-sandbox    ${DIM}(secure isolation for agents)${NC}"
     fi
     echo -e "    Backends: ${BOLD}${SELECTED_BACKENDS[*]}${NC}"
-    if [ -n "$SELECTED_LEVELS" ]; then
-        echo -e "    Levels:   ${BOLD}normal, $SELECTED_LEVELS${NC}"
-    else
-        echo -e "    Levels:   ${BOLD}normal${NC} ${DIM}(only)${NC}"
-    fi
+    echo -e "    Levels:   ${BOLD}paranoid / normal / permissive${NC} ${DIM}(chosen per agent at spawn time)${NC}"
 
     echo -e "  ${GREEN}✓${NC} lince-dashboard  ${DIM}(multi-agent TUI)${NC}"
     echo -e "  ${GREEN}✓${NC} lince-config     ${DIM}(config CLI + lince-configure skill)${NC}"
@@ -865,9 +784,7 @@ do_install_dashboard() {
     echo ""
 
     cd "$SCRIPT_DIR/lince-dashboard"
-    # Pass the level selection through so install.sh skips its own prompt and
-    # writes the matching [agents.*-<level>] blocks into config.toml.
-    if bash install.sh "--sandbox-levels=$SELECTED_LEVELS"; then
+    if bash install.sh; then
         echo -e "${GREEN}✓ lince-dashboard installed${NC}"
     else
         echo -e "${RED}✗ lince-dashboard installation failed${NC}"
@@ -1169,11 +1086,9 @@ if [ "$USE_DEFAULTS" = true ]; then
     SELECTED_SHELLS=("$DEFAULT_SHELL")
     SELECTED_AGENTS+=("$DEFAULT_SHELL")
     DEFAULT_SHELL_BIN=$(command -v "$DEFAULT_SHELL" 2>/dev/null || true)
-    SELECTED_LEVELS=""  # normal-only by default
-    echo -e "  ${DIM}Using defaults: all agents, $DEFAULT_SHELL shell, bwrap sandbox, normal level only${NC}"
+    echo -e "  ${DIM}Using defaults: all agents, $DEFAULT_SHELL shell, bwrap sandbox${NC}"
 else
     select_backends
-    select_sandbox_levels
     select_agents
     select_shells
     select_default_shell

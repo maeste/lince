@@ -9,23 +9,19 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --sandbox-levels=... / LINCE_SANDBOX_LEVELS: extra levels beyond `normal`.
-# Resolved interactively by quickstart.sh and forwarded to install.sh.
-SANDBOX_LEVELS_OPT_SET=false
-SANDBOX_LEVELS_OPT=""
+# Sandbox isolation levels (paranoid/normal/permissive) are no longer chosen at
+# install time. Under Config v2 they are a dimension of each agent, offered by
+# the dashboard's New Agent wizard at spawn time; the old install-time selection
+# wrote legacy [agents.<base>-<level>] blocks into config.toml that both
+# duplicated wizard rows and blocked the v2 policy switch (see #202 regression).
 for arg in "$@"; do
     case "$arg" in
-        --sandbox-levels=*)
-            SANDBOX_LEVELS_OPT="${arg#*=}"
-            SANDBOX_LEVELS_OPT_SET=true
-            ;;
         --help|-h)
-            echo "Usage: $0 [--sandbox-levels=paranoid,permissive]"
+            echo "Usage: $0"
             echo ""
-            echo "  --sandbox-levels=LIST   Comma-separated list of extra sandbox"
-            echo "                          levels (paranoid, permissive). Empty or"
-            echo "                          unset = normal only."
-            echo "                          Same as setting LINCE_SANDBOX_LEVELS."
+            echo "  Installs the lince-dashboard Zellij plugin and its config."
+            echo "  Sandbox isolation levels are offered per agent at spawn time"
+            echo "  by the dashboard wizard — no install-time selection needed."
             exit 0 ;;
     esac
 done
@@ -334,7 +330,6 @@ AGENTS_DEFAULTS_SRC="$SCRIPT_DIR/agents-defaults.toml"
 AGENTS_DEFAULTS_DST="$CONFIG_DIR/agents-defaults.toml"
 AGENTS_TEMPLATE_SRC="$SCRIPT_DIR/agents-template.toml"
 AGENTS_TEMPLATE_DST="$CONFIG_DIR/agents-template.toml"
-USER_CONFIG="$CONFIG_DIR/config.toml"
 
 # lince-config is a runtime dependency since #202: the plugin obtains agent
 # types / providers / sandbox levels from `lince-config resolve --json`.
@@ -380,33 +375,15 @@ else
     echo -e "${YELLOW}  ⚠ agents-defaults.toml not found — skipping${NC}"
 fi
 
+# agents-template.toml ships as a human-readable reference of the per-level
+# variant blocks. It is NOT loaded by the dashboard and is NOT merged into
+# config.toml: under Config v2 levels are resolved dynamically (shipped trio +
+# discovered customs), so there is no install-time level application step.
 if [ -f "$AGENTS_TEMPLATE_SRC" ]; then
     cp "$AGENTS_TEMPLATE_SRC" "$AGENTS_TEMPLATE_DST"
-    echo -e "${GREEN}  ✓ Installed: $AGENTS_TEMPLATE_DST${NC}"
+    echo -e "${GREEN}  ✓ Installed (reference only): $AGENTS_TEMPLATE_DST${NC}"
 else
     echo -e "${YELLOW}  ⚠ agents-template.toml not found — skipping${NC}"
-fi
-
-# Resolve the level selection: explicit flag wins; else env var; else normal-only.
-if [ "$SANDBOX_LEVELS_OPT_SET" = true ]; then
-    SELECTED_LEVELS="$SANDBOX_LEVELS_OPT"
-else
-    SELECTED_LEVELS="${LINCE_SANDBOX_LEVELS:-}"
-fi
-
-if [ -n "$SELECTED_LEVELS" ] && [ -f "$AGENTS_TEMPLATE_DST" ]; then
-    if ! command -v python3 >/dev/null 2>&1; then
-        echo -e "${YELLOW}  ⚠ python3 not found — cannot apply --sandbox-levels; skipping${NC}"
-    else
-        added=$(python3 "$SCRIPT_DIR/scripts/apply-sandbox-levels.py" \
-                    "$AGENTS_TEMPLATE_DST" "$USER_CONFIG" "$SELECTED_LEVELS")
-        if [ -n "$added" ]; then
-            echo -e "${GREEN}  ✓ Enabled levels in $USER_CONFIG:${NC}"
-            echo "$added" | sed 's/^/      • /'
-        else
-            echo -e "${GREEN}  ✓ Sandbox levels already in $USER_CONFIG (nothing to do)${NC}"
-        fi
-    fi
 fi
 echo ""
 
@@ -589,10 +566,7 @@ echo "            ~/.local/bin/codex-status-hook.sh"
 echo "  Wrapper:  ~/.local/bin/lince-agent-wrapper"
 echo "  Viewport: ~/.local/bin/lince-viewport-placeholder  (tiled layout)"
 echo "  Defaults: ~/.config/lince-dashboard/agents-defaults.toml"
-echo "  Template: ~/.config/lince-dashboard/agents-template.toml"
-if [ -n "$SELECTED_LEVELS" ]; then
-    echo "  Levels:   $SELECTED_LEVELS (added to ~/.config/lince-dashboard/config.toml)"
-fi
+echo "  Template: ~/.config/lince-dashboard/agents-template.toml  (reference only)"
 echo "  Nono:     ~/.config/nono/profiles/lince-*.json  (deprecated)"
 echo "  Skills:   ~/.claude/skills/lince-add-supported-agent/"
 echo "            ~/.claude/skills/lince-configure/"
