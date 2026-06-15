@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""Recipe schema + validate + run-flow tests (blueprint §5).
+
+Validation cases assert each rule raises :class:`DataError` (exit 65). Run-flow
+cases drive the section-5 orchestration against ``FakeBackend`` — scripting step
+exec results with ``fake.on(...)`` and capture steps with an answering channel
+over a fake monotonic clock — so the whole flow runs with no VM and no real
+sleeping.
+
+Covered:
+
+* every validation rule → correct raise / exit code;
+* run-flow step ordering (provision → snapshot → copy_in → steps → assert);
+* assert-pass and assert-fail paths (exit_code, grid_contains, grid_absent);
+* copy_in path-bounds rejection (host_dir escaping the recipe dir);
+* file_exists assertion evaluated via the backend ``test -f`` builtin.
+
+Run with:
+    python3 lince-lab/tests/test_recipe.py
+"""
+
+import pathlib
+import sys
+import tempfile
+import unittest
+
+# Put the package dir (lince-lab/) on sys.path so absolute imports resolve.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+from lince_lab import capture as capture_mod  # noqa: E402
+from lince_lab import recipe as recipe_mod  # noqa: E402
+from lince_lab.backend import CaptureChannel, ExecResult  # noqa: E402
+from lince_lab.errors import DATA_ERROR, DataError  # noqa: E402
+from lince_lab.fake_backend import FakeBackend  # noqa: E402
+from lince_lab.recipe import (  # noqa: E402
+    BASE_SNAPSHOT_TAG,
+    Recipe,
+    load_recipe,
+    run_recipe,
+    validate,
+)
+
+# A minimal config with an image allowlist that recipes may reference.
+CONFIG = {
+    "vm": {"cpus": 2, "memory": "2GiB", "disk": "20GiB"},
+    "images": {
+        "fedora": {"location": "https://example/Fedora.qcow2", "arch": "x86_64", "digest": ""},
+    },
+}
+
+
+def make_recipe(source_dir: pathlib.Path, **overrides) -> Recipe:
+    """Build a valid baseline :class:`Recipe`; ``overrides`` replace fields."""
+    base = {
+        "name": "demo",
+        "description": "demo recipe",
+        "version": "1",
+        "vm": {"image": "fedora", "cpus": 2, "memory": "2GiB", "disk": "20GiB"},
+        "network": {"mode": "deny", "allow_hosts": [], "allow_ports": []},
+        "workspace": {"host_dir": ".", "guest_dir": "/work"},
+        "assertions": {"exit_code": 0},
+        "provision": [],
+        "steps": [],
+        "sync": {},
+        "source_dir": source_dir,
+    }
+    base.update(overrides)
+    return Recipe(**base)
+
+
+# ── a clock + answering capture channel for capture-step tests ───────────────
+
+
+class FakeClock:
+    """A monotonic clock advanced explicitly by the answering channel."""
+
+    def __init__(self) -> None:
+        self.t = 1000.0
+
+    def monotonic(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        self.t += dt
+
+
+class AnsweringChannel(CaptureChannel):
+    """Answers ``takeSnapshot`` from a current text; silent otherwise.
+
+    On a ``takeSnapshot`` command the next ``read_line`` returns a ``snapshot``
+    event carrying ``text``. When no answer is pending, ``read_line`` advances
+    the clock to the deadline (event silence) and returns ``None`` — exactly the
+    condition ``wait_for_stable`` settles on. ``text`` may be updated to model the
+    screen changing between key batches.
+    """
+
+    def __init__(self, clock: FakeClock, text: str = "") -> None:
+        self._clock = clock
+        self.text = text
+        self._pending: list[dict] = []
+        self.sent: list[dict] = []
+        self.closed = False
+
+    def send_line(self, obj: dict) -> None:
+        self.sent.append(dict(obj))
+        if obj.get("type") == "takeSnapshot":
+            self._pending.append({"type": "snapshot", "data": {"cols": 80, "rows": 24, "text": self.text}})
+
+    def read_line(self, deadline: float):
+        if self._pending:
+            return self._pending.pop(0)
+        if self._clock.monotonic() < deadline:
+            self._clock.t = deadline
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class ValidateTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _assert_data_error(self, recipe: Recipe) -> None:
+        with self.assertRaises(DataError) as ctx:
+            validate(recipe, CONFIG)
+        self.assertEqual(ctx.exception.exit_code, DATA_ERROR)
+
+    def test_valid_recipe_passes(self) -> None:
+        validate(make_recipe(self.dir), CONFIG)  # no raise
+
+    def test_missing_recipe_table(self) -> None:
+        self._assert_data_error(make_recipe(self.dir, name=""))
+
+    def test_missing_vm_table(self) -> None:
+        self._assert_data_error(make_recipe(self.dir, vm={}))
+
+    def test_missing_workspace_table(self) -> None:
+        self._assert_data_error(make_recipe(self.dir, workspace={}))
+
+    def test_missing_assert_table(self) -> None:
+        self._assert_data_error(make_recipe(self.dir, assertions={}))
+
+    def test_assert_with_zero_assertions(self) -> None:
+        # An [assert] table that carries no recognized assertion key is invalid.
+        self._assert_data_error(make_recipe(self.dir, assertions={"comment": "noop"}))
+
+    def test_capture_step_without_sync(self) -> None:
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "drive", "capture": True, "program": ["app"], "keys": ["Enter"]}],
+            sync={},
+        )
+        self._assert_data_error(recipe)
+
+    def test_capture_step_with_sync_ok(self) -> None:
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "drive", "capture": True, "program": ["app"], "keys": ["Enter"]}],
+            sync={"wait_for": ["Ready"], "stable_ms": 100, "timeout_s": 5},
+        )
+        validate(recipe, CONFIG)  # no raise
+
+    def test_network_allow_with_empty_allowlist(self) -> None:
+        recipe = make_recipe(self.dir, network={"mode": "allow", "allow_hosts": [], "allow_ports": []})
+        self._assert_data_error(recipe)
+
+    def test_network_allow_with_allowlist_ok(self) -> None:
+        recipe = make_recipe(
+            self.dir,
+            network={"mode": "allow", "allow_hosts": ["registry.npmjs.org"], "allow_ports": [443]},
+        )
+        validate(recipe, CONFIG)  # no raise
+
+    def test_host_dir_escaping_recipe_dir(self) -> None:
+        recipe = make_recipe(self.dir, workspace={"host_dir": "../escape", "guest_dir": "/work"})
+        self._assert_data_error(recipe)
+
+    def test_host_dir_absolute_outside_rejected(self) -> None:
+        recipe = make_recipe(self.dir, workspace={"host_dir": "/etc", "guest_dir": "/work"})
+        self._assert_data_error(recipe)
+
+    def test_host_dir_subdir_ok(self) -> None:
+        recipe = make_recipe(self.dir, workspace={"host_dir": "./fixtures/clone", "guest_dir": "/work"})
+        validate(recipe, CONFIG)  # subdir under the recipe dir is allowed
+
+    def test_image_not_in_allowlist(self) -> None:
+        recipe = make_recipe(self.dir, vm={"image": "no-such-image", "cpus": 1})
+        self._assert_data_error(recipe)
+
+    def test_image_check_skipped_without_config(self) -> None:
+        # With no config the image allowlist cannot be checked; validation passes.
+        recipe = make_recipe(self.dir, vm={"image": "anything", "cpus": 1})
+        validate(recipe, config=None)  # no raise
+
+
+class LoadRecipeTest(unittest.TestCase):
+    def test_load_records_source_dir_and_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "r.toml"
+            path.write_text(
+                "[recipe]\nname='x'\ndescription='d'\nversion='1'\n"
+                "[vm]\nimage='fedora'\ncpus=2\n"
+                "[network]\nmode='deny'\n"
+                "[workspace]\nhost_dir='.'\nguest_dir='/work'\n"
+                "[[provision]]\nmode='system'\nscript='echo hi'\n"
+                "[[step]]\nname='s1'\nrun=['true']\n"
+                "[assert]\nexit_code=0\n",
+                encoding="utf-8",
+            )
+            recipe = load_recipe(path)
+            self.assertEqual(recipe.name, "x")
+            self.assertEqual(recipe.vm["image"], "fedora")
+            self.assertEqual(recipe.source_dir, path.resolve().parent)
+            self.assertEqual(len(recipe.provision), 1)
+            self.assertEqual(recipe.steps[0]["run"], ["true"])
+            self.assertFalse(recipe.has_capture_step())
+
+    def test_load_missing_file_raises_data_error(self) -> None:
+        with self.assertRaises(DataError):
+            load_recipe(pathlib.Path("/nonexistent/recipe.toml"))
+
+    def test_load_malformed_toml_raises_data_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "bad.toml"
+            path.write_text("this = = not toml ][", encoding="utf-8")
+            with self.assertRaises(DataError):
+                load_recipe(path)
+
+
+class RunFlowTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self._tmp.name)
+        self.backend = FakeBackend()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_run_flow_order_and_pass(self) -> None:
+        # Track the sequence of backend operations to assert ordering.
+        calls: list[str] = []
+        orig_exec = self.backend.exec
+        orig_snap = self.backend.snapshot_create
+        orig_copy = self.backend.copy_in
+
+        def rec_exec(name, argv, **kw):
+            calls.append(f"exec:{' '.join(argv)}")
+            return orig_exec(name, argv, **kw)
+
+        def rec_snap(name, tag):
+            calls.append(f"snapshot:{tag}")
+            return orig_snap(name, tag)
+
+        def rec_copy(name, host, guest, recursive=False):
+            calls.append(f"copy_in:{host}->{guest}")
+            return orig_copy(name, host, guest, recursive)
+
+        self.backend.exec = rec_exec  # type: ignore[method-assign]
+        self.backend.snapshot_create = rec_snap  # type: ignore[method-assign]
+        self.backend.copy_in = rec_copy  # type: ignore[method-assign]
+
+        recipe = make_recipe(
+            self.dir,
+            provision=[{"mode": "system", "script": "install deps"}],
+            steps=[{"name": "run-test", "run": ["make", "test"]}],
+            assertions={"exit_code": 0},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["sh", "-c", "install deps"], ExecResult(0, "", ""))
+        self.backend.on(vm_name, ["make", "test"], ExecResult(0, "passed", ""))
+
+        rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
+        self.assertEqual(rc, 0)
+
+        # Ordering: provision exec → base snapshot → copy_in → step exec.
+        i_prov = calls.index("exec:sh -c install deps")
+        i_snap = calls.index(f"snapshot:{BASE_SNAPSHOT_TAG}")
+        i_copy = next(i for i, c in enumerate(calls) if c.startswith("copy_in:"))
+        i_step = calls.index("exec:make test")
+        self.assertLess(i_prov, i_snap)
+        self.assertLess(i_snap, i_copy)
+        self.assertLess(i_copy, i_step)
+
+    def test_run_flow_deletes_vm_when_not_kept(self) -> None:
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "ok", "run": ["true"]}],
+            assertions={"exit_code": 0},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        rc = run_recipe(self.backend, recipe, CONFIG, keep=False)
+        self.assertEqual(rc, 0)
+        # The VM is gone after a non-kept run.
+        from lince_lab.backend import VmStatus
+
+        self.assertEqual(self.backend.status(vm_name).status, VmStatus.ABSENT)
+
+    def test_failing_step_returns_its_exit_code(self) -> None:
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "boom", "run": ["make", "test"]}],
+            assertions={"exit_code": 0},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["make", "test"], ExecResult(7, "", "fail"))
+        rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
+        self.assertEqual(rc, 7)
+
+    def test_exit_code_assert_mismatch_is_data_error(self) -> None:
+        # Step succeeds (exit 0) but the recipe asserts a nonzero code → 65.
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "ok", "run": ["true"]}],
+            assertions={"exit_code": 3},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
+        self.assertEqual(rc, DATA_ERROR)
+
+    def test_file_exists_assertion_pass(self) -> None:
+        # A step "installs" a file; the file_exists assertion then finds it.
+        def installer(fs, argv):
+            fs["/work/.config/lince/lince.toml"] = b"written"
+            return ExecResult(0, "", "")
+
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "install", "run": ["./install.sh"]}],
+            assertions={"exit_code": 0, "file_exists": ["/work/.config/lince/lince.toml"]},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["./install.sh"], installer)
+        rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
+        self.assertEqual(rc, 0)
+
+    def test_file_exists_assertion_fail(self) -> None:
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "noop", "run": ["true"]}],
+            assertions={"exit_code": 0, "file_exists": ["/work/never-created"]},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        with self.assertRaises(DataError):
+            run_recipe(self.backend, recipe, CONFIG, keep=True)
+
+    def test_copy_in_path_bounds_rejected_at_runtime(self) -> None:
+        # A recipe whose host_dir escapes the recipe dir is refused before copy_in.
+        # validate() also catches this; here we bypass validate by asserting on a
+        # workspace whose host_dir is valid for validate but the run guard still
+        # re-checks — use an absolute escaping path which both layers reject.
+        recipe = make_recipe(
+            self.dir,
+            workspace={"host_dir": "/etc/passwd", "guest_dir": "/work"},
+            steps=[{"name": "noop", "run": ["true"]}],
+            assertions={"exit_code": 0},
+        )
+        with self.assertRaises(DataError):
+            run_recipe(self.backend, recipe, CONFIG, keep=True)
+
+    def test_grid_contains_and_absent_pass(self) -> None:
+        clock = FakeClock()
+        orig_monotonic = capture_mod.time.monotonic
+        capture_mod.time.monotonic = clock.monotonic
+        try:
+            channel = AnsweringChannel(clock, text="Configuration written\nenabled_agents")
+            recipe = make_recipe(
+                self.dir,
+                steps=[
+                    {
+                        "name": "drive",
+                        "capture": True,
+                        "program": ["lince-config", "quickstart"],
+                        "size": "80x24",
+                        "keys": ["Enter"],
+                    }
+                ],
+                sync={"wait_for": ["Configuration written"], "stable_ms": 50, "timeout_s": 5},
+                assertions={
+                    "grid_contains": ["Configuration written", "enabled_agents"],
+                    "grid_absent": ["Traceback"],
+                },
+            )
+            vm_name = recipe_mod._vm_name(recipe)
+            self.backend.script_capture(vm_name, channel)
+            rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
+            self.assertEqual(rc, 0)
+            # The Enter key was injected through the capture channel.
+            self.assertIn({"type": "sendKeys", "keys": ["Enter"]}, channel.sent)
+        finally:
+            capture_mod.time.monotonic = orig_monotonic
+
+    def test_grid_absent_violation_fails(self) -> None:
+        clock = FakeClock()
+        orig_monotonic = capture_mod.time.monotonic
+        capture_mod.time.monotonic = clock.monotonic
+        try:
+            channel = AnsweringChannel(clock, text="Traceback (most recent call last)")
+            recipe = make_recipe(
+                self.dir,
+                steps=[
+                    {
+                        "name": "drive",
+                        "capture": True,
+                        "program": ["app"],
+                        "size": "80x24",
+                        "keys": [],
+                    }
+                ],
+                sync={"wait_for": [], "stable_ms": 50, "timeout_s": 5},
+                assertions={"grid_absent": ["Traceback"]},
+            )
+            vm_name = recipe_mod._vm_name(recipe)
+            self.backend.script_capture(vm_name, channel)
+            with self.assertRaises(DataError):
+                run_recipe(self.backend, recipe, CONFIG, keep=True)
+        finally:
+            capture_mod.time.monotonic = orig_monotonic
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
