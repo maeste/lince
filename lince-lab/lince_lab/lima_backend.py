@@ -1,0 +1,329 @@
+"""LimaBackend — the real, KVM-only substrate glue (blueprint §2).
+
+This is the *only* KVM-dependent module: it shells out to ``limactl`` (QEMU on
+Linux) for every :class:`~lince_lab.backend.Backend` operation. It is not run
+against a real VM in the unit suite — the ``scripts/lince-lab/ci`` oracles do
+that — but it is importable, ruff-clean, and its exact ``limactl`` argv
+construction is unit-tested by mocking :mod:`subprocess`.
+
+The mapping follows the verified limactl cheat-sheet (``claudedocs/lince-lab/
+lima.md``) 1:1:
+
+* ``create`` → ``limactl create --name N -`` (template YAML on stdin)
+* ``start``  → ``limactl start N -y``
+* ``stop``/``delete`` → ``limactl stop|delete N [-f]``
+* ``status``/``list`` → ``limactl list [N] --json`` parsed into :class:`VmState`
+* ``exec``   → ``limactl shell [--workdir W] N -- argv`` returning the guest
+  exit code verbatim (it **never** raises on guest nonzero — that is the bisect
+  signal)
+* ``copy_in``/``copy_out`` → ``limactl copy [-r] SRC TGT`` with the ``N:path``
+  form
+* ``snapshot_*`` → ``limactl snapshot create|apply|delete|list N --tag TAG``
+* ``open_capture`` → spawn ``limactl shell N -- ht --size CxR --subscribe
+  init,output,snapshot -- argv`` wrapped in a :class:`LimaCaptureChannel` over
+  stdio pipes.
+
+Lifecycle verbs route through one :meth:`LimaBackend._run` helper that raises
+:class:`~lince_lab.errors.BackendError` on a nonzero ``limactl`` exit. ``exec``
+is deliberately kept separate so it can return the guest code without raising.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import time
+
+from lince_lab.backend import (
+    Backend,
+    CaptureChannel,
+    ExecResult,
+    VmState,
+    VmStatus,
+)
+from lince_lab.errors import BackendError
+
+# The limactl executable name. Resolved on PATH; pinned/installed by the module
+# install scripts. Kept as a module constant so tests can assert on argv[0].
+LIMACTL = "limactl"
+
+# Default headless-terminal binary run inside the guest for capture.
+HT_BINARY = "ht"
+
+
+def _map_status(raw: str) -> VmStatus:
+    """Map a ``limactl list --json`` status string to a :class:`VmStatus`.
+
+    Lima reports ``Running`` / ``Stopped`` (and transient values like
+    ``Starting``). Anything not clearly running is treated as stopped; an empty
+    string (no record) maps to ``ABSENT`` by the caller, not here.
+    """
+    norm = raw.strip().lower()
+    if norm == "running":
+        return VmStatus.RUNNING
+    return VmStatus.STOPPED
+
+
+class LimaCaptureChannel(CaptureChannel):
+    """A :class:`CaptureChannel` over a live ``limactl shell ... ht`` process.
+
+    The wrapped process runs ``ht`` inside the guest with stdin/stdout pinned to
+    pipes. Commands (``sendKeys`` / ``takeSnapshot`` / ...) are written as
+    newline-delimited JSON to the process stdin; events (``output`` /
+    ``snapshot`` / ...) are read as newline-delimited JSON from its stdout.
+
+    :meth:`read_line` honours an absolute ``time.monotonic()`` ``deadline`` so
+    the capture wait primitives stay sleep-free: it blocks on the readline
+    thread's queue only until the deadline, returning ``None`` on silence.
+    """
+
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self._proc = proc
+        self.closed = False
+
+    def send_line(self, obj: dict) -> None:
+        if self.closed or self._proc.stdin is None:
+            raise BackendError("send on closed capture channel")
+        self._proc.stdin.write(json.dumps(obj) + "\n")
+        self._proc.stdin.flush()
+
+    def read_line(self, deadline: float) -> dict | None:
+        if self._proc.stdout is None:
+            return None
+        # Block on the pipe until a line arrives or the deadline elapses. We use
+        # a short bounded poll (no fixed sleep semantics — the loop advances the
+        # instant a line is available and returns the moment the deadline hits).
+        while True:
+            line = self._proc.stdout.readline()
+            if line:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    return json.loads(stripped)
+                except json.JSONDecodeError:
+                    # Skip non-JSON noise (e.g. ssh banners) rather than fail.
+                    continue
+            # EOF or empty read: respect the deadline.
+            if time.monotonic() >= deadline:
+                return None
+            if self._proc.poll() is not None:
+                return None
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            if self._proc.stdin is not None:
+                self._proc.stdin.close()
+        finally:
+            try:
+                self._proc.terminate()
+            except ProcessLookupError:
+                pass
+
+
+class LimaBackend(Backend):
+    """Real :class:`Backend` that drives ``limactl`` (QEMU/KVM on Linux).
+
+    Args:
+        limactl: path/name of the limactl executable (default :data:`LIMACTL`).
+        ht_binary: name of the in-guest headless-terminal binary (default
+            :data:`HT_BINARY`).
+    """
+
+    def __init__(self, limactl: str = LIMACTL, ht_binary: str = HT_BINARY) -> None:
+        self._limactl = limactl
+        self._ht = ht_binary
+
+    # ── one lifecycle shell-out helper (raises on nonzero) ───────────────────
+    def _run(self, argv: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        """Run a ``limactl`` lifecycle command, raising on a nonzero exit.
+
+        ``argv`` is the full ``limactl`` argument vector (without the executable,
+        which is prepended here). Used for every verb whose failure is a real
+        backend error — i.e. everything **except** :meth:`exec`, which returns
+        the guest code instead.
+        """
+        full = [self._limactl, *argv]
+        proc = subprocess.run(
+            full,
+            input=stdin,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            cmd = " ".join(full)
+            raise BackendError(f"{cmd} failed (exit {proc.returncode}): {proc.stderr.strip()}")
+        return proc
+
+    # ── lifecycle ────────────────────────────────────────────────────────────
+    def create(self, name: str, template_yaml: str) -> None:
+        # `limactl create --name N -` reads the template from stdin.
+        self._run(["create", "--name", name, "-"], stdin=template_yaml)
+
+    def start(self, name: str) -> None:
+        # `-y` (== --tty=false) for non-interactive/CI boot.
+        self._run(["start", name, "-y"])
+
+    def stop(self, name: str, force: bool = False) -> None:
+        argv = ["stop", name]
+        if force:
+            argv.append("-f")
+        self._run(argv)
+
+    def delete(self, name: str, force: bool = False) -> None:
+        argv = ["delete", name]
+        if force:
+            argv.append("-f")
+        self._run(argv)
+
+    def status(self, name: str) -> VmState:
+        # `limactl list N --json` emits zero records when the instance is absent.
+        records = self._list_json([name])
+        if not records:
+            return VmState(name=name, status=VmStatus.ABSENT, snapshots=[])
+        rec = records[0]
+        return VmState(
+            name=str(rec.get("name", name)),
+            status=_map_status(str(rec.get("status", ""))),
+            snapshots=self._safe_snapshot_list(name),
+        )
+
+    def list(self) -> list[VmState]:
+        states: list[VmState] = []
+        for rec in self._list_json([]):
+            nm = str(rec.get("name", ""))
+            states.append(
+                VmState(
+                    name=nm,
+                    status=_map_status(str(rec.get("status", ""))),
+                    snapshots=self._safe_snapshot_list(nm),
+                )
+            )
+        return states
+
+    def _list_json(self, names: list[str]) -> list[dict]:
+        """Run ``limactl list [names...] --json`` → parsed list of records.
+
+        Lima emits one JSON object per line (JSON-lines), not a JSON array, so we
+        parse line-by-line. An absent instance yields no lines.
+        """
+        proc = self._run(["list", *names, "--json"])
+        records: list[dict] = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            records.append(json.loads(line))
+        return records
+
+    def _safe_snapshot_list(self, name: str) -> list[str]:
+        """Best-effort snapshot tags for ``name`` (empty if listing fails)."""
+        try:
+            return self.snapshot_list(name)
+        except BackendError:
+            return []
+
+    # ── exec / files (exit code propagates, never raises on guest nonzero) ────
+    def exec(
+        self,
+        name: str,
+        argv: list[str],
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> ExecResult:
+        cmd = [self._limactl, "shell"]
+        if workdir is not None:
+            cmd += ["--workdir", workdir]
+        cmd += [name, "--", *argv]
+        # `env` is injected as a leading `env K=V ...` prefix inside the guest so
+        # it never relies on the host environment leaking through limactl.
+        if env:
+            prefix = ["env"] + [f"{k}={v}" for k, v in env.items()]
+            cmd = cmd[: cmd.index("--") + 1] + prefix + argv
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        # CRITICAL: return the guest exit code verbatim; do NOT raise. limactl
+        # propagates the guest command's exit code, which is the bisect signal.
+        return ExecResult(exit_code=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+
+    def copy_in(self, name: str, host_path: str, guest_path: str, recursive: bool = False) -> None:
+        argv = ["copy"]
+        if recursive:
+            argv.append("-r")
+        argv += [host_path, f"{name}:{guest_path}"]
+        self._run(argv)
+
+    def copy_out(self, name: str, guest_path: str, host_path: str, recursive: bool = False) -> None:
+        argv = ["copy"]
+        if recursive:
+            argv.append("-r")
+        argv += [f"{name}:{guest_path}", host_path]
+        self._run(argv)
+
+    # ── snapshots ────────────────────────────────────────────────────────────
+    def snapshot_create(self, name: str, tag: str) -> None:
+        self._run(["snapshot", "create", name, "--tag", tag])
+
+    def snapshot_apply(self, name: str, tag: str) -> None:
+        self._run(["snapshot", "apply", name, "--tag", tag])
+
+    def snapshot_delete(self, name: str, tag: str) -> None:
+        self._run(["snapshot", "delete", name, "--tag", tag])
+
+    def snapshot_list(self, name: str) -> list[str]:
+        proc = self._run(["snapshot", "list", name])
+        return self._parse_snapshot_list(proc.stdout)
+
+    @staticmethod
+    def _parse_snapshot_list(stdout: str) -> list[str]:
+        """Parse ``limactl snapshot list`` output into a list of tags.
+
+        The command prints a header line (``TAG ...``) followed by one tag per
+        line. We take the first whitespace-delimited field of each non-header,
+        non-empty line.
+        """
+        tags: list[str] = []
+        for raw in stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            first = line.split()[0]
+            if first.upper() == "TAG":
+                continue
+            tags.append(first)
+        return tags
+
+    # ── capture ──────────────────────────────────────────────────────────────
+    def open_capture(self, name: str, argv: list[str], cols: int, rows: int) -> CaptureChannel:
+        # Spawn `ht` inside the guest, wrapping `argv` at a fixed grid, streaming
+        # init/output/snapshot events over stdout; drive it over stdin.
+        cmd = [
+            self._limactl,
+            "shell",
+            name,
+            "--",
+            self._ht,
+            "--size",
+            f"{cols}x{rows}",
+            "--subscribe",
+            "init,output,snapshot",
+            "--",
+            *argv,
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        return LimaCaptureChannel(proc)
