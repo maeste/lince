@@ -42,6 +42,7 @@ from lince_lab.broker import BrokerServer  # noqa: E402
 from lince_lab.client import BrokerClient  # noqa: E402
 from lince_lab.errors import BrokerUnreachable  # noqa: E402
 from lince_lab.fake_backend import FakeBackend  # noqa: E402
+from lince_lab.templates import egress_lockdown_argv  # noqa: E402
 
 CLI_PATH = PACKAGE_DIR / "lince-lab"
 GROUPS = ("vm", "run", "find", "watch", "lab")
@@ -148,6 +149,9 @@ class CliEndToEndTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.sock_path = str(pathlib.Path(self.tmp.name) / "lince-lab.sock")
         self.backend = FakeBackend()
+        # A bare `vm up` applies the DENY egress lock-down server-side; register it
+        # to succeed so the lifecycle round-trips proceed past `vm.start`.
+        self.backend.on(LAB_VM, egress_lockdown_argv([], []), ExecResult(0, "", ""))
         self.server = BrokerServer(self.sock_path, self.backend, config=_FAKE_CONFIG)
         self.server.bind()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

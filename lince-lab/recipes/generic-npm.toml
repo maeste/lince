@@ -30,7 +30,12 @@ allow_ports = [443]
 host_dir = "./fixtures/npm-smoke"
 guest_dir = "/work"
 
-# ── provisioning baked into the base snapshot ───────────────────────────────
+# ── provisioning (runs with network UP, before the egress lock-down) ─────────
+# The node toolchain is installed here while the VM is still freely networked
+# (provisioning is trusted setup). AFTER this, the broker applies the egress
+# lock-down resolved from this recipe's posture (allow → registry.npmjs.org:443
+# only) and snapshots base-clean. The runtime `npm install` step then fetches
+# under that allowlist; everything else stays denied.
 [[provision]]
 mode = "system"
 script = """

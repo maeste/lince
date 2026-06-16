@@ -51,6 +51,7 @@ from lince_lab.paths import slug_vm_name
 from lince_lab.recipe import (
     BASE_SNAPSHOT_TAG,
     Recipe,
+    apply_egress_lockdown,
     recipe_needs,
     run_steps_and_assert,
     step_timeout_of,
@@ -239,14 +240,23 @@ def _build_base_vm(
     config: dict[str, Any],
     vm_name: str,
 ) -> None:
-    """Create + start the persistent VM, provision it, and snapshot ``base-clean``."""
+    """Create + start the persistent VM, provision it, lock down egress, snapshot.
+
+    Provisioning runs with the network UP (the template boots networked — there is
+    no egress boot provision). The runtime egress lock-down is applied AFTER
+    provisioning and BEFORE the ``base-clean`` snapshot, so every per-candidate
+    reset restores an already-restricted VM and every recipe probe runs under the
+    recipe's posture. A lock-down failure fails the bisect build.
+    """
+    step_timeout = step_timeout_of(config)
     template_yaml = build_template(config, recipe_needs(recipe))
     backend.create(vm_name, template_yaml)
     backend.start(vm_name)
     for entry in recipe.provision:
         script = entry.get("script")
         if script:
-            backend.exec(vm_name, ["sh", "-c", str(script)])
+            backend.exec(vm_name, ["sh", "-c", str(script)], timeout=step_timeout)
+    apply_egress_lockdown(backend, vm_name, recipe, step_timeout=step_timeout)
     backend.snapshot_create(vm_name, BASE_SNAPSHOT_TAG)
 
 

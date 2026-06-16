@@ -39,6 +39,18 @@ from lince_lab.recipe import (  # noqa: E402
     run_recipe,
     validate,
 )
+from lince_lab.templates import egress_lockdown_argv  # noqa: E402
+
+
+def _register_lockdown(backend: FakeBackend, vm_name: str, allow_ips=None, allow_ports=None) -> None:
+    """Register the runtime egress lock-down exec to succeed on the Fake.
+
+    FakeBackend.exec returns 127 for an unregistered argv, which would make the
+    lock-down (applied after provision, before the steps/snapshot) fail and abort
+    the run. Real run-flow tests register it to return 0 so the lock-down is a
+    no-op success and the rest of the flow proceeds.
+    """
+    backend.on(vm_name, egress_lockdown_argv(allow_ips or [], allow_ports or []), ExecResult(0, "", ""))
 
 # A minimal config with an image allowlist that recipes may reference.
 CONFIG = {
@@ -248,8 +260,11 @@ class RunFlowTest(unittest.TestCase):
         orig_snap = self.backend.snapshot_create
         orig_copy = self.backend.copy_in
 
+        lockdown_argv = egress_lockdown_argv([], [])
+
         def rec_exec(name, argv, **kw):
-            calls.append(f"exec:{' '.join(argv)}")
+            tag = "lockdown" if list(argv) == lockdown_argv else " ".join(argv)
+            calls.append(f"exec:{tag}")
             return orig_exec(name, argv, **kw)
 
         def rec_snap(name, tag):
@@ -273,18 +288,25 @@ class RunFlowTest(unittest.TestCase):
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["sh", "-c", "install deps"], ExecResult(0, "", ""))
         self.backend.on(vm_name, ["make", "test"], ExecResult(0, "passed", ""))
+        _register_lockdown(self.backend, vm_name)
 
         rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
         self.assertEqual(rc, 0)
 
-        # Ordering: provision exec → base snapshot → copy_in → step exec.
+        # Ordering: provision exec → egress lock-down → base snapshot → copy_in →
+        # step exec. The lock-down runs with network up (after provision) and
+        # before the first step + the base snapshot, so the steps and every reset
+        # candidate run restricted.
         i_prov = calls.index("exec:sh -c install deps")
+        i_lock = calls.index("exec:lockdown")
         i_snap = calls.index(f"snapshot:{BASE_SNAPSHOT_TAG}")
         i_copy = next(i for i, c in enumerate(calls) if c.startswith("copy_in:"))
         i_step = calls.index("exec:make test")
-        self.assertLess(i_prov, i_snap)
+        self.assertLess(i_prov, i_lock)
+        self.assertLess(i_lock, i_snap)
         self.assertLess(i_snap, i_copy)
         self.assertLess(i_copy, i_step)
+        self.assertLess(i_lock, i_step)
 
     def test_run_flow_deletes_vm_when_not_kept(self) -> None:
         recipe = make_recipe(
@@ -294,6 +316,7 @@ class RunFlowTest(unittest.TestCase):
         )
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        _register_lockdown(self.backend, vm_name)
         rc = run_recipe(self.backend, recipe, CONFIG, keep=False)
         self.assertEqual(rc, 0)
         # The VM is gone after a non-kept run.
@@ -309,6 +332,7 @@ class RunFlowTest(unittest.TestCase):
         )
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["make", "test"], ExecResult(7, "", "fail"))
+        _register_lockdown(self.backend, vm_name)
         rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
         self.assertEqual(rc, 7)
 
@@ -321,6 +345,7 @@ class RunFlowTest(unittest.TestCase):
         )
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        _register_lockdown(self.backend, vm_name)
         rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
         self.assertEqual(rc, DATA_ERROR)
 
@@ -337,6 +362,7 @@ class RunFlowTest(unittest.TestCase):
         )
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["./install.sh"], installer)
+        _register_lockdown(self.backend, vm_name)
         rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
         self.assertEqual(rc, 0)
 
@@ -348,6 +374,7 @@ class RunFlowTest(unittest.TestCase):
         )
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        _register_lockdown(self.backend, vm_name)
         with self.assertRaises(DataError):
             run_recipe(self.backend, recipe, CONFIG, keep=True)
 
@@ -364,6 +391,54 @@ class RunFlowTest(unittest.TestCase):
         )
         with self.assertRaises(DataError):
             run_recipe(self.backend, recipe, CONFIG, keep=True)
+
+    def test_lockdown_failure_fails_the_run_before_steps(self) -> None:
+        # If the egress lock-down exec returns nonzero, the run must fail (a VM
+        # that can't enforce egress must not run the steps) and the step must
+        # never execute.
+        from lince_lab.errors import BackendError
+
+        step_ran = {"v": False}
+
+        def step_handler(fs, argv):
+            step_ran["v"] = True
+            return ExecResult(0, "", "")
+
+        recipe = make_recipe(
+            self.dir,
+            provision=[{"mode": "system", "script": "install deps"}],
+            steps=[{"name": "run-test", "run": ["make", "test"]}],
+            assertions={"exit_code": 0},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["sh", "-c", "install deps"], ExecResult(0, "", ""))
+        self.backend.on(vm_name, ["make", "test"], step_handler)
+        # Lock-down exec fails (nonzero) — left unregistered so the Fake returns 127.
+        with self.assertRaises(BackendError):
+            run_recipe(self.backend, recipe, CONFIG, keep=True)
+        self.assertFalse(step_ran["v"], "the step must not run when the lock-down failed")
+
+    def test_allow_recipe_locks_down_with_resolved_ips(self) -> None:
+        # An allow recipe resolves its hosts host-side and applies a host-scoped
+        # lock-down (ip daddr accept rules), not the deny drop-only one.
+        recipe = make_recipe(
+            self.dir,
+            network={"mode": "allow", "allow_hosts": ["registry.npmjs.org"], "allow_ports": [443]},
+            steps=[{"name": "fetch", "run": ["npm", "install"]}],
+            assertions={"exit_code": 0},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["npm", "install"], ExecResult(0, "", ""))
+        # Resolve deterministically (no real DNS) and register the resulting
+        # allow-posture lock-down argv to succeed.
+        orig = recipe_mod.resolve_allow_ips
+        recipe_mod.resolve_allow_ips = lambda hosts: ["104.16.11.34"] if hosts else []
+        try:
+            _register_lockdown(self.backend, vm_name, allow_ips=["104.16.11.34"], allow_ports=[443])
+            rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
+        finally:
+            recipe_mod.resolve_allow_ips = orig
+        self.assertEqual(rc, 0)
 
     def test_grid_contains_and_absent_pass(self) -> None:
         clock = FakeClock()
@@ -390,6 +465,7 @@ class RunFlowTest(unittest.TestCase):
             )
             vm_name = recipe_mod._vm_name(recipe)
             self.backend.script_capture(vm_name, channel)
+            _register_lockdown(self.backend, vm_name)
             rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
             self.assertEqual(rc, 0)
             # The Enter key was injected through the capture channel.
@@ -419,6 +495,7 @@ class RunFlowTest(unittest.TestCase):
             )
             vm_name = recipe_mod._vm_name(recipe)
             self.backend.script_capture(vm_name, channel)
+            _register_lockdown(self.backend, vm_name)
             with self.assertRaises(DataError):
                 run_recipe(self.backend, recipe, CONFIG, keep=True)
         finally:
@@ -448,6 +525,7 @@ class PresetWiringTest(unittest.TestCase):
         )
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        _register_lockdown(self.backend, vm_name)
         return recipe
 
     def test_step_timeout_s_reaches_exec(self) -> None:

@@ -28,10 +28,7 @@ import unittest
 # Put the package dir (lince-lab/) on sys.path so absolute imports resolve.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from unittest import mock  # noqa: E402
-
 from lince_lab import capture as capture_mod  # noqa: E402
-from lince_lab import templates as templates_mod  # noqa: E402
 from lince_lab.backend import CaptureChannel  # noqa: E402
 from lince_lab.capture import Capture, CaptureTimeout, Grid  # noqa: E402
 from lince_lab.templates import (  # noqa: E402
@@ -39,22 +36,6 @@ from lince_lab.templates import (  # noqa: E402
     NET_CUT_MARKER,
     build_template,
 )
-
-
-def _fake_getaddrinfo(mapping: dict[str, list[str]]):
-    """Build a ``socket.getaddrinfo`` stand-in resolving only ``mapping`` hosts.
-
-    A host present in ``mapping`` yields its listed IPs; anything else raises
-    ``OSError`` (models NXDOMAIN). No real DNS is ever touched.
-    """
-
-    def _resolver(host, *_args, **_kwargs):
-        ips = mapping.get(host)
-        if not ips:
-            raise OSError(f"name resolution failed for {host!r}")
-        return [(2, 1, 6, "", (ip, 0)) for ip in ips]
-
-    return _resolver
 
 
 class FakeClock:
@@ -234,7 +215,7 @@ class TemplateTestCase(unittest.TestCase):
             },
         }
 
-    def test_policy_forced_fields_and_net_cut(self) -> None:
+    def test_policy_forced_fields_and_no_boot_egress(self) -> None:
         text = build_template(self._config(), {"image": "fedora"})
         tmpl = json.loads(text)  # JSON is valid YAML; round-trips
         # Policy-forced isolation invariants.
@@ -248,57 +229,12 @@ class TemplateTestCase(unittest.TestCase):
         # Pinned image location + digest from the config allowlist.
         self.assertEqual(tmpl["images"][0]["location"], "https://example/Fedora-Cloud.qcow2")
         self.assertEqual(tmpl["images"][0]["digest"], "sha256:deadbeef")
-        # A boot provision that cuts egress (deny-by-default) is present.
-        boot = [p for p in tmpl["provision"] if p["mode"] == "boot"]
-        self.assertEqual(len(boot), 1)
-        script = boot[0]["script"]
-        self.assertIn(NET_CUT_MARKER, script)
-        self.assertNotIn(NET_ALLOW_MARKER, script)
-        # Fail-closed: a default-DROP egress policy (NOT a hardcoded NIC-down).
-        self.assertIn("policy drop", script)
-        self.assertNotIn("ip link set", script)
-        # Interface is detected dynamically; the old hardcoded NIC-down is gone.
-        self.assertNotIn("eth0 down", script)
-        self.assertIn("ip route show default", script)
-        # The critical drop is not swallowed by `|| true`, and set -e is on.
-        self.assertIn("set -e", script)
-        self.assertNotIn("policy drop ; }' 2>/dev/null || true", script)
-        # No any-host accept rule may exist in the deny posture.
-        self.assertNotIn("tcp dport", script)
-
-    def test_allowlist_emits_host_scoped_rule_not_cut(self) -> None:
-        needs = {"image": "fedora", "allow_hosts": ["registry.npmjs.org"], "allow_ports": [443]}
-        resolver = _fake_getaddrinfo({"registry.npmjs.org": ["104.16.11.34"]})
-        with mock.patch.object(templates_mod.socket, "getaddrinfo", resolver):
-            tmpl = json.loads(build_template(self._config(), needs))
-        boot = [p for p in tmpl["provision"] if p["mode"] == "boot"][0]
-        script = boot["script"]
-        # Allowlist posture replaces the hard net-cut.
-        self.assertIn(NET_ALLOW_MARKER, script)
-        self.assertNotIn(NET_CUT_MARKER, script)
-        # Host-scoped accept: pinned destination IP + port. NEVER any-host.
-        self.assertIn("ip daddr 104.16.11.34 tcp dport 443 accept", script)
-        # No bare any-host `dport <p> accept` rule may exist.
-        self.assertNotIn("output tcp dport 443 accept", script)
-        # Still fail-closed: a default-DROP policy underlies the allowlist.
-        self.assertIn("policy drop", script)
-        self.assertNotIn("ip link set", script)
-
-    def test_allowlist_unresolvable_host_fails_closed_to_cut(self) -> None:
-        # An allow recipe whose hosts all fail DNS must NOT widen to any-host: it
-        # falls back to the hard deny-by-default cut (drop-only).
-        needs = {"image": "fedora", "allow_hosts": ["nope.invalid"], "allow_ports": [443]}
-        resolver = _fake_getaddrinfo({})  # nothing resolves
-        with mock.patch.object(templates_mod.socket, "getaddrinfo", resolver):
-            tmpl = json.loads(build_template(self._config(), needs))
-        boot = [p for p in tmpl["provision"] if p["mode"] == "boot"][0]
-        script = boot["script"]
-        # Fail-closed: the cut posture, no allow rules, no any-host accept.
-        self.assertIn(NET_CUT_MARKER, script)
-        self.assertNotIn(NET_ALLOW_MARKER, script)
-        self.assertNotIn("ip daddr", script)
-        self.assertNotIn("tcp dport", script)
-        self.assertIn("policy drop", script)
+        # The VM boots networked: NO boot egress provision is baked into the
+        # template (egress is restricted at runtime, after provisioning).
+        self.assertEqual([p for p in tmpl.get("provision", []) if p.get("mode") == "boot"], [])
+        self.assertNotIn(NET_CUT_MARKER, text)
+        self.assertNotIn(NET_ALLOW_MARKER, text)
+        self.assertNotIn("policy drop", text)
 
     def test_resource_override_from_needs(self) -> None:
         needs = {"image": "fedora", "cpus": 4, "memory": "8GiB", "disk": "40GiB"}

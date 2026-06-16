@@ -31,7 +31,11 @@ allow_ports = []
 host_dir = "./fixtures/lince-clone"
 guest_dir = "/work"
 
-# ── provisioning baked into the base snapshot ───────────────────────────────
+# ── provisioning (runs with network UP, before the egress lock-down) ─────────
+# Provisioning is trusted setup: the VM boots networked, these scripts install
+# tooling, THEN the broker applies the egress lock-down (deny — this recipe needs
+# no runtime egress) and snapshots base-clean. So `dnf install` / fetching `ht`
+# succeed here even though the wizard step itself runs network-denied.
 [[provision]]
 mode = "system"
 script = """
@@ -40,7 +44,7 @@ set -eux
 # Toolchain the lince quickstart + the `ht` capture driver need in-guest.
 dnf install -y git python3 python3-pip
 # `ht` (headless terminal) drives the capture step; pin a known release.
-curl -fsSL -o /usr/local/bin/ht https://github.com/andyk/ht/releases/download/v0.3.0/ht-x86_64-unknown-linux-gnu
+curl -fsSL -o /usr/local/bin/ht https://github.com/andyk/ht/releases/download/v0.4.0/ht-x86_64-unknown-linux-musl
 chmod +x /usr/local/bin/ht
 """
 

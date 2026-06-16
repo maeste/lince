@@ -30,7 +30,7 @@ from lince_lab.backend import Backend
 from lince_lab.capture import Capture, Grid
 from lince_lab.errors import BackendError, DataError
 from lince_lab.paths import parse_size, resolves_under, slug_vm_name
-from lince_lab.templates import build_template, resolve_allow_ips
+from lince_lab.templates import build_template, egress_lockdown_argv, resolve_allow_ips
 
 # Snapshot tag baked after provisioning so retries / bisect can reset cheaply.
 BASE_SNAPSHOT_TAG = "base-clean"
@@ -179,12 +179,18 @@ def run_recipe(
     The section-5 flow:
 
     1. :func:`validate` (fail-fast).
-    2. Build the policy-forced template, ``create`` + ``start`` the VM.
-    3. Run ``[[provision]]`` then ``snapshot_create(BASE_SNAPSHOT_TAG)``.
+    2. Build the policy-forced template (no egress boot provision — the VM boots
+       networked), ``create`` + ``start`` the VM.
+    3. Run ``[[provision]]`` with the network UP (trusted toolchain setup), THEN
+       apply the runtime egress lock-down (:func:`apply_egress_lockdown`) — a
+       nonzero lock-down exit fails the run — THEN
+       ``snapshot_create(BASE_SNAPSHOT_TAG)`` so every reset candidate is already
+       restricted.
     4. ``copy_in`` the workspace ``host_dir`` → ``guest_dir`` (policy-bounded).
-    5. For each ``[[step]]``: a ``capture`` step opens a channel and, for each key
-       batch, waits for the configured substring, waits for the grid to settle,
-       then ``send_keys``; an ``exec`` step runs its argv capturing the exit code.
+    5. For each ``[[step]]`` (now running under the egress lock-down): a
+       ``capture`` step opens a channel and, for each key batch, waits for the
+       configured substring, waits for the grid to settle, then ``send_keys``; an
+       ``exec`` step runs its argv capturing the exit code.
     6. Evaluate ``[assert]`` (exit_code match; ``grid_contains`` / ``grid_absent``
        against the final settled grid; ``file_exists`` via ``test -f``).
     7. Return 0 if every assertion passes, else the failing exit code. The VM is
@@ -212,12 +218,17 @@ def run_recipe(
     backend.create(vm_name, template_yaml)
     backend.start(vm_name)
     try:
-        # 3. provision → base snapshot.
+        # 3. provision (network UP — trusted setup) → egress lock-down → snapshot.
+        # The template boots networked so provisioning can install tooling
+        # (ht / node / git / ...); the egress lock-down is applied AFTER provision
+        # and BEFORE the snapshot so every reset candidate runs restricted, and
+        # BEFORE the (untrusted) recipe steps. A lock-down failure fails the run.
         for entry in recipe.provision:
             script = entry.get("script")
             if not script:
                 continue
             backend.exec(vm_name, ["sh", "-c", str(script)], timeout=step_timeout)
+        apply_egress_lockdown(backend, vm_name, recipe, step_timeout=step_timeout)
         backend.snapshot_create(vm_name, BASE_SNAPSHOT_TAG)
 
         # 4. stage the single workspace dir (policy-bounded host_dir).
@@ -320,6 +331,56 @@ def recipe_needs(recipe: Recipe) -> dict[str, Any]:
         needs["allow_ports"] = list(recipe.network.get("allow_ports") or [])
         needs["allow_ips"] = resolve_allow_ips(allow_hosts)
     return needs
+
+
+def lockdown_posture(recipe: Recipe) -> tuple[list[str], list[int]]:
+    """Resolve the runtime egress lock-down posture for ``recipe``.
+
+    Returns ``(allow_ips, allow_ports)`` to hand to
+    :func:`~lince_lab.templates.egress_lockdown_argv`:
+
+    * ``mode = "deny"`` (the default) → ``([], [])``: a drop-only lock-down
+      (deny-by-default; only loopback + established/related survive).
+    * ``mode = "allow"`` → the declared ``allow_hosts`` are resolved to IPs
+      **host-side** (fail-closed: a host that does not resolve is dropped, never
+      widened to any-host) paired with the declared ``allow_ports``. If *zero*
+      hosts resolve the posture fails closed to deny (``([], [])``), matching the
+      template/egress-log behaviour.
+    """
+    if recipe.network.get("mode") != "allow":
+        return [], []
+    allow_hosts = list(recipe.network.get("allow_hosts") or [])
+    allow_ports = [int(p) for p in (recipe.network.get("allow_ports") or [])]
+    allow_ips = resolve_allow_ips(allow_hosts)
+    if not allow_ips:
+        # Fail-closed: an allow recipe whose hosts all failed DNS becomes a deny
+        # lock-down (never any-host).
+        return [], []
+    return allow_ips, allow_ports
+
+
+def apply_egress_lockdown(
+    backend: Backend,
+    vm_name: str,
+    recipe: Recipe,
+    *,
+    step_timeout: float | None = None,
+) -> None:
+    """Apply the runtime egress lock-down to a provisioned, network-up VM.
+
+    Resolves the recipe's posture (:func:`lockdown_posture`) and runs the nft
+    lock-down script via ``backend.exec(vm, egress_lockdown_argv(...))`` while the
+    network is still up (so the script can still install ``nft`` if needed). A
+    nonzero exit raises :class:`~lince_lab.errors.BackendError`: a VM that cannot
+    enforce egress must NOT go on to run the (now-untrusted) recipe steps.
+    """
+    allow_ips, allow_ports = lockdown_posture(recipe)
+    result = backend.exec(vm_name, egress_lockdown_argv(allow_ips, allow_ports), timeout=step_timeout)
+    if result.exit_code != 0:
+        raise BackendError(
+            f"egress lock-down failed on {vm_name} (exit {result.exit_code}): "
+            f"{result.stderr.strip() or 'no detail'}; refusing to run steps unprotected"
+        )
 
 
 def effective_egress(recipe: Recipe) -> dict[str, Any]:

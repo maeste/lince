@@ -32,6 +32,18 @@ from lince_lab.backend import ExecResult, VmStatus  # noqa: E402
 from lince_lab.bisect import Verdict, run_bisect  # noqa: E402
 from lince_lab.fake_backend import FakeBackend  # noqa: E402
 from lince_lab.recipe import BASE_SNAPSHOT_TAG, Recipe  # noqa: E402
+from lince_lab.templates import egress_lockdown_argv  # noqa: E402
+
+
+def _register_lockdown(backend: FakeBackend, vm_name: str, allow_ips=None, allow_ports=None) -> None:
+    """Register the runtime egress lock-down exec to succeed on the Fake.
+
+    `_build_base_vm` applies the egress lock-down after provisioning and before
+    the base-clean snapshot via `backend.exec(vm, egress_lockdown_argv(...))`; the
+    Fake returns 127 for an unregistered argv, so the owns-base-VM bisect path
+    registers it to return 0.
+    """
+    backend.on(vm_name, egress_lockdown_argv(allow_ips or [], allow_ports or []), ExecResult(0, "", ""))
 
 CONFIG = {
     "vm": {"cpus": 2, "memory": "2GiB", "disk": "20GiB"},
@@ -242,6 +254,9 @@ class ResetAndIntegrationTest(unittest.TestCase):
         # Provision exec for the base build; "make test" verdict is seeded from a
         # regression marker the Fake filesystem carries from c4 onward.
         self.backend.on(vm_name, ["sh", "-c", "install deps"], ExecResult(0, "", ""))
+        # The base build applies the deny egress lock-down after provision, before
+        # the base-clean snapshot.
+        _register_lockdown(self.backend, vm_name)
 
         # The injected commit provider also records which sha is "active" so the
         # seeded `make test` handler can decide good/bad. copy_in writes a marker
@@ -295,12 +310,45 @@ class ResetAndIntegrationTest(unittest.TestCase):
         # The persistent VM is deleted after the run (keep defaults False).
         self.assertEqual(self.backend.status(vm_name).status, VmStatus.ABSENT)
 
+    def test_build_base_vm_locks_down_before_snapshot(self) -> None:
+        # _build_base_vm provisions (network up), applies the egress lock-down,
+        # then snapshots base-clean — so every reset candidate runs restricted.
+        recipe = make_recipe(self.dir)
+        vm_name = bisect_mod._bisect_vm_name(recipe)
+        self.backend.on(vm_name, ["sh", "-c", "install deps"], ExecResult(0, "", ""))
+        _register_lockdown(self.backend, vm_name)
+
+        calls: list[str] = []
+        lockdown_argv = egress_lockdown_argv([], [])
+        orig_exec = self.backend.exec
+        orig_snap = self.backend.snapshot_create
+
+        def rec_exec(name, argv, **kw):
+            calls.append("lockdown" if list(argv) == lockdown_argv else f"exec:{' '.join(argv)}")
+            return orig_exec(name, argv, **kw)
+
+        def rec_snap(name, tag):
+            calls.append(f"snapshot:{tag}")
+            return orig_snap(name, tag)
+
+        self.backend.exec = rec_exec  # type: ignore[method-assign]
+        self.backend.snapshot_create = rec_snap  # type: ignore[method-assign]
+
+        bisect_mod._build_base_vm(self.backend, recipe, CONFIG, vm_name)
+
+        i_prov = calls.index("exec:sh -c install deps")
+        i_lock = calls.index("lockdown")
+        i_snap = calls.index(f"snapshot:{BASE_SNAPSHOT_TAG}")
+        self.assertLess(i_prov, i_lock)
+        self.assertLess(i_lock, i_snap)
+
     def test_base_snapshot_created_and_vm_kept(self) -> None:
         candidates = ["c1", "c2"]
         recipe = make_recipe(self.dir)
         vm_name = bisect_mod._bisect_vm_name(recipe)
         self.backend.on(vm_name, ["sh", "-c", "install deps"], ExecResult(0, "", ""))
         self.backend.on(vm_name, ["make", "test"], ExecResult(0, "ok", ""))
+        _register_lockdown(self.backend, vm_name)
 
         run_bisect(
             self.backend,

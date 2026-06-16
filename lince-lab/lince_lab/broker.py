@@ -33,13 +33,13 @@ from lince_lab import protocol
 from lince_lab.backend import Backend, ExecResult, VmState
 from lince_lab.capture import Capture
 from lince_lab.config import apply_preset
-from lince_lab.errors import DataError, LabError
+from lince_lab.errors import BackendError, DataError, LabError
 from lince_lab.paths import VM_NAME_PREFIX, parse_size
 from lince_lab.policy import artifacts_root
 from lince_lab.policy import check as policy_check
 from lince_lab.policy import check_capture as policy_check_capture
 from lince_lab.recipe import Recipe, effective_egress, load_recipe, run_recipe, validate
-from lince_lab.templates import build_template
+from lince_lab.templates import build_template, egress_lockdown_argv
 
 
 class BrokerServer:
@@ -286,7 +286,21 @@ class BrokerServer:
         return {"created": args["name"]}
 
     def _h_start(self, args: dict[str, Any]) -> dict[str, Any]:
+        # A bare `vm up` (vm.start verb) boots a networked VM, then is locked down
+        # DENY-by-default: only loopback + established/related (Lima SSH) survive,
+        # no agent-initiated egress. This is the server-applied, never
+        # client-chosen, deny posture an interactive `vm up` gets — so oracle 01's
+        # network-off probe passes. run_recipe / _build_base_vm call
+        # backend.start() DIRECTLY (not this verb), so their provisioning keeps
+        # network up and they apply their own (recipe-posture) lock-down after
+        # provisioning — they are unaffected by this deny default.
         self.backend.start(args["name"])
+        result = self.backend.exec(args["name"], egress_lockdown_argv([], []))
+        if result.exit_code != 0:
+            raise BackendError(
+                f"egress lock-down failed on {args['name']} (exit {result.exit_code}): "
+                f"{result.stderr.strip() or 'no detail'}"
+            )
         return {"started": args["name"]}
 
     def _h_stop(self, args: dict[str, Any]) -> dict[str, Any]:

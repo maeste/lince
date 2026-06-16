@@ -29,7 +29,11 @@ allow_ports = []
 host_dir = "./fixtures/lince-clone"
 guest_dir = "/work"
 
-# ── provisioning baked into the base snapshot ───────────────────────────────
+# ── provisioning (runs with network UP, before the egress lock-down) ─────────
+# Provisioning is trusted setup: the toolchain is installed here while the VM is
+# still networked, THEN the broker applies the egress lock-down (deny — the
+# installer is local, no runtime egress) and snapshots base-clean. So `dnf
+# install` succeeds here even though the install.sh steps themselves run denied.
 [[provision]]
 mode = "system"
 script = """

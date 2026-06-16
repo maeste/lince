@@ -43,8 +43,20 @@ from lince_lab.errors import (  # noqa: E402
 )
 from lince_lab.backend import ExecResult  # noqa: E402
 from lince_lab.fake_backend import FakeBackend  # noqa: E402
+from lince_lab.templates import egress_lockdown_argv  # noqa: E402
 
 LAB_VM = "lince-lab-demo"
+
+
+def _register_lockdown(backend: FakeBackend, vm_name: str, allow_ips=None, allow_ports=None) -> None:
+    """Register the runtime egress lock-down exec to succeed on the Fake.
+
+    `_h_start` (a bare vm.start) and recipe.run both apply the lock-down via
+    `backend.exec(vm, egress_lockdown_argv(...))`; the Fake returns 127 for an
+    unregistered argv (which would fail the start/run), so tests that exercise a
+    successful start/run register it to return 0.
+    """
+    backend.on(vm_name, egress_lockdown_argv(allow_ips or [], allow_ports or []), ExecResult(0, "", ""))
 
 
 class CodecTests(unittest.TestCase):
@@ -103,6 +115,9 @@ class _ServerFixture(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.sock_path = str(pathlib.Path(self.tmp.name) / "lince-lab.sock")
         self.backend = FakeBackend()
+        # A bare vm.start applies the DENY egress lock-down server-side; register
+        # it to succeed so the lifecycle round-trips proceed past `vm.start`.
+        _register_lockdown(self.backend, LAB_VM)
         self.server = BrokerServer(self.sock_path, self.backend, config=_FAKE_CONFIG)
         self.server.bind()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -158,6 +173,31 @@ class RoundTripTests(_ServerFixture):
         # successful response and is the oracle/bisect signal.
         self.assertEqual(result["exit_code"], 1)
         self.assertEqual(result["stderr"], "boom")
+
+    def test_bare_start_applies_deny_lockdown(self):
+        # A bare vm.start (the `vm up` verb) must apply the DENY egress lock-down
+        # server-side: the Fake records the `sudo sh -c <nft script>` exec, the
+        # script is the deny (drop-only) posture, and it keeps Lima SSH alive via
+        # established/related. The lock-down is server-applied, never client-chosen.
+        seen: list[list[str]] = []
+        orig_exec = self.backend.exec
+
+        def rec_exec(name, argv, **kw):
+            seen.append(list(argv))
+            return orig_exec(name, argv, **kw)
+
+        self.backend.exec = rec_exec  # type: ignore[method-assign]
+        with self.client() as c:
+            c.call("vm.create", {"name": LAB_VM})
+            c.call("vm.start", {"name": LAB_VM})
+        deny_argv = egress_lockdown_argv([], [])
+        self.assertIn(deny_argv, seen)
+        script = deny_argv[3]
+        self.assertIn("policy drop", script)
+        self.assertIn("ct state established,related accept", script)
+        # Deny posture: no any-host accept, no host-scoped accept.
+        self.assertNotIn("ip daddr", script)
+        self.assertNotIn("tcp dport", script)
 
     def test_status_and_list(self):
         with self.client() as c:
@@ -305,6 +345,8 @@ class EgressLogTests(unittest.TestCase):
         recipe_path = self._write_recipe("deny-demo", "[network]\nmode='deny'\n")
         # Register the step command so the run succeeds end-to-end on the Fake.
         backend.on("lince-lab-deny-demo", ["true"], ExecResult(0, "", ""))
+        # The deny recipe applies the deny (drop-only) lock-down before its steps.
+        _register_lockdown(backend, "lince-lab-deny-demo")
         from lince_lab.recipe import load_recipe
 
         result = server._h_recipe_run(load_recipe(str(recipe_path)), {})
@@ -327,6 +369,9 @@ class EgressLogTests(unittest.TestCase):
         from lince_lab import recipe as recipe_mod
 
         backend.on("lince-lab-allow-demo", ["true"], ExecResult(0, "", ""))
+        # The allow recipe resolves its host to 104.16.11.34 and applies the
+        # host-scoped lock-down for that ip:443 before its steps.
+        _register_lockdown(backend, "lince-lab-allow-demo", allow_ips=["104.16.11.34"], allow_ports=[443])
         orig = recipe_mod.resolve_allow_ips
         recipe_mod.resolve_allow_ips = lambda hosts: ["104.16.11.34"] if hosts else []
         try:
@@ -392,6 +437,7 @@ class PresetWiringTests(unittest.TestCase):
 
         backend = FakeBackend()
         backend.on("lince-lab-demo", ["true"], ExecResult(0, "", ""))
+        _register_lockdown(backend, "lince-lab-demo")
         server = BrokerServer("unused.sock", backend, self.config, home=self.home)
         recipe = load_recipe(str(self._recipe_path()))
         # keep=True via explicit arg so the VM (and its snapshots) survive for the
@@ -404,6 +450,7 @@ class PresetWiringTests(unittest.TestCase):
 
         backend = FakeBackend()
         backend.on("lince-lab-demo", ["true"], ExecResult(0, "", ""))
+        _register_lockdown(backend, "lince-lab-demo")
         server = BrokerServer("unused.sock", backend, self.config, home=self.home)
         recipe = load_recipe(str(self._recipe_path()))
         server._h_recipe_run(recipe, {"keep": True})  # noqa: SLF001
