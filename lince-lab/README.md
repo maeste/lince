@@ -37,6 +37,17 @@ through a narrow, policy-checked broker:
 The disposable VM is the experiment surface; the sandbox is the host guard. They
 are complementary.
 
+## Where it runs — host vs sandbox
+
+The **broker runs on the host** (`lince-lab lab broker start`): it owns `limactl`,
+QEMU and `/dev/kvm`, and is the only component that touches them. An agent — even
+one inside the `agent-sandbox` — drives lince-lab purely through the broker's unix
+socket (exposed read-write into the sandbox, existence-guarded). **The sandbox is
+never granted `/dev/kvm`**: doing so would let an agent boot a VM with arbitrary
+config (e.g. a host bind-mount = escape) and bypass the policy gate, so it is
+deliberately avoided. Run the broker on a host with hardware virtualization (KVM);
+v1 is Linux-only (a macOS backend is planned, #268).
+
 ## Install
 
 ```bash

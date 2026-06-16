@@ -75,9 +75,13 @@ race a VM.
 stream: subsequent `capture.send` / `capture.snapshot` requests and asynchronous
 `{"event": ...}` frames flow over it until the channel closes.
 
-**Implications for users.** You start the broker once (`lince-lab lab broker
-start`); the CLI and the skill both speak to it. You never run `limactl` directly
-for lab VMs.
+**Implications for users.** You start the broker once **on the host** (`lince-lab
+lab broker start`) — the host owns `limactl`/QEMU/`/dev/kvm`. The CLI and the skill
+(including agents running **inside** the agent-sandbox) speak to it only through the
+socket; **the agent-sandbox is never granted `/dev/kvm`** — exposing KVM to the
+sandbox would let an agent boot a VM with arbitrary config (host-mount = escape),
+bypassing this policy gate, so it is deliberately not done. You never run `limactl`
+directly for lab VMs.
 
 ## 2. ADR-02: Backend abstraction (Lima + Fake)
 
