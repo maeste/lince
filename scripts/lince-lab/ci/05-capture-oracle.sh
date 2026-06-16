@@ -36,16 +36,18 @@ assert "$LINCE_LAB_BIN" --socket "$SOCK" vm up "$VM" -- "vm up for capture"
 # wait_for_substring on the echoed text proves the channel + sync primitive work
 # end-to-end without any fixed sleep.
 log "watch wait --for over a live ht channel (deterministic, no sleep)"
-GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch grab "$VM" --size 80x24 --program -- echo lince-capture-ok)"
+GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch grab "$VM" --size 80x24 --program echo lince-capture-ok)"
 assert_contains "$GRID" "lince-capture-ok" "ht grid contains the program output"
 
 log "watch keys sends input through the channel"
+# --program uses argparse.REMAINDER, so it must be LAST (it swallows everything
+# after it); other flags (--keys/--for/--size/--png) come before it, no `--`.
 assert "$LINCE_LAB_BIN" --socket "$SOCK" watch keys "$VM" --size 80x24 \
-    --program cat --keys "L" "I" "N" "C" "E" "Enter" \
+    --keys "L" "I" "N" "C" "E" "Enter" --program cat \
     -- "watch keys injected the sequence"
 
 WAITED="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 \
-    --program -- sh -c 'echo READY-SUBSTRING' --for READY-SUBSTRING)"
+    --for READY-SUBSTRING --program sh -c 'echo READY-SUBSTRING')"
 assert_contains "$WAITED" "READY-SUBSTRING" "wait_for_substring returned the settled grid"
 
 # ── #256: pixel-PNG capture artifact (optional Pillow layer over the grid) ───
@@ -57,7 +59,7 @@ ARTIFACTS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/lince/lince-lab/artifacts"
 CAP_NAME="ci05-capture-$$"
 rm -f "$ARTIFACTS_DIR/$CAP_NAME.png" "$ARTIFACTS_DIR/$CAP_NAME.txt" 2>/dev/null || true
 "$LINCE_LAB_BIN" --socket "$SOCK" watch grab "$VM" --size 80x24 \
-    --png "$CAP_NAME" --program -- echo lince-png-ok >/dev/null
+    --png "$CAP_NAME" --program echo lince-png-ok >/dev/null
 if python3 -c 'import PIL' >/dev/null 2>&1; then
     PNG="$ARTIFACTS_DIR/$CAP_NAME.png"
     assert_file "$PNG" "PNG capture artifact written (Pillow present)"
