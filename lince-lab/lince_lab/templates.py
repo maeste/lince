@@ -127,16 +127,22 @@ _NFT_FAILCLOSED_PREAMBLE = (
     "  fi\n"
     "fi\n"
     'command -v nft >/dev/null 2>&1 || { echo \'lince-lab: nft install failed; aborting lock-down\' >&2; exit 1; }\n'
-    "# Fresh table; default-DROP output policy is the critical fail-closed cut.\n"
+    "# Build the output chain in ACCEPT mode, install every accept rule, then flip\n"
+    "# the policy to DROP only at the very END (the caller appends that). This\n"
+    "# avoids a drop window that could sever the live management SSH during setup.\n"
     "nft delete table inet lince_lab 2>/dev/null || true\n"
     "nft add table inet lince_lab\n"
-    "nft add chain inet lince_lab output '{ type filter hook output priority 0 ; policy drop ; }'\n"
+    "nft add chain inet lince_lab output '{ type filter hook output priority 0 ; policy accept ; }'\n"
     "nft add rule inet lince_lab output oif lo accept\n"
-    # Allow replies to connections opened from OUTSIDE the guest — notably Lima's
-    # management SSH (host -> guest). Without this the guest's SSH reply packets
-    # are egress and get dropped, so Lima loses its connection. This does NOT let
-    # the agent initiate egress: a NEW outbound connection still has no accept rule
-    # and hits the default drop.
+    # Keep the LIVE management SSH (host -> guest over slirp) alive DETERMINISTICALLY:
+    # accept egress to the default gateway (the slirp host = the SSH peer). A dst-IP
+    # match is NOT conntrack-dependent, so SSH survives the policy flip even though
+    # conntrack never tracked the pre-existing SSH connection (relying on
+    # established,related alone drops its replies and hangs the exec). External
+    # egress (dst = an outside IP, not the gateway) is still dropped once policy=drop.
+    "LL_GW=$(ip route show default 2>/dev/null | awk '/default/{print $3; exit}')\n"
+    '[ -n "$LL_GW" ] && nft add rule inet lince_lab output ip daddr "$LL_GW" accept\n'
+    # established,related is a bonus for connections opened after the lock-down.
     "nft add rule inet lince_lab output ct state established,related accept\n"
 )
 
@@ -175,6 +181,10 @@ def egress_lockdown_script(allow_ips: list[str], allow_ports: list[int]) -> str:
             for port in ports:
                 # Host-scoped accept: pinned destination IP + port. NEVER any-host.
                 lines.append(f"nft add rule inet lince_lab output ip daddr {ip} tcp dport {port} accept")
+    # Flip the output policy to DROP last — every accept rule (loopback, gateway,
+    # established/related, and any host-scoped allows) is already in place, so there
+    # is no window in which the live management SSH could be severed.
+    lines.append("nft add chain inet lince_lab output '{ type filter hook output priority 0 ; policy drop ; }'")
     return "\n".join(lines) + "\n"
 
 

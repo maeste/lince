@@ -195,8 +195,9 @@ class RoundTripTests(_ServerFixture):
         script = deny_argv[3]
         self.assertIn("policy drop", script)
         self.assertIn("ct state established,related accept", script)
-        # Deny posture: no any-host accept, no host-scoped accept.
-        self.assertNotIn("ip daddr", script)
+        # The only daddr rule is the default-gateway control-plane exception (keeps
+        # Lima SSH alive); deny has NO port-scoped / external-host egress allow.
+        self.assertIn('ip daddr "$LL_GW" accept', script)
         self.assertNotIn("tcp dport", script)
 
     def test_status_and_list(self):

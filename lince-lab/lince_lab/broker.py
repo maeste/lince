@@ -295,7 +295,8 @@ class BrokerServer:
         # network up and they apply their own (recipe-posture) lock-down after
         # provisioning — they are unaffected by this deny default.
         self.backend.start(args["name"])
-        result = self.backend.exec(args["name"], egress_lockdown_argv([], []))
+        # Cap the lock-down exec so it errors out instead of hanging forever.
+        result = self.backend.exec(args["name"], egress_lockdown_argv([], []), timeout=180.0)
         if result.exit_code != 0:
             raise BackendError(
                 f"egress lock-down failed on {args['name']} (exit {result.exit_code}): "

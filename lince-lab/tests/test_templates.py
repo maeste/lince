@@ -159,12 +159,14 @@ class EgressLockdownDenyTestCase(unittest.TestCase):
         self.assertIn("set -e", script)
         # nft is installed-or-abort (fail-closed), not best-effort `|| true`.
         self.assertIn("aborting lock-down", script)
-        # CRITICAL: established/related kept so Lima's management SSH survives.
+        # CRITICAL: established/related + the default-gateway daddr are kept so
+        # Lima's management SSH survives (the gateway rule is conntrack-independent).
         self.assertIn("ct state established,related accept", script)
         self.assertIn("oif lo accept", script)
-        # NO any-host accept rule of any kind.
+        self.assertIn('ip daddr "$LL_GW" accept', script)
+        # NO host-scoped/any-host EGRESS allow: the only daddr rule is the gateway
+        # control-plane exception above; there is no port-scoped accept.
         self.assertNotIn("tcp dport", script)
-        self.assertNotIn("ip daddr", script)
 
     def test_argv_wraps_script_in_sudo_sh_c(self) -> None:
         argv = egress_lockdown_argv([], [])
@@ -206,8 +208,11 @@ class EgressLockdownAllowTestCase(unittest.TestCase):
         script = egress_lockdown_script([], [443])
         self.assertIn(NET_CUT_MARKER, script)
         self.assertNotIn(NET_ALLOW_MARKER, script)
-        self.assertNotIn("ip daddr", script)
+        # No port-scoped/external-host egress allow; the only daddr rule is the
+        # gateway control-plane exception that keeps Lima SSH alive.
         self.assertNotIn("tcp dport", script)
+        self.assertNotIn("203.", script)  # no resolved external IP leaked in
+        self.assertIn('ip daddr "$LL_GW" accept', script)
         self.assertIn("policy drop", script)
 
 

@@ -375,7 +375,10 @@ def apply_egress_lockdown(
     enforce egress must NOT go on to run the (now-untrusted) recipe steps.
     """
     allow_ips, allow_ports = lockdown_posture(recipe)
-    result = backend.exec(vm_name, egress_lockdown_argv(allow_ips, allow_ports), timeout=step_timeout)
+    # Cap the lock-down exec so a wedged script errors out instead of hanging
+    # forever; honor a tighter step_timeout when the caller provides one.
+    timeout = step_timeout if step_timeout is not None else 180.0
+    result = backend.exec(vm_name, egress_lockdown_argv(allow_ips, allow_ports), timeout=timeout)
     if result.exit_code != 0:
         raise BackendError(
             f"egress lock-down failed on {vm_name} (exit {result.exit_code}): "
