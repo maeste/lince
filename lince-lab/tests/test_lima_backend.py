@@ -231,14 +231,19 @@ class LifecycleFailureTestCase(unittest.TestCase):
         self.backend = LimaBackend()
 
     def test_start_raises_on_nonzero(self) -> None:
+        # `start` STREAMS limactl's output live (so a slow first boot is not a
+        # silent hang), so its stderr is inherited, not captured — the error names
+        # the failed command + exit code and points to the streamed output above.
         with mock.patch(
             "lince_lab.lima_backend.subprocess.run",
             return_value=_ok(stderr="no such instance", returncode=1),
         ):
             with self.assertRaises(BackendError) as ctx:
                 self.backend.start("lab")
-        # The limactl stderr is surfaced in the error message.
-        self.assertIn("no such instance", str(ctx.exception))
+        msg = str(ctx.exception)
+        self.assertIn("limactl start lab -y failed", msg)
+        self.assertIn("exit 1", msg)
+        self.assertIn("see the limactl output", msg)
 
     def test_create_raises_on_nonzero(self) -> None:
         with mock.patch(

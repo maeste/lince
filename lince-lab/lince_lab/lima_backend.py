@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 
 from lince_lab.backend import (
@@ -138,34 +139,50 @@ class LimaBackend(Backend):
         self._ht = ht_binary
 
     # ── one lifecycle shell-out helper (raises on nonzero) ───────────────────
-    def _run(self, argv: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, argv: list[str], *, stdin: str | None = None, stream: bool = False
+    ) -> subprocess.CompletedProcess[str]:
         """Run a ``limactl`` lifecycle command, raising on a nonzero exit.
 
         ``argv`` is the full ``limactl`` argument vector (without the executable,
         which is prepended here). Used for every verb whose failure is a real
         backend error — i.e. everything **except** :meth:`exec`, which returns
         the guest code instead.
+
+        When ``stream`` is set, ``limactl``'s stderr is INHERITED (not captured)
+        so its progress — image download, ``Starting QEMU``, ``waiting for ssh`` —
+        flows live to our stderr. A slow first-run ``create``/``start`` is
+        otherwise a silent multi-minute wait that looks hung. stdout is still
+        captured; on failure the streamed lines above are the detail.
         """
         full = [self._limactl, *argv]
-        proc = subprocess.run(
-            full,
-            input=stdin,
-            capture_output=True,
-            text=True,
-        )
+        if stream:
+            proc = subprocess.run(full, input=stdin, stdout=subprocess.PIPE, stderr=None, text=True)
+        else:
+            proc = subprocess.run(full, input=stdin, capture_output=True, text=True)
         if proc.returncode != 0:
             cmd = " ".join(full)
-            raise BackendError(f"{cmd} failed (exit {proc.returncode}): {proc.stderr.strip()}")
+            detail = "(see the limactl output above)" if stream else (proc.stderr or "").strip()
+            raise BackendError(f"{cmd} failed (exit {proc.returncode}): {detail}")
         return proc
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def create(self, name: str, template_yaml: str) -> None:
-        # `limactl create --name N -` reads the template from stdin.
-        self._run(["create", "--name", name, "-"], stdin=template_yaml)
+        # `limactl create --name N -` reads the template from stdin. Stream so
+        # image registration/download progress is visible, not a silent wait.
+        self._run(["create", "--name", name, "-"], stdin=template_yaml, stream=True)
 
     def start(self, name: str) -> None:
-        # `-y` (== --tty=false) for non-interactive/CI boot.
-        self._run(["start", name, "-y"])
+        # `-y` (== --tty=false) for non-interactive/CI boot. The first start of a
+        # fresh instance downloads the base image and boots QEMU — minutes, not
+        # seconds — so announce it up front and stream limactl's live progress.
+        print(
+            f"lince-lab: starting VM {name!r} — first run downloads the base image "
+            "and boots QEMU; this can take several minutes…",
+            file=sys.stderr,
+            flush=True,
+        )
+        self._run(["start", name, "-y"], stream=True)
 
     def stop(self, name: str, force: bool = False) -> None:
         argv = ["stop", name]

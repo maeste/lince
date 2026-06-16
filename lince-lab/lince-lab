@@ -138,6 +138,14 @@ def _emit(args: argparse.Namespace, result, human: str | None = None) -> None:
 def cmd_vm_up(args: argparse.Namespace) -> int:
     """Create + start a disposable VM (``vm.create`` then ``vm.start``)."""
     client = _client(args)
+    if not getattr(args, "quiet", False):
+        print(
+            f"lince-lab: bringing up {args.name!r} — first run downloads the base image "
+            "and boots a VM (several minutes). Live progress is in the broker's terminal; "
+            f"or watch ~/.lima/{args.name}/serial*.log",
+            file=sys.stderr,
+            flush=True,
+        )
     create_args: dict = {"name": args.name, "template_yaml": ""}
     if getattr(args, "image", None):
         create_args["image"] = args.image
