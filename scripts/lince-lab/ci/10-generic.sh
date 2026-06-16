@@ -18,8 +18,6 @@ source "$SCRIPT_DIR/00-lib.sh"
 
 oracle_header "10 generic (#261)"
 
-skip_if_no_kvm
-
 SOCK="$LINCE_LAB_SOCK"
 RECIPE="${LINCE_LAB_RECIPE:-$LINCE_LAB_SHARE/recipes/generic-npm.toml}"
 if [ ! -f "$RECIPE" ]; then
@@ -27,15 +25,42 @@ if [ ! -f "$RECIPE" ]; then
     [ -f "$REPO_RECIPE" ] && RECIPE="$REPO_RECIPE"
 fi
 
-cleanup() { stop_broker "$SOCK"; }
-trap cleanup EXIT
+# ── Part 1: SUBSTRATE-FREE checks (run even without KVM, like oracle 06) ─────
+# The "this is a GENERAL oracle, not Lince-specific" proof must run on a no-KVM
+# host too, so the recipe-validate + the no-Lince-paths grep happen BEFORE the
+# skip_if_no_kvm gate. Use a FakeBackend-backed broker for the validate.
+cleanup_fake() { stop_broker "$SOCK"; }
+trap cleanup_fake EXIT
 
-LINCE_LAB_FAKE="" start_broker "$SOCK"
-
-log "the generic recipe validates (non-Lince, allowlisted fetch)"
 assert_file "$RECIPE" "generic-npm recipe present"
+
+log "substrate-free: the generic recipe validates (non-Lince, allowlisted fetch)"
+LINCE_LAB_FAKE=1 start_broker "$SOCK"
 assert_exit 0 "run validate generic-npm -> 0" -- \
     "$LINCE_LAB_BIN" --socket "$SOCK" run validate "$RECIPE"
+
+# The recipe must be GENERIC: it may not bake in any Lince-specific path. If it
+# referenced e.g. lince-config / agent-sandbox / ~/.config/lince it would not be
+# the "general disposable-VM oracle" #261 requires — fail if any such path leaks.
+log "the generic recipe contains no Lince-specific paths (#261)"
+if grep -Eiq 'lince-config|agent-sandbox|lince-dashboard|\.config/lince|lince\.toml|enabled_agents' "$RECIPE"; then
+    bad "generic recipe references a Lince-specific path (not a general oracle)"
+    grep -Ein 'lince-config|agent-sandbox|lince-dashboard|\.config/lince|lince\.toml|enabled_agents' "$RECIPE" >&2
+    exit 1
+fi
+ok "generic recipe contains no Lince-specific paths"
+
+# Tear down the fake broker before the KVM part (which uses the real backend).
+stop_broker "$SOCK"
+trap - EXIT
+
+# ── Part 2: real recipe.run in a VM (KVM-gated) ─────────────────────────────
+skip_if_no_kvm
+
+cleanup_real() { stop_broker "$SOCK"; }
+trap cleanup_real EXIT
+
+LINCE_LAB_FAKE="" start_broker "$SOCK"
 
 log "run the generic-npm recipe end-to-end under the networked preset"
 assert_exit 0 "run recipe generic-npm -> 0 in a real VM" -- \
