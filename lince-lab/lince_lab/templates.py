@@ -16,11 +16,22 @@ recipe carries a non-empty network allowlist does the boot script install an
 allow-listed egress rule instead of a hard cut. ``cpus`` / ``memory`` / ``disk``
 come from the recipe needs (falling back to config defaults); the base image
 ``location`` + ``digest`` come from the config image allowlist.
+
+**Network isolation is fail-closed.** The deny-by-default boot script runs under
+``set -e``, detects the real default-route interface dynamically (never assumes
+``eth0``), installs ``nft`` or aborts the boot, and sets an nft default-DROP
+egress policy with the critical drop NOT swallowed by ``|| true``. The allowlist
+posture is **host-scoped**: ``allow_hosts`` are resolved to IP addresses
+*host-side at template-build time* (:func:`resolve_allow_ips`) and emitted as
+``ip daddr <ip> tcp dport <port> accept`` rules under the same default-DROP
+policy — there is never an any-host ``tcp dport <p> accept`` rule. A host that
+fails to resolve is dropped (fail-closed, never widened to any-host).
 """
 
 from __future__ import annotations
 
 import json
+import socket
 from typing import Any
 
 from lince_lab.errors import DataError
@@ -29,6 +40,39 @@ from lince_lab.errors import DataError
 # tests) can identify which egress posture was baked in.
 NET_CUT_MARKER = "lince-lab: egress cut (deny-by-default)"
 NET_ALLOW_MARKER = "lince-lab: egress allowlist"
+
+
+def resolve_allow_ips(allow_hosts: list[str]) -> list[str]:
+    """Resolve ``allow_hosts`` to a de-duplicated list of literal IP addresses.
+
+    Resolution happens **host-side** (in the broker process) at template-build
+    time via :func:`socket.getaddrinfo`, so the baked nft rules pin concrete
+    destination IPs rather than trusting in-guest DNS. A host that does not
+    resolve is silently **omitted** (fail-closed: it never widens to any-host).
+
+    Caveat: CDN / load-balanced hosts churn their IPs, so an allowlist pinned at
+    build time can drift from the host's live IP set during a long-lived VM; this
+    is the intentional trade-off for a host-scoped, exfil-resistant allowlist.
+    Order is preserved (first-seen) and both A (IPv4) and AAAA (IPv6) records are
+    kept.
+    """
+    ips: list[str] = []
+    seen: set[str] = set()
+    for host in allow_hosts:
+        host_s = str(host).strip()
+        if not host_s:
+            continue
+        try:
+            infos = socket.getaddrinfo(host_s, None, proto=socket.IPPROTO_TCP)
+        except OSError:
+            # Unresolvable → omit (fail-closed). Never fall back to any-host.
+            continue
+        for info in infos:
+            ip = info[4][0]
+            if ip and ip not in seen:
+                seen.add(ip)
+                ips.append(ip)
+    return ips
 
 
 def _resolve_image(config: dict[str, Any], image_name: str) -> dict[str, str]:
@@ -56,45 +100,67 @@ def _need(needs: dict[str, Any], config: dict[str, Any], key: str) -> Any:
     return config.get("vm", {}).get(key)
 
 
+# Shell preamble shared by the cut + allow scripts. It is FAIL-CLOSED:
+#   * ``set -e`` aborts the boot on any unhandled command failure;
+#   * ``nft`` is installed if missing, and the boot ABORTS if it cannot be
+#     obtained (a VM that can't enforce egress must not come up networked);
+#   * the default-DROP output policy is installed WITHOUT ``|| true`` so a failed
+#     drop fails the boot rather than silently leaving egress open.
+# Loopback stays up so in-guest tooling works; the default route interface is
+# detected dynamically (never the hardcoded ``eth0``).
+_NFT_FAILCLOSED_PREAMBLE = (
+    "set -e\n"
+    "# Detect the real default-route interface (do NOT assume 'eth0').\n"
+    "DEFAULT_IF=$(ip route show default 2>/dev/null | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -n1)\n"
+    'echo "lince-lab: default-route interface: ${DEFAULT_IF:-<none>}" >&2\n'
+    "# Ensure nft is present; install it or ABORT the boot (fail-closed).\n"
+    "if ! command -v nft >/dev/null 2>&1; then\n"
+    "  if command -v dnf >/dev/null 2>&1; then dnf install -y nftables\n"
+    "  elif command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y nftables\n"
+    "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache nftables\n"
+    "  else echo 'lince-lab: nft unavailable and no known package manager; aborting boot' >&2; exit 1\n"
+    "  fi\n"
+    "fi\n"
+    'command -v nft >/dev/null 2>&1 || { echo \'lince-lab: nft install failed; aborting boot\' >&2; exit 1; }\n'
+    "# Fresh table; default-DROP output policy is the critical fail-closed cut.\n"
+    "nft delete table inet lince_lab 2>/dev/null || true\n"
+    "nft add table inet lince_lab\n"
+    "nft add chain inet lince_lab output '{ type filter hook output priority 0 ; policy drop ; }'\n"
+    "nft add rule inet lince_lab output oif lo accept\n"
+)
+
+
 def _net_cut_script() -> str:
-    """A boot provision that severs outbound networking (deny-by-default)."""
-    return (
-        "#!/bin/sh\n"
-        "set -eu\n"
-        f"# {NET_CUT_MARKER}\n"
-        "# Bring the default NIC down and install a drop-all egress rule so the\n"
-        "# disposable lab VM cannot reach the network.\n"
-        "ip link set dev eth0 down 2>/dev/null || true\n"
-        "if command -v nft >/dev/null 2>&1; then\n"
-        "  nft add table inet lince_lab 2>/dev/null || true\n"
-        "  nft add chain inet lince_lab output '{ type filter hook output priority 0 ; policy drop ; }' "
-        "2>/dev/null || true\n"
-        "  nft add rule inet lince_lab output oif lo accept 2>/dev/null || true\n"
-        "fi\n"
-    )
+    """A FAIL-CLOSED boot provision that severs outbound networking (deny-by-default).
+
+    Runs under ``set -e``; installs ``nft`` or aborts; sets a default-DROP egress
+    policy (only loopback survives). The interface is detected dynamically — there
+    is no hardcoded ``eth0`` — so the cut never depends on a guessed NIC name.
+    """
+    return f"#!/bin/sh\n# {NET_CUT_MARKER}\n{_NFT_FAILCLOSED_PREAMBLE}"
 
 
-def _net_allow_script(allow_hosts: list[str], allow_ports: list[int]) -> str:
-    """A boot provision that drops egress except an explicit host/port allowlist."""
+def _net_allow_script(allow_ips: list[str], allow_ports: list[int]) -> str:
+    """A FAIL-CLOSED boot provision: default-DROP egress + a host-scoped allowlist.
+
+    ``allow_ips`` are concrete IP addresses already resolved host-side (see
+    :func:`resolve_allow_ips`); each is paired with every allow port to emit an
+    ``ip daddr <ip> tcp dport <port> accept`` rule under the default-DROP policy.
+    There is NO any-host ``tcp dport <p> accept`` rule — egress is pinned to the
+    resolved hosts only. Built only when at least one ``ip daddr ... accept`` rule
+    exists (the caller fail-closes to the cut script otherwise).
+    """
     lines = [
         "#!/bin/sh",
-        "set -eu",
         f"# {NET_ALLOW_MARKER}",
-        "# Deny-by-default egress with an explicit per-recipe allowlist.",
-        "if command -v nft >/dev/null 2>&1; then",
-        "  nft add table inet lince_lab 2>/dev/null || true",
-        "  nft add chain inet lince_lab output "
-        "'{ type filter hook output priority 0 ; policy drop ; }' 2>/dev/null || true",
-        "  nft add rule inet lince_lab output oif lo accept 2>/dev/null || true",
-        "  nft add rule inet lince_lab output ct state established,related accept 2>/dev/null || true",
+        _NFT_FAILCLOSED_PREAMBLE.rstrip("\n"),
+        "nft add rule inet lince_lab output ct state established,related accept",
     ]
-    for port in allow_ports:
-        lines.append(f"  nft add rule inet lince_lab output tcp dport {int(port)} accept 2>/dev/null || true")
-    lines.append("fi")
-    for host in allow_hosts:
-        # Documented allow target; resolution/pinning is recipe-driven. Kept as a
-        # comment marker so the allowlisted host is visible in the baked script.
-        lines.append(f"# allow-host: {host}")
+    ports = [int(p) for p in allow_ports] or [443]
+    for ip in allow_ips:
+        for port in ports:
+            # Host-scoped accept: pinned destination IP + port. NEVER any-host.
+            lines.append(f"nft add rule inet lince_lab output ip daddr {ip} tcp dport {port} accept")
     return "\n".join(lines) + "\n"
 
 
@@ -105,8 +171,14 @@ def build_template(config: dict[str, Any], recipe_needs: dict[str, Any]) -> str:
 
     * ``image``       — short name keyed into the config image allowlist.
     * ``cpus`` / ``memory`` / ``disk`` — resource caps (fall back to config).
-    * ``allow_hosts`` / ``allow_ports`` — network allowlist; if **either** is
-      non-empty the boot script installs an allow rule instead of cutting egress.
+    * ``allow_hosts`` / ``allow_ports`` — network allowlist. ``allow_hosts`` are
+      resolved to IP addresses **host-side at build time** (or taken pre-resolved
+      from ``allow_ips`` if the caller already did so). The boot script installs
+      ``ip daddr <ip> tcp dport <port> accept`` rules under a default-DROP policy
+      only when at least one host resolves; otherwise it FAILS CLOSED to the hard
+      egress cut (never an any-host rule).
+    * ``allow_ips``   — optional pre-resolved IP list (overrides ``allow_hosts``
+      resolution); used by the broker so resolution happens exactly once.
     * ``provision``   — extra ``system`` / ``user`` provision scripts to append
       after the forced ``boot`` egress script.
     """
@@ -117,10 +189,15 @@ def build_template(config: dict[str, Any], recipe_needs: dict[str, Any]) -> str:
 
     allow_hosts = list(recipe_needs.get("allow_hosts") or [])
     allow_ports = list(recipe_needs.get("allow_ports") or [])
-    networked = bool(allow_hosts) or bool(allow_ports)
+    # Prefer a pre-resolved IP list (broker resolved once); else resolve host-side
+    # now. An empty resolved set ⇒ fail-closed to the hard cut (never any-host).
+    if recipe_needs.get("allow_ips") is not None:
+        allow_ips = [str(ip) for ip in recipe_needs["allow_ips"]]
+    else:
+        allow_ips = resolve_allow_ips(allow_hosts)
 
-    if networked:
-        boot_script = _net_allow_script(allow_hosts, allow_ports)
+    if allow_ips:
+        boot_script = _net_allow_script(allow_ips, allow_ports)
     else:
         boot_script = _net_cut_script()
 
