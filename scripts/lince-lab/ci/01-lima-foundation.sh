@@ -95,7 +95,9 @@ assert "$LINCE_LAB_BIN" --socket "$SOCK" vm snapshot create "$VM" base -- "snaps
 SNAP_LIST="$("$LINCE_LAB_BIN" --socket "$SOCK" vm snapshot list "$VM")"
 assert_contains "$SNAP_LIST" "base" "snapshot list shows base"
 
-MUTATION="/root/.lince-lab-mutation-$$"
+# Lima logs in as a regular (non-root) user with passwordless sudo, so /root is
+# not writable — use /tmp (always writable; the running-VM snapshot captures it).
+MUTATION="/tmp/.lince-lab-mutation-$$"
 log "mutate the guest after the snapshot, then restore and assert it is gone"
 assert "$LINCE_LAB_BIN" --socket "$SOCK" vm exec "$VM" -- sh -c "touch $MUTATION" \
     -- "mutate guest (create $MUTATION)"
