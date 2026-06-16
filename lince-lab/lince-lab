@@ -262,7 +262,14 @@ def cmd_run_validate(args: argparse.Namespace) -> int:
 
 def cmd_run_recipe(args: argparse.Namespace) -> int:
     """Run a recipe end-to-end (``recipe.run``); propagates the recipe exit code."""
-    result = _client(args).call("recipe.run", {"recipe": args.recipe, "keep": args.keep})
+    # Only send keep when --keep was given, so a preset's keep_vm can take effect
+    # when the user did not explicitly ask to keep the VM.
+    call_args: dict = {"recipe": args.recipe}
+    if args.keep:
+        call_args["keep"] = True
+    if getattr(args, "preset", None):
+        call_args["preset"] = args.preset
+    result = _client(args).call("recipe.run", call_args)
     exit_code = int(result.get("exit_code", 0))
     _emit(args, result, f"recipe {result.get('recipe', args.recipe)} -> exit {exit_code}")
     return exit_code
@@ -284,17 +291,18 @@ def cmd_run_presets(args: argparse.Namespace) -> int:
 
 def cmd_find_bisect(args: argparse.Namespace) -> int:
     """Hunt the first-bad commit (``bisect.run``); writes bisect.json."""
-    result = _client(args).call(
-        "bisect.run",
-        {
-            "recipe": args.recipe,
-            "good": args.good,
-            "bad": args.bad,
-            "repo_dir": args.repo_dir,
-            "out": args.out,
-            "keep": args.keep,
-        },
-    )
+    call_args: dict = {
+        "recipe": args.recipe,
+        "good": args.good,
+        "bad": args.bad,
+        "repo_dir": args.repo_dir,
+        "out": args.out,
+    }
+    if args.keep:
+        call_args["keep"] = True
+    if getattr(args, "preset", None):
+        call_args["preset"] = args.preset
+    result = _client(args).call("bisect.run", call_args)
     if getattr(args, "json", False):
         print(json.dumps(result, indent=2, sort_keys=True))
     elif not args.quiet:
@@ -311,10 +319,21 @@ def cmd_find_bisect(args: argparse.Namespace) -> int:
 
 
 def cmd_watch_grab(args: argparse.Namespace) -> int:
-    """Snapshot a VM's terminal grid (``capture.open`` + ``capture.snapshot``)."""
+    """Snapshot a VM's terminal grid (``capture.open`` + ``capture.snapshot``).
+
+    With ``--png NAME`` the captured grid is *also* rendered to an artifact under
+    the lab artifacts root: a real PNG when the optional Pillow dependency is
+    installed, else an honest ``<NAME>.txt`` text artifact (ADR-10 — pixel PNG is
+    an optional layer over the canonical text grid, never a fake image).
+    """
     with _client(args) as client:
         client.call("capture.open", {"name": args.name, "program": args.program, "size": args.size})
         grid = client.call("capture.snapshot", {"timeout_s": args.cmd_timeout})
+    png_name = getattr(args, "png", None)
+    if png_name:
+        artifact = _write_capture_artifact(grid, png_name)
+        if not getattr(args, "quiet", False) and not getattr(args, "json", False):
+            sys.stderr.write(f"capture artifact written: {artifact}\n")
     if getattr(args, "json", False):
         print(json.dumps(grid, indent=2, sort_keys=True))
     else:
@@ -322,6 +341,33 @@ def cmd_watch_grab(args: argparse.Namespace) -> int:
         if not grid.get("text", "").endswith("\n"):
             sys.stdout.write("\n")
     return 0
+
+
+def _write_capture_artifact(grid: dict, name: str) -> str:
+    """Render a captured ``grid`` to an artifact under the lab artifacts root.
+
+    Returns the artifact path. A PNG is produced when Pillow is importable; with
+    no Pillow we write the grid text to ``<name>.txt`` instead (no fake PNG). The
+    destination is the server-derived artifacts root, never a client path.
+    """
+    from pathlib import Path
+
+    from lince_lab import render
+    from lince_lab.policy import artifacts_root
+
+    out_root = artifacts_root(Path.home())
+    out_root.mkdir(parents=True, exist_ok=True)
+    text = grid.get("text", "")
+    cols = int(grid.get("cols", 80))
+    rows = int(grid.get("rows", 24))
+    stem = name[:-4] if name.endswith(".png") else name
+    if render.PIL_AVAILABLE:
+        out_path = out_root / f"{stem}.png"
+        out_path.write_bytes(render.grid_text_to_png(text, cols, rows))
+    else:
+        out_path = out_root / f"{stem}.txt"
+        out_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    return str(out_path)
 
 
 def cmd_watch_keys(args: argparse.Namespace) -> int:
@@ -462,10 +508,10 @@ def cmd_lab_version(args: argparse.Namespace) -> int:
 def _split_vm_path(spec: str) -> tuple[str | None, str]:
     """Split a ``<name>:<path>`` spec; return ``(None, spec)`` for a plain path.
 
-    A leading drive-style single letter (e.g. ``C:\\``) is not a concern here —
-    VM names are the ``lince-lab-*`` namespace — but we only treat the first
-    colon as a separator and require a non-empty name to avoid eating absolute
-    paths that contain a colon.
+    Only the first colon is treated as the separator, and a non-empty name that
+    does not look like a host path (no leading ``/`` or ``.``) is required — so an
+    absolute or relative host path that happens to contain a colon is not mistaken
+    for a ``<name>:<path>`` spec.
     """
     if ":" not in spec:
         return None, spec
@@ -605,6 +651,13 @@ def _build_run_group(sub: argparse._SubParsersAction) -> None:
     recipe = rsub.add_parser("recipe", help="run a recipe end-to-end (propagates recipe exit code)")
     recipe.add_argument("recipe", help="path to the recipe .toml")
     recipe.add_argument("--keep", action="store_true", help="keep the VM after the run")
+    recipe.add_argument(
+        "--preset",
+        default=None,
+        choices=sorted(labconfig.PRESETS),
+        metavar="NAME",
+        help="apply a named preset to the effective config (run presets to list)",
+    )
     _add_socket_flag(recipe)
     _add_json_flag(recipe)
     _add_quiet_flag(recipe)
@@ -629,6 +682,13 @@ def _build_find_group(sub: argparse._SubParsersAction) -> None:
     bisect.add_argument("--repo-dir", required=True, dest="repo_dir", help="path to the git repo to bisect")
     bisect.add_argument("--out", default="bisect.json", help="bisect.json output path (default: %(default)s)")
     bisect.add_argument("--keep", action="store_true", help="keep the VM after the run")
+    bisect.add_argument(
+        "--preset",
+        default=None,
+        choices=sorted(labconfig.PRESETS),
+        metavar="NAME",
+        help="apply a named preset to the effective config (run presets to list)",
+    )
     _add_socket_flag(bisect)
     _add_json_flag(bisect)
     _add_quiet_flag(bisect)
@@ -643,6 +703,12 @@ def _build_watch_group(sub: argparse._SubParsersAction) -> None:
 
     grab = wsub.add_parser("grab", help="snapshot the terminal text grid")
     _add_capture_open_flags(grab)
+    grab.add_argument(
+        "--png",
+        default=None,
+        metavar="NAME",
+        help="also render the grid to <artifacts>/NAME.png (or NAME.txt if Pillow is absent)",
+    )
     grab.set_defaults(func=cmd_watch_grab)
 
     keys = wsub.add_parser("keys", help="send keys to the terminal")

@@ -342,23 +342,30 @@ not config, and therefore **non-overridable** through this layer (L7). `networke
 widens egress only to the recipe's own allowlist; it can never inject credentials
 or drop the metadata-endpoint block.
 
-## 10. ADR-10: Pixel capture deferred to v2
+## 10. ADR-10: Pixel capture is an OPTIONAL layer over the text grid
 
-**Decision.** v1 captures the **text grid** only (`Grid.text`, one line per
-terminal row) as the assertion surface. A pixel/PNG renderer (grid → image) is
-**deferred**.
+**Decision.** The **text grid** (`Grid.text`, one line per terminal row) remains
+the canonical assertion surface — every oracle assertion (`grid_contains`,
+`grid_absent`) is a substring check on it. A pixel/PNG renderer (grid → image) is
+implemented as an **optional output layer** behind an **optional Pillow
+dependency** (`lince_lab/render.py`, surfaced via `watch grab --png NAME`):
 
-**Why defer.** Every v1 oracle assertion (`grid_contains`, `grid_absent`) is a
-substring check on rendered text; a PNG adds nothing to correctness and a lot to
-the dependency and comparison surface (image diffing, font/render determinism
-across hosts). The text grid is deterministic and trivially assertable, so it is
-the right v1 hot path.
+- **Pillow present** → the captured grid is rendered to a real PNG under the
+  server-derived artifacts root (`<artifacts>/NAME.png`); oracle 05 asserts the
+  PNG signature is valid.
+- **Pillow absent** → there is **no fake PNG**. The renderer refuses
+  (`grid_text_to_png` raises) and the CLI writes the grid text to
+  `<artifacts>/NAME.txt` as the honest capture artifact instead.
 
-**Why it stays a clean future layer.** The renderer would consume the same
-`Grid.text` the wait primitives already produce — it is an independent output
-layer over the existing capture model, addable without touching the broker, the
-recipe contract, or the wait primitives. Recording the deferral here keeps that
-boundary explicit so v2 does not have to retrofit the capture core.
+**Why optional, not core.** A PNG adds nothing to *correctness* (text substring
+checks are deterministic and host-stable) and a lot to the dependency/comparison
+surface (image diffing, font/render determinism). Keeping it Pillow-gated means a
+clean checkout with no Pillow still captures (as text), and only hosts that want
+pixels pull the extra dependency.
+
+**Why it stays a clean layer.** The renderer consumes the same `Grid.text` the
+wait primitives already produce — an independent output layer that needed no
+change to the broker, the recipe contract, or the wait primitives.
 
 ---
 

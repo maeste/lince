@@ -112,6 +112,26 @@ class CliStructureTests(unittest.TestCase):
         for group in GROUPS:
             self.assertIn(group, choices)
 
+    def test_run_recipe_accepts_preset_flag(self):
+        # --preset is wired into `run recipe` and `find bisect` (stage 4).
+        parser = self.cli.build_parser()
+        ns = parser.parse_args(["run", "recipe", "r.toml", "--preset", "quick"])
+        self.assertEqual(ns.preset, "quick")
+
+    def test_find_bisect_accepts_preset_flag(self):
+        parser = self.cli.build_parser()
+        ns = parser.parse_args(
+            ["find", "bisect", "r.toml", "--good", "g", "--bad", "b", "--repo-dir", ".", "--preset", "bisect"]
+        )
+        self.assertEqual(ns.preset, "bisect")
+
+    def test_run_recipe_rejects_unknown_preset(self):
+        # The choices= guard rejects an unknown preset at parse time (exit 2).
+        parser = self.cli.build_parser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["run", "recipe", "r.toml", "--preset", "nope"])
+
 
 class CliEndToEndTests(unittest.TestCase):
     """CLI subprocess → real socket → in-process broker → FakeBackend."""
