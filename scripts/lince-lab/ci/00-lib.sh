@@ -85,6 +85,12 @@ skip_if_no_kvm() {
 assert() {
     local label="${*: -1}"
     local cmd=("${@:1:$#-1}")
+    # The `assert CMD... -- LABEL` convention puts a `--` separator right before
+    # the label; strip that trailing `--` so it is never passed to CMD itself
+    # (some subcommands, e.g. `lab broker status`, reject a stray trailing `--`).
+    if [ "${#cmd[@]}" -gt 0 ] && [ "${cmd[${#cmd[@]}-1]}" = "--" ]; then
+        cmd=("${cmd[@]:0:${#cmd[@]}-1}")
+    fi
     if "${cmd[@]}"; then
         ok "$label"
     else
