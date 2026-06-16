@@ -25,10 +25,14 @@ Result shape (``bisect.json``)::
       "candidates": ["c1", ...],
       "verdicts": [{"sha": "...", "verdict": "good|bad", "exit_code": N,
                     "step_failed": str|None, "duration_s": F}, ...],
-      "first_bad": "c4" | None,
+      "first_bad": "c4" | None,            # back-compat alias
+      "first_bad_commit": "c4" | None,     # the AC (#258) literal field name
       "status": "converged" | "no_candidates" | "no_regression",
       "tested_count": N, "total_candidates": M
     }
+
+Both ``first_bad`` and ``first_bad_commit`` are always present and carry the same
+value; consumers may read either.
 """
 
 from __future__ import annotations
@@ -43,11 +47,13 @@ from typing import Any
 
 from lince_lab.backend import Backend
 from lince_lab.errors import BackendError, DataError
+from lince_lab.paths import slug_vm_name
 from lince_lab.recipe import (
     BASE_SNAPSHOT_TAG,
     Recipe,
     recipe_needs,
     run_steps_and_assert,
+    step_timeout_of,
     validate,
 )
 from lince_lab.templates import build_template
@@ -144,13 +150,14 @@ def _default_verdict_runner(
     "bad" signal, not an error.
     """
     guest_dir = str(recipe.workspace.get("guest_dir", "/work"))
+    step_timeout = step_timeout_of(config)
 
     def run(sha: str) -> Verdict:
         started = time.monotonic()
         _git_checkout(sha, repo_dir)
         backend.copy_in(vm_name, str(repo_dir), guest_dir, recursive=True)
         try:
-            exit_code, step_failed = run_steps_and_assert(backend, recipe, vm_name)
+            exit_code, step_failed = run_steps_and_assert(backend, recipe, vm_name, step_timeout=step_timeout)
         except DataError as exc:
             # A grid/file assertion mismatch is a "bad" verdict, not a crash.
             exit_code, step_failed = exc.exit_code, "assert"
@@ -162,8 +169,7 @@ def _default_verdict_runner(
 
 def _bisect_vm_name(recipe: Recipe) -> str:
     """The persistent VM name used across all candidates of a bisect run."""
-    safe = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in recipe.name) or "recipe"
-    return f"lince-lab-bisect-{safe}"
+    return slug_vm_name(recipe.name, prefix="lince-lab-bisect-")
 
 
 def run_bisect(
@@ -206,17 +212,20 @@ def run_bisect(
     candidates = provider(good, bad, repo_path)
 
     vm_name = _bisect_vm_name(recipe)
-    built_vm = False
+    # True iff this run created the persistent base VM itself (the default path).
+    # An injected verdict_runner brings its own substrate, so we neither build,
+    # reset, nor delete a VM in that case. This single flag drives all three.
+    owns_base_vm = False
     runner = verdict_runner
     try:
         if runner is None:
             _build_base_vm(backend, recipe, config, vm_name)
-            built_vm = True
+            owns_base_vm = True
             runner = _default_verdict_runner(backend, recipe, config, repo_path, vm_name)
 
-        verdicts, first_bad, status = _search(backend, vm_name, candidates, runner, build_reset=built_vm)
+        verdicts, first_bad, status = _search(backend, vm_name, candidates, runner, owns_base_vm=owns_base_vm)
     finally:
-        if built_vm and not keep:
+        if owns_base_vm and not keep:
             _safe_delete(backend, vm_name)
 
     document = _build_document(recipe, good, bad, candidates, verdicts, first_bad, status)
@@ -247,13 +256,13 @@ def _search(
     candidates: list[str],
     runner: VerdictRunner,
     *,
-    build_reset: bool,
+    owns_base_vm: bool,
 ) -> tuple[list[Verdict], str | None, str]:
     """Binary-search ``candidates`` for the first-bad commit.
 
     Invariant: everything strictly below ``lo`` is good, everything at/above
     ``hi`` is bad. Each probe resets the VM with ``snapshot_apply(base-clean)``
-    *before* running the verdict (when ``build_reset`` — i.e. this run owns a real
+    *before* running the verdict (when ``owns_base_vm`` — i.e. this run owns a real
     base snapshot). The reset is therefore performed exactly once per probed
     candidate.
 
@@ -270,7 +279,7 @@ def _search(
         mid = (lo + hi) // 2
         sha = candidates[mid]
 
-        if build_reset:
+        if owns_base_vm:
             # Reset to the clean base before staging this candidate.
             backend.snapshot_apply(vm_name, BASE_SNAPSHOT_TAG)
 
@@ -304,7 +313,10 @@ def _build_document(
         "bad": bad,
         "candidates": list(candidates),
         "verdicts": [v.to_dict() for v in verdicts],
+        # ``first_bad_commit`` is the AC's (#258) literal field name; ``first_bad``
+        # is kept as a back-compat alias. Both carry the same value (or None).
         "first_bad": first_bad,
+        "first_bad_commit": first_bad,
         "status": status,
         "tested_count": len(verdicts),
         "total_candidates": len(candidates),

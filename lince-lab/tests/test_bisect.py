@@ -181,6 +181,43 @@ class SearchAlgorithmTest(unittest.TestCase):
             self.assertEqual(set(v), {"sha", "verdict", "exit_code", "step_failed", "duration_s"})
             self.assertIn(v["verdict"], ("good", "bad"))
 
+    def test_first_bad_commit_field_present_and_aliases_first_bad(self) -> None:
+        # #258: the AC's literal field name `first_bad_commit` must be present and
+        # carry the same value as the back-compat `first_bad` alias — on disk too.
+        candidates = ["c1", "c2", "c3", "c4"]
+        out = self.dir / "fbc.json"
+        doc, _ = self._run(candidates, "c3", out_name="fbc.json")
+        self.assertIn("first_bad_commit", doc)
+        self.assertEqual(doc["first_bad_commit"], "c3")
+        self.assertEqual(doc["first_bad_commit"], doc["first_bad"])
+        on_disk = json.loads(out.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["first_bad_commit"], "c3")
+        self.assertEqual(on_disk["first_bad_commit"], on_disk["first_bad"])
+
+    def test_first_bad_commit_none_when_no_regression(self) -> None:
+        # With every candidate good, both fields are present and None.
+        doc, _ = self._run(["c1", "c2", "c3"], None)
+        self.assertIn("first_bad_commit", doc)
+        self.assertIsNone(doc["first_bad_commit"])
+        self.assertIsNone(doc["first_bad"])
+
+    def test_reproducible_first_bad_across_two_runs(self) -> None:
+        # #258 reproducibility: two runs with identical injected inputs converge on
+        # the same first-bad commit and the same probe order (deterministic search).
+        candidates = ["c1", "c2", "c3", "c4", "c5", "c6", "c7"]
+        doc_a, probed_a = self._run(candidates, "c5", out_name="run-a.json")
+        doc_b, probed_b = self._run(candidates, "c5", out_name="run-b.json")
+        self.assertEqual(doc_a["first_bad_commit"], doc_b["first_bad_commit"])
+        self.assertEqual(doc_a["first_bad_commit"], "c5")
+        self.assertEqual(probed_a, probed_b)
+        # The whole document (minus per-probe wall-clock durations) is identical.
+        def _strip_durations(doc):
+            clone = dict(doc)
+            clone["verdicts"] = [{k: v for k, v in vd.items() if k != "duration_s"} for vd in doc["verdicts"]]
+            return clone
+
+        self.assertEqual(_strip_durations(doc_a), _strip_durations(doc_b))
+
 
 class ResetAndIntegrationTest(unittest.TestCase):
     """Default path (owns a real base VM) against FakeBackend, git stubbed out."""

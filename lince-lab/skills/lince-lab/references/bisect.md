@@ -34,6 +34,7 @@ lince-lab find bisect <recipe> \
 
 ```json
 {
+  "first_bad_commit": "c4f1a9e",
   "first_bad": "c4f1a9e",
   "status": "converged",
   "candidates": ["c1", "c2", "c3", "c4", "c5"],
@@ -48,10 +49,13 @@ lince-lab find bisect <recipe> \
 
 | Read | To learn |
 |------|----------|
-| `first_bad` | the commit to report (or `null` if none) |
+| `first_bad_commit` | the commit to report (or `null` if none) — the canonical field |
+| `first_bad` | back-compat alias of `first_bad_commit` (same value) |
 | `status` | `converged` / `no_regression` / `no_candidates` |
 | `verdicts[].step_failed` | which recipe step the bad commit broke |
 
-Report `first_bad` and the failing step. If `status` is `no_regression`, the
+`first_bad_commit` and `first_bad` always carry the same value; read either.
+
+Report `first_bad_commit` and the failing step. If `status` is `no_regression`, the
 range did not contain the break **as the recipe defines it** — re-check the
 recipe's assertions or the good/bad bounds before concluding.
