@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from lince_lab.errors import DataError, UnknownVerb
 
@@ -149,6 +149,32 @@ def decode(line: bytes | str) -> dict[str, Any]:
     if not isinstance(obj, dict):
         raise DataError(f"protocol line did not decode to an object: {type(obj).__name__}")
     return obj
+
+
+def read_line(recv: Callable[[int], bytes], rbuf: bytearray) -> bytes | None:
+    """Read one newline-terminated frame, buffering the remainder in ``rbuf``.
+
+    ``recv`` is the caller's chunk reader (a bound ``socket.recv``); both the
+    broker and the client feed their own socket through it, so the frame-scanning
+    logic lives in exactly one place. Returns the line without its trailing
+    newline, a final partial line at clean EOF (non-empty ``rbuf`` then empty
+    chunk), or ``None`` when the peer closes with nothing buffered. Socket-error
+    handling stays with the caller (it wraps ``recv`` as it needs).
+    """
+    while True:
+        newline = rbuf.find(b"\n")
+        if newline != -1:
+            line = bytes(rbuf[:newline])
+            del rbuf[: newline + 1]
+            return line
+        chunk = recv(65536)
+        if not chunk:
+            if rbuf:
+                line = bytes(rbuf)
+                rbuf.clear()
+                return line
+            return None
+        rbuf.extend(chunk)
 
 
 def validate_request(obj: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:

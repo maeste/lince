@@ -40,9 +40,6 @@ class LabError(Exception):
         if exit_code is not None:
             self.exit_code = exit_code
 
-    def __str__(self) -> str:  # pragma: no cover - trivial
-        return self.message
-
 
 class PolicyDenied(LabError):
     """A policy gate refused the request (no host mounts, secret injection, ...)."""

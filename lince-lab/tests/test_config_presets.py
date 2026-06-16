@@ -56,9 +56,12 @@ class DefaultsTest(unittest.TestCase):
         loaded = cfg.load_config(missing)
         self.assertEqual(loaded["network"]["mode"], "deny")
         self.assertEqual(loaded["vm"]["cpus"], 2)
-        self.assertEqual(loaded["capture_tool"], "ht")
         self.assertIn("fedora", loaded["images"])
-        self.assertFalse(loaded["keep_vm"])
+        # keep_vm / capture_tool / lima_version are NOT baked defaults: keep comes
+        # from the CLI flag and the backend hardcodes limactl/ht.
+        self.assertNotIn("keep_vm", loaded)
+        self.assertNotIn("capture_tool", loaded)
+        self.assertNotIn("lima_version", loaded)
 
     def test_user_file_overlays_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

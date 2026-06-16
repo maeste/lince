@@ -25,10 +25,7 @@ from typing import Any
 # name to a pinned source so a recipe can only ask for a known image.
 DEFAULTS: dict[str, Any] = {
     "socket_path": str(Path.home() / ".agent-sandbox" / "lince-lab.sock"),
-    "lima_version": "v1.1.0",
-    "capture_tool": "ht",
     "grid_size": "80x24",
-    "keep_vm": False,
     "vm": {
         "cpus": 2,
         "memory": "2GiB",

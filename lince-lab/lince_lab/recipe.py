@@ -28,8 +28,9 @@ from typing import Any
 
 from lince_lab.backend import Backend
 from lince_lab.capture import Capture, Grid
-from lince_lab.errors import DataError
-from lince_lab.templates import build_template
+from lince_lab.errors import BackendError, DataError
+from lince_lab.paths import parse_size, resolves_under, slug_vm_name
+from lince_lab.templates import build_template, resolve_allow_ips
 
 # Snapshot tag baked after provisioning so retries / bisect can reset cheaply.
 BASE_SNAPSHOT_TAG = "base-clean"
@@ -130,7 +131,14 @@ def validate(recipe: Recipe, config: dict[str, Any] | None = None) -> None:
     if recipe.has_capture_step() and not recipe.sync:
         raise DataError("a capture step requires a [sync] section, but none is present")
 
-    # ── network allow requires a non-empty allowlist ──
+    # ── network allow requires a non-empty allowlist (structural check) ──
+    # This is a pure schema invariant: an ``allow`` posture must declare at least
+    # one host or port. DNS resolution of those hosts to concrete IPs is a
+    # *run-time* concern done host-side in :func:`recipe_needs` /
+    # :func:`effective_egress` / :func:`build_template` — all of which fail closed
+    # to a deny cut when zero hosts resolve. Keeping resolution out of validate()
+    # makes validation pure and offline-safe (no network dependency), so a
+    # substrate-free `run validate` is deterministic on a hermetic CI host.
     if recipe.network.get("mode") == "allow":
         allow_hosts = recipe.network.get("allow_hosts") or []
         allow_ports = recipe.network.get("allow_ports") or []
@@ -141,7 +149,7 @@ def validate(recipe: Recipe, config: dict[str, Any] | None = None) -> None:
     host_dir = recipe.workspace.get("host_dir")
     if not host_dir:
         raise DataError("[workspace] is missing a host_dir")
-    if not _resolves_under(recipe.source_dir, str(host_dir)):
+    if not resolves_under(recipe.source_dir, str(host_dir)):
         raise DataError(
             f"[workspace] host_dir {host_dir!r} does not resolve under the recipe directory {recipe.source_dir}"
         )
@@ -155,22 +163,6 @@ def validate(recipe: Recipe, config: dict[str, Any] | None = None) -> None:
         if image_name not in images:
             known = ", ".join(sorted(images)) or "(none)"
             raise DataError(f"image {image_name!r} is not in the config allowlist; allowed: {known}")
-
-
-def _resolves_under(base: Path, candidate: str) -> bool:
-    """Return ``True`` iff ``candidate`` (relative to ``base``) stays under ``base``.
-
-    An absolute ``candidate`` outside ``base`` or a relative one that climbs out
-    via ``..`` is rejected. This is the recipe-level guard mirrored by the broker
-    copy-in policy; it never touches the filesystem (pure path math).
-    """
-    base_resolved = base.resolve()
-    target = Path(candidate)
-    combined = target if target.is_absolute() else base_resolved / target
-    resolved = combined.resolve()
-    if resolved == base_resolved:
-        return True
-    return base_resolved in resolved.parents
 
 
 # ── run flow (blueprint §5) ──────────────────────────────────────────────────
@@ -196,7 +188,12 @@ def run_recipe(
     6. Evaluate ``[assert]`` (exit_code match; ``grid_contains`` / ``grid_absent``
        against the final settled grid; ``file_exists`` via ``test -f``).
     7. Return 0 if every assertion passes, else the failing exit code. The VM is
-       deleted unless ``keep`` is set.
+       deleted unless ``keep`` is set; the base snapshot is dropped after staging
+       unless the effective config's ``retain_base_snapshot`` knob is set (the
+       ``bisect`` preset retains it for fast per-candidate reset).
+
+    The effective ``config`` is consulted for two preset-tunable knobs:
+    ``step_timeout_s`` (the per-exec-step timeout) and ``retain_base_snapshot``.
 
     Returns the recipe exit code:
 
@@ -209,6 +206,8 @@ def run_recipe(
     vm_name = _vm_name(recipe)
     needs = recipe_needs(recipe)
     template_yaml = build_template(config, needs)
+    step_timeout = step_timeout_of(config)
+    retain_base = bool(config.get("retain_base_snapshot", False))
 
     backend.create(vm_name, template_yaml)
     backend.start(vm_name)
@@ -218,31 +217,60 @@ def run_recipe(
             script = entry.get("script")
             if not script:
                 continue
-            backend.exec(vm_name, ["sh", "-c", str(script)])
+            backend.exec(vm_name, ["sh", "-c", str(script)], timeout=step_timeout)
         backend.snapshot_create(vm_name, BASE_SNAPSHOT_TAG)
 
         # 4. stage the single workspace dir (policy-bounded host_dir).
         host_dir = str(recipe.workspace["host_dir"])
         guest_dir = str(recipe.workspace.get("guest_dir", "/work"))
-        if not _resolves_under(recipe.source_dir, host_dir):
+        if not resolves_under(recipe.source_dir, host_dir):
             raise DataError(f"workspace host_dir {host_dir!r} escapes the recipe directory; refusing copy_in")
         backend.copy_in(vm_name, host_dir, guest_dir, recursive=True)
 
+        # A single run never resets, so the base snapshot is dead weight unless the
+        # effective config asks to keep it; drop it to reclaim disk (consumes the
+        # retain_base_snapshot preset knob). Best-effort: a backend that cannot
+        # delete the snapshot must not fail an otherwise-good run.
+        if not retain_base:
+            try:
+                backend.snapshot_delete(vm_name, BASE_SNAPSHOT_TAG)
+            except BackendError:
+                pass
+
         # 5-6. run the ordered steps + evaluate the assertions. Shared verbatim
         # with the bisect loop via run_steps_and_assert (single-sourced oracle).
-        exit_code, _step_failed = run_steps_and_assert(backend, recipe, vm_name)
+        exit_code, _step_failed = run_steps_and_assert(backend, recipe, vm_name, step_timeout=step_timeout)
         return exit_code
     finally:
         if not keep:
             backend.delete(vm_name, force=True)
 
 
-def run_steps_and_assert(backend: Backend, recipe: Recipe, vm_name: str) -> tuple[int, str | None]:
+def step_timeout_of(config: dict[str, Any]) -> float | None:
+    """Return the per-exec-step timeout (seconds) from the effective config, if any.
+
+    ``step_timeout_s`` is a preset knob (e.g. the ``bisect`` preset's 600s); absent
+    it is ``None`` (no timeout). Consumed by the exec-step runner here and by the
+    bisect verdict runner.
+    """
+    value = config.get("step_timeout_s")
+    return float(value) if value is not None else None
+
+
+def run_steps_and_assert(
+    backend: Backend,
+    recipe: Recipe,
+    vm_name: str,
+    *,
+    step_timeout: float | None = None,
+) -> tuple[int, str | None]:
     """Run a recipe's ordered steps then evaluate its ``[assert]`` block.
 
     This is steps 5-6 of :func:`run_recipe`, factored out so the bisect loop can
     reuse the exact same oracle against a persistent, snapshot-reset VM (without
-    the create / provision / delete lifecycle). Returns ``(exit_code, step_failed)``:
+    the create / provision / delete lifecycle). ``step_timeout`` (the effective
+    config's ``step_timeout_s``) bounds each exec step. Returns
+    ``(exit_code, step_failed)``:
 
     * a failing exec step short-circuits to ``(its_code, step_name)``;
     * otherwise the assertions are evaluated — an ``exit_code`` mismatch yields
@@ -259,7 +287,7 @@ def run_steps_and_assert(backend: Backend, recipe: Recipe, vm_name: str) -> tupl
         if step.get("capture"):
             final_grid = _run_capture_step(backend, vm_name, recipe, step)
         else:
-            last_exit = _run_exec_step(backend, vm_name, step)
+            last_exit = _run_exec_step(backend, vm_name, step, step_timeout=step_timeout)
             if last_exit != 0:
                 # A failing step is the oracle/bisect signal — stop and report.
                 return last_exit, str(step.get("name", "?"))
@@ -268,12 +296,17 @@ def run_steps_and_assert(backend: Backend, recipe: Recipe, vm_name: str) -> tupl
 
 def _vm_name(recipe: Recipe) -> str:
     """Build the policy-prefixed VM name for ``recipe`` (``lince-lab-<recipe>``)."""
-    safe = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in recipe.name) or "recipe"
-    return f"lince-lab-{safe}"
+    return slug_vm_name(recipe.name)
 
 
 def recipe_needs(recipe: Recipe) -> dict[str, Any]:
-    """Project a recipe into the ``recipe_needs`` dict :func:`build_template` wants."""
+    """Project a recipe into the ``recipe_needs`` dict :func:`build_template` wants.
+
+    For ``mode = "allow"`` the declared ``allow_hosts`` are resolved to IPs
+    **host-side** here (once) and passed through as ``allow_ips`` so the baked nft
+    rules pin concrete destinations. Resolution is fail-closed: a host that does
+    not resolve is dropped, never widened to any-host.
+    """
     needs: dict[str, Any] = {
         "image": recipe.vm.get("image"),
         "cpus": recipe.vm.get("cpus"),
@@ -282,17 +315,75 @@ def recipe_needs(recipe: Recipe) -> dict[str, Any]:
         "provision": list(recipe.provision),
     }
     if recipe.network.get("mode") == "allow":
-        needs["allow_hosts"] = list(recipe.network.get("allow_hosts") or [])
+        allow_hosts = list(recipe.network.get("allow_hosts") or [])
+        needs["allow_hosts"] = allow_hosts
         needs["allow_ports"] = list(recipe.network.get("allow_ports") or [])
+        needs["allow_ips"] = resolve_allow_ips(allow_hosts)
     return needs
 
 
-def _run_exec_step(backend: Backend, vm_name: str, step: dict[str, Any]) -> int:
-    """Run a plain exec step's argv in the guest, returning its exit code."""
+def effective_egress(recipe: Recipe) -> dict[str, Any]:
+    """Resolve the *effective* egress decision the run will enforce (blueprint §3.2).
+
+    This mirrors exactly what :func:`build_template` bakes into the boot script,
+    so the broker can record the decision it is about to enforce:
+
+    * ``mode = "deny"`` → ``{"decision": "deny", "rules": []}`` (default-DROP cut).
+    * ``mode = "allow"`` → the declared hosts are resolved **host-side** to IPs
+      (fail-closed: a host that does not resolve is dropped, never widened) and
+      paired with every allow port into ``ip daddr <ip> tcp dport <port> accept``
+      rules. If *zero* hosts resolve the posture fails closed to ``"deny"`` — the
+      same fallback :func:`build_template` performs — so the log never claims an
+      allow posture that the VM will not actually have.
+
+    The returned dict is JSON-serializable and is what the broker writes to
+    ``egress.log``.
+    """
+    mode = str(recipe.network.get("mode", "deny"))
+    if mode != "allow":
+        return {"mode": mode, "decision": "deny", "rules": []}
+
+    allow_hosts = list(recipe.network.get("allow_hosts") or [])
+    allow_ports = [int(p) for p in (recipe.network.get("allow_ports") or [])] or [443]
+    allow_ips = resolve_allow_ips(allow_hosts)
+    if not allow_ips:
+        # Fail-closed: an allow recipe whose hosts all failed DNS becomes a deny
+        # cut (never any-host), matching build_template's fallback.
+        return {
+            "mode": mode,
+            "decision": "deny",
+            "rules": [],
+            "allow_hosts": allow_hosts,
+            "resolved_ips": [],
+        }
+    rules = [
+        f"ip daddr {ip} tcp dport {port} accept" for ip in allow_ips for port in allow_ports
+    ]
+    return {
+        "mode": mode,
+        "decision": "allow",
+        "allow_hosts": allow_hosts,
+        "allow_ports": allow_ports,
+        "resolved_ips": allow_ips,
+        "rules": rules,
+    }
+
+
+def _run_exec_step(
+    backend: Backend,
+    vm_name: str,
+    step: dict[str, Any],
+    *,
+    step_timeout: float | None = None,
+) -> int:
+    """Run a plain exec step's argv in the guest, returning its exit code.
+
+    ``step_timeout`` (the effective config's ``step_timeout_s``) bounds the call.
+    """
     run = step.get("run")
     if not run:
         raise DataError(f"exec step {step.get('name', '?')!r} is missing a 'run' argv")
-    result = backend.exec(vm_name, [str(arg) for arg in run])
+    result = backend.exec(vm_name, [str(arg) for arg in run], timeout=step_timeout)
     return result.exit_code
 
 
@@ -312,7 +403,7 @@ def _run_capture_step(
     program = step.get("program")
     if not program:
         raise DataError(f"capture step {step.get('name', '?')!r} is missing a 'program'")
-    cols, rows = _parse_size(str(step.get("size", "80x24")))
+    cols, rows = parse_size(str(step.get("size", "80x24")))
 
     sync = recipe.sync
     wait_for = list(sync.get("wait_for") or [])
@@ -333,15 +424,6 @@ def _run_capture_step(
         return grid
     finally:
         capture.close()
-
-
-def _parse_size(size: str) -> tuple[int, int]:
-    """Parse a ``"<cols>x<rows>"`` grid size into an ``(cols, rows)`` tuple."""
-    try:
-        cols_s, rows_s = size.lower().split("x", 1)
-        return int(cols_s), int(rows_s)
-    except (ValueError, AttributeError) as exc:
-        raise DataError(f"invalid capture size {size!r}; expected '<cols>x<rows>'") from exc
 
 
 def _evaluate_assertions(

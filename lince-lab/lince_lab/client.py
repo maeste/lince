@@ -130,26 +130,21 @@ class BrokerClient:
         return self._sock
 
     def _read_line(self) -> bytes | None:
-        """Read one newline-terminated frame from the socket, buffering the rest."""
+        """Read one newline-terminated frame from the socket, buffering the rest.
+
+        Delegates the frame-scanning to :func:`lince_lab.protocol.read_line`,
+        wrapping the socket ``recv`` so a broken read raises
+        :class:`~lince_lab.errors.BrokerUnreachable`.
+        """
         sock = self._require_sock()
-        while True:
-            newline = self._rbuf.find(b"\n")
-            if newline != -1:
-                line = bytes(self._rbuf[:newline])
-                del self._rbuf[: newline + 1]
-                return line
+
+        def recv(size: int) -> bytes:
             try:
-                chunk = sock.recv(65536)
+                return sock.recv(size)
             except (ConnectionResetError, OSError) as exc:
                 raise BrokerUnreachable(f"broker connection broke while reading: {exc}") from exc
-            if not chunk:
-                # Clean EOF: return any trailing partial line, else None.
-                if self._rbuf:
-                    line = bytes(self._rbuf)
-                    self._rbuf = bytearray()
-                    return line
-                return None
-            self._rbuf.extend(chunk)
+
+        return protocol.read_line(recv, self._rbuf)
 
     @staticmethod
     def _unwrap(response: dict[str, Any], request_id: str) -> Any:

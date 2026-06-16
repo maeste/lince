@@ -425,5 +425,63 @@ class RunFlowTest(unittest.TestCase):
             capture_mod.time.monotonic = orig_monotonic
 
 
+class PresetWiringTest(unittest.TestCase):
+    """The preset-tunable knobs (step_timeout_s, retain_base_snapshot) are consumed.
+
+    Wired in stage 4: the effective config (a preset overlaid on the base config)
+    flows into run_recipe and changes observable run behavior.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self._tmp.name)
+        self.backend = FakeBackend()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _recipe(self) -> Recipe:
+        recipe = make_recipe(
+            self.dir,
+            steps=[{"name": "ok", "run": ["true"]}],
+            assertions={"exit_code": 0},
+        )
+        vm_name = recipe_mod._vm_name(recipe)
+        self.backend.on(vm_name, ["true"], ExecResult(0, "", ""))
+        return recipe
+
+    def test_step_timeout_s_reaches_exec(self) -> None:
+        # The effective config's step_timeout_s is passed through to backend.exec.
+        seen: list[float | None] = []
+        orig_exec = self.backend.exec
+
+        def rec_exec(name, argv, workdir=None, env=None, timeout=None):
+            seen.append(timeout)
+            return orig_exec(name, argv, workdir=workdir, env=env, timeout=timeout)
+
+        self.backend.exec = rec_exec  # type: ignore[method-assign]
+        recipe = self._recipe()
+        cfg = dict(CONFIG, step_timeout_s=600)
+        rc = run_recipe(self.backend, recipe, cfg, keep=True)
+        self.assertEqual(rc, 0)
+        # The step exec saw the 600s timeout (default behavior would be None).
+        self.assertIn(600.0, seen)
+
+    def test_retain_base_snapshot_keeps_snapshot(self) -> None:
+        # With retain_base_snapshot the base-clean snapshot survives the run; the
+        # default drops it. This proves the preset knob changes effective behavior.
+        recipe = self._recipe()
+        vm_name = recipe_mod._vm_name(recipe)
+
+        run_recipe(self.backend, recipe, dict(CONFIG, retain_base_snapshot=True), keep=True)
+        self.assertIn(BASE_SNAPSHOT_TAG, self.backend.snapshot_list(vm_name))
+
+    def test_default_drops_base_snapshot(self) -> None:
+        recipe = self._recipe()
+        vm_name = recipe_mod._vm_name(recipe)
+        run_recipe(self.backend, recipe, CONFIG, keep=True)
+        self.assertNotIn(BASE_SNAPSHOT_TAG, self.backend.snapshot_list(vm_name))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
