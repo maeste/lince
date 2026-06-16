@@ -18,6 +18,7 @@ Run with:
     python3 lince-lab/tests/test_broker_protocol.py
 """
 
+import json
 import pathlib
 import sys
 import tempfile
@@ -190,6 +191,222 @@ class RoundTripTests(_ServerFixture):
             c.call("vm.create", {"name": LAB_VM, "template_yaml": "mounts: [/home]"})
         stored = self.backend.fs_of(LAB_VM)["/.lince-lab/template.yaml"].decode()
         self.assertNotIn("mounts", stored)
+
+    def test_bare_copy_in_with_forged_workspace_is_denied(self):
+        # The broker never trusts a client workspace_dir: a bare vm.copy_in (no
+        # server-side recipe context) is fail-closed denied, so workspace_dir='/'
+        # cannot turn copy_in into /etc/shadow exfiltration (exit 13).
+        with self.client() as c:
+            c.call("vm.create", {"name": LAB_VM})
+            c.call("vm.start", {"name": LAB_VM})
+            with self.assertRaises(LabError) as exc:
+                c.call(
+                    "vm.copy_in",
+                    {
+                        "name": LAB_VM,
+                        "host_path": "/etc/shadow",
+                        "guest_path": "/work",
+                        "workspace_dir": "/",
+                    },
+                )
+        self.assertEqual(exc.exception.exit_code, POLICY_DENIED)
+
+    def test_copy_out_destination_is_policy_bounded(self):
+        # A vm.copy_out to an out-of-bounds host destination is denied (exit 13),
+        # so the guest cannot be used to clobber arbitrary host files.
+        with self.client() as c:
+            c.call("vm.create", {"name": LAB_VM})
+            c.call("vm.start", {"name": LAB_VM})
+            with self.assertRaises(LabError) as exc:
+                c.call(
+                    "vm.copy_out",
+                    {"name": LAB_VM, "guest_path": "/etc/passwd", "host_path": "/etc/cron.d/evil"},
+                )
+        self.assertEqual(exc.exception.exit_code, POLICY_DENIED)
+
+    def test_capture_stream_verb_is_policy_gated(self):
+        # After capture.open the connection upgrades to a line stream; smuggling a
+        # non-capture verb (here vm.exec) onto that stream is policy-denied (13),
+        # proving the capture stream is NOT a policy bypass.
+        with self.client() as c:
+            c.call("vm.create", {"name": LAB_VM})
+            c.call("vm.start", {"name": LAB_VM})
+            c.connect()
+            # Open a capture stream (FakeBackend returns a default silent channel).
+            c.send(protocol.make_request("capture.open", {"name": LAB_VM, "program": ["sh"]}))
+            opened = c.recv()
+            self.assertTrue(opened["ok"])
+            # Smuggle a non-capture verb onto the upgraded stream.
+            c.send(protocol.make_request("vm.exec", {"name": LAB_VM, "argv": ["true"]}))
+            denied = c.recv()
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["error"]["exit"], POLICY_DENIED)
+
+
+class EgressLogTests(unittest.TestCase):
+    """#253: recipe.run writes the effective egress decision to egress.log.
+
+    Substrate-free: a FakeBackend-backed broker with an isolated HOME runs a deny
+    recipe and an allow recipe; we assert egress.log lands under the server-derived
+    artifacts root and records the decision the run enforces (host-side resolved,
+    never a client value).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.recipe_dir = self.root / "recipes"
+        (self.recipe_dir / "fixtures").mkdir(parents=True)
+        self.config = {
+            "vm": {"cpus": 2, "memory": "2GiB", "disk": "20GiB"},
+            "images": {"fedora": {"location": "https://example/Fedora.qcow2", "arch": "x86_64", "digest": ""}},
+        }
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_recipe(self, name, network_toml):
+        path = self.recipe_dir / f"{name}.toml"
+        path.write_text(
+            f"[recipe]\nname='{name}'\ndescription='d'\nversion='1'\n"
+            "[vm]\nimage='fedora'\ncpus=2\n"
+            f"{network_toml}"
+            "[workspace]\nhost_dir='./fixtures'\nguest_dir='/work'\n"
+            "[[step]]\nname='s1'\nrun=['true']\n"
+            "[assert]\nexit_code=0\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def _egress_log(self):
+        return self.home / ".local/share/lince/lince-lab/artifacts/egress.log"
+
+    def test_deny_recipe_writes_deny_decision(self):
+        backend = FakeBackend()
+        server = BrokerServer("unused.sock", backend, self.config, home=self.home)
+        recipe_path = self._write_recipe("deny-demo", "[network]\nmode='deny'\n")
+        # Register the step command so the run succeeds end-to-end on the Fake.
+        backend.on("lince-lab-deny-demo", ["true"], ExecResult(0, "", ""))
+        from lince_lab.recipe import load_recipe
+
+        result = server._h_recipe_run(load_recipe(str(recipe_path)), {})
+        log = self._egress_log()
+        self.assertTrue(log.exists(), "egress.log must be written under the artifacts root")
+        doc = json.loads(log.read_text(encoding="utf-8"))
+        self.assertEqual(doc["recipe"], "deny-demo")
+        self.assertEqual(doc["egress"]["decision"], "deny")
+        self.assertEqual(doc["egress"]["rules"], [])
+        self.assertEqual(result["egress_log"], str(log))
+
+    def test_allow_recipe_writes_resolved_rules(self):
+        backend = FakeBackend()
+        server = BrokerServer("unused.sock", backend, self.config, home=self.home)
+        recipe_path = self._write_recipe(
+            "allow-demo",
+            "[network]\nmode='allow'\nallow_hosts=['registry.npmjs.org']\nallow_ports=[443]\n",
+        )
+        # Resolve the allow host deterministically (no real DNS).
+        from lince_lab import recipe as recipe_mod
+
+        backend.on("lince-lab-allow-demo", ["true"], ExecResult(0, "", ""))
+        orig = recipe_mod.resolve_allow_ips
+        recipe_mod.resolve_allow_ips = lambda hosts: ["104.16.11.34"] if hosts else []
+        try:
+            server._h_recipe_run(recipe_mod.load_recipe(str(recipe_path)), {})
+        finally:
+            recipe_mod.resolve_allow_ips = orig
+        doc = json.loads(self._egress_log().read_text(encoding="utf-8"))
+        self.assertEqual(doc["egress"]["decision"], "allow")
+        self.assertEqual(doc["egress"]["resolved_ips"], ["104.16.11.34"])
+        self.assertIn("ip daddr 104.16.11.34 tcp dport 443 accept", doc["egress"]["rules"])
+
+
+class PresetWiringTests(unittest.TestCase):
+    """#stage4: a --preset on recipe.run overlays the effective config (no socket).
+
+    Drives the broker handler directly with a loaded recipe and a preset arg,
+    asserting the preset's knobs change effective behavior — here the ``bisect``
+    preset's ``retain_base_snapshot`` keeps the base-clean snapshot that the
+    default run drops.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.recipe_dir = self.root / "recipes"
+        (self.recipe_dir / "fixtures").mkdir(parents=True)
+        self.config = {
+            "vm": {"cpus": 2, "memory": "2GiB", "disk": "20GiB"},
+            "images": {"fedora": {"location": "https://example/Fedora.qcow2", "arch": "x86_64", "digest": ""}},
+        }
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _recipe_path(self):
+        path = self.recipe_dir / "demo.toml"
+        path.write_text(
+            "[recipe]\nname='demo'\ndescription='d'\nversion='1'\n"
+            "[vm]\nimage='fedora'\ncpus=2\n"
+            "[network]\nmode='deny'\n"
+            "[workspace]\nhost_dir='./fixtures'\nguest_dir='/work'\n"
+            "[[step]]\nname='s1'\nrun=['true']\n"
+            "[assert]\nexit_code=0\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_unknown_preset_is_data_error(self):
+        backend = FakeBackend()
+        server = BrokerServer("unused.sock", backend, self.config, home=self.home)
+        with self.assertRaises(DataError):
+            server._effective_config({"preset": "definitely-missing"})  # noqa: SLF001
+        # A no-preset request returns the base config unchanged.
+        self.assertIs(server._effective_config({}), server.config)  # noqa: SLF001
+        # A known preset overlays its vm knob onto the effective config.
+        quick_cfg = server._effective_config({"preset": "quick"})  # noqa: SLF001
+        self.assertEqual(quick_cfg["vm"]["cpus"], 1)
+
+    def test_bisect_preset_retains_base_snapshot(self):
+        from lince_lab.recipe import BASE_SNAPSHOT_TAG, load_recipe
+
+        backend = FakeBackend()
+        backend.on("lince-lab-demo", ["true"], ExecResult(0, "", ""))
+        server = BrokerServer("unused.sock", backend, self.config, home=self.home)
+        recipe = load_recipe(str(self._recipe_path()))
+        # keep=True via explicit arg so the VM (and its snapshots) survive for the
+        # assertion; preset 'bisect' sets retain_base_snapshot=True.
+        server._h_recipe_run(recipe, {"preset": "bisect", "keep": True})  # noqa: SLF001
+        self.assertIn(BASE_SNAPSHOT_TAG, backend.snapshot_list("lince-lab-demo"))
+
+    def test_no_preset_drops_base_snapshot(self):
+        from lince_lab.recipe import BASE_SNAPSHOT_TAG, load_recipe
+
+        backend = FakeBackend()
+        backend.on("lince-lab-demo", ["true"], ExecResult(0, "", ""))
+        server = BrokerServer("unused.sock", backend, self.config, home=self.home)
+        recipe = load_recipe(str(self._recipe_path()))
+        server._h_recipe_run(recipe, {"keep": True})  # noqa: SLF001
+        self.assertNotIn(BASE_SNAPSHOT_TAG, backend.snapshot_list("lince-lab-demo"))
+
+
+class LockTableBoundTests(unittest.TestCase):
+    """#stage4: the per-VM lock table is capped so it cannot grow without bound."""
+
+    def test_lock_table_is_capped_and_reuses(self):
+        backend = FakeBackend()
+        server = BrokerServer("unused.sock", backend, config={})
+        # Re-requesting the same name returns the same lock (no churn).
+        first = server._lock_for("lince-lab-a")  # noqa: SLF001
+        self.assertIs(first, server._lock_for("lince-lab-a"))  # noqa: SLF001
+        # Churn far more distinct names than the cap; the table never exceeds it.
+        for i in range(server._MAX_LOCKS * 3):  # noqa: SLF001
+            server._lock_for(f"lince-lab-{i}")  # noqa: SLF001
+            self.assertLessEqual(len(server._locks), server._MAX_LOCKS)  # noqa: SLF001
 
 
 class UnreachableTests(unittest.TestCase):

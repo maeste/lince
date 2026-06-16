@@ -25,7 +25,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from lince_lab.errors import POLICY_DENIED, PolicyDenied  # noqa: E402
 from lince_lab.policy import (  # noqa: E402
     VM_NAME_PREFIX,
+    artifacts_root,
     check,
+    check_capture,
     is_secret_env_key,
     strip_secret_env,
 )
@@ -187,6 +189,150 @@ class CopyInBoundsTests(unittest.TestCase):
         with self.assertRaises(PolicyDenied):
             check("vm.copy_in", {"name": LAB_VM, "guest_path": "/work"}, self._ctx(), home=self.home)
 
+    def test_forged_root_workspace_denied(self):
+        # A client-forged workspace_dir of the filesystem root must NOT let an
+        # in-"workspace" /etc/shadow exfiltrate: the workspace itself is rejected.
+        with self.assertRaises(PolicyDenied) as exc:
+            check(
+                "vm.copy_in",
+                {"name": LAB_VM, "host_path": "/etc/shadow", "guest_path": "/work"},
+                {"workspace_dir": "/"},
+                home=self.home,
+            )
+        self.assertEqual(exc.exception.exit_code, POLICY_DENIED)
+
+    def test_forged_home_workspace_denied(self):
+        # The bare home spans every secret dir, so it is too broad to be trusted.
+        with self.assertRaises(PolicyDenied):
+            check(
+                "vm.copy_in",
+                {"name": LAB_VM, "host_path": str(self.home / "anything"), "guest_path": "/work"},
+                {"workspace_dir": str(self.home)},
+                home=self.home,
+            )
+
+
+class CopyOutBoundsTests(unittest.TestCase):
+    """§3.4 — copy_out host destinations must resolve under the artifacts root."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = pathlib.Path(self.tmp.name) / "home"
+        self.home.mkdir(parents=True)
+        self.artifacts = artifacts_root(self.home)
+        self.artifacts.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_in_bounds_destination_allowed(self):
+        out = check(
+            "vm.copy_out",
+            {"name": LAB_VM, "guest_path": "/work/out.log", "host_path": str(self.artifacts / "out.log")},
+            home=self.home,
+        )
+        self.assertEqual(out["guest_path"], "/work/out.log")
+
+    def test_absolute_outside_destination_denied(self):
+        with self.assertRaises(PolicyDenied) as exc:
+            check(
+                "vm.copy_out",
+                {"name": LAB_VM, "guest_path": "/etc/passwd", "host_path": "/etc/cron.d/evil"},
+                home=self.home,
+            )
+        self.assertEqual(exc.exception.exit_code, POLICY_DENIED)
+
+    def test_dotdot_escape_destination_denied(self):
+        with self.assertRaises(PolicyDenied):
+            check(
+                "vm.copy_out",
+                {"name": LAB_VM, "guest_path": "/work/x", "host_path": str(self.artifacts / ".." / ".." / "evil")},
+                home=self.home,
+            )
+
+    def test_secret_destination_denied(self):
+        ssh = self.home / ".ssh"
+        ssh.mkdir(parents=True)
+        with self.assertRaises(PolicyDenied):
+            check(
+                "vm.copy_out",
+                {"name": LAB_VM, "guest_path": "/work/key", "host_path": str(ssh / "authorized_keys")},
+                home=self.home,
+            )
+
+    def test_missing_host_path_denied(self):
+        with self.assertRaises(PolicyDenied):
+            check("vm.copy_out", {"name": LAB_VM, "guest_path": "/work/x"}, home=self.home)
+
+
+class CaptureGateTests(unittest.TestCase):
+    """§3 — capture-stream verbs are policy-checked, not a bypass."""
+
+    def test_capture_send_is_checked(self):
+        out = check_capture("capture.send", {"payload": "ls\n"})
+        self.assertEqual(out["payload"], "ls\n")
+
+    def test_capture_snapshot_is_checked(self):
+        out = check_capture("capture.snapshot", {"timeout_s": 5})
+        self.assertEqual(out["timeout_s"], 5)
+
+    def test_non_capture_verb_on_stream_denied(self):
+        with self.assertRaises(PolicyDenied) as exc:
+            check_capture("vm.exec", {"name": LAB_VM, "argv": ["true"]})
+        self.assertEqual(exc.exception.exit_code, POLICY_DENIED)
+
+
+class SecretHostPathTests(unittest.TestCase):
+    """§3.3 — the expanded secret-location denylist + sibling-escape safety."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = pathlib.Path(self.tmp.name) / "home"
+        # A broad workspace = home, so the only thing under test is the secret
+        # denylist (the home-too-broad guard fires first, which is also a denial —
+        # so here we use a workspace that contains the secret to isolate intent).
+        self.workspace = self.home
+        self.home.mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _copy_in(self, host_path: str, workspace: str | None = None):
+        return check(
+            "vm.copy_in",
+            {"name": LAB_VM, "host_path": host_path, "guest_path": "/work"},
+            {"workspace_dir": workspace or str(self.workspace / "proj")},
+            home=self.home,
+        )
+
+    def test_new_secret_dirs_denied(self):
+        proj = self.home / "proj"
+        proj.mkdir()
+        # Symlink-free direct secret paths under home; workspace=proj is narrow.
+        for rel in (".netrc", ".git-credentials", ".kube/config", ".docker/config.json"):
+            target = self.home / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with self.assertRaises(PolicyDenied, msg=rel):
+                self._copy_in(str(target))
+
+    def test_etc_ssh_denied(self):
+        with self.assertRaises(PolicyDenied):
+            self._copy_in("/etc/ssh/sshd_config")
+
+    def test_sibling_of_secret_dir_not_a_false_secret(self):
+        # ~/.ssh-backup is a SIBLING, not under ~/.ssh: it must not match the
+        # ~/.ssh rule by string prefix. It is still denied here only because it is
+        # outside the narrow workspace — i.e. the secret check does NOT fire.
+        from lince_lab.policy import _is_secret_host_path  # noqa: PLC0415
+
+        sibling = self.home / ".ssh-backup" / "id_rsa"
+        self.assertFalse(_is_secret_host_path(str(sibling), self.home))
+        # And under its own workspace it copies in fine (proves it is not a secret).
+        ws = self.home / ".ssh-backup"
+        ws.mkdir(parents=True)
+        out = self._copy_in(str(ws / "data"), workspace=str(ws))
+        self.assertEqual(out["guest_path"], "/work")
+
 
 class SecretEnvTests(unittest.TestCase):
     """§3.4 — credential env keys are stripped before exec is forwarded."""
@@ -200,9 +346,18 @@ class SecretEnvTests(unittest.TestCase):
         self.assertTrue(is_secret_env_key("AWS_SECRET_ACCESS_KEY"))
         self.assertTrue(is_secret_env_key("GITHUB_TOKEN"))
 
+    def test_expanded_denylist_detected(self):
+        # New exact names and patterns must be stripped (blueprint §3.5).
+        for key in ("KUBECONFIG", "DATABASE_URL", "AWS_PROFILE", "SSH_AUTH_SOCK"):
+            self.assertTrue(is_secret_env_key(key), key)
+        self.assertTrue(is_secret_env_key("SENTRY_DSN"))  # *_DSN suffix
+        self.assertTrue(is_secret_env_key("CLOUDSDK_CONFIG"))  # CLOUDSDK_ prefix
+        self.assertTrue(is_secret_env_key("cloudsdk_core_project"))  # case-insensitive
+
     def test_plain_key_kept(self):
         self.assertFalse(is_secret_env_key("PATH"))
         self.assertFalse(is_secret_env_key("LANG"))
+        self.assertFalse(is_secret_env_key("KUBE_PROMPT"))  # not the KUBECONFIG name
 
     def test_strip_removes_only_secrets(self):
         env = {"PATH": "/usr/bin", "GH_TOKEN": "x", "API_KEY": "y", "HOME": "/h"}

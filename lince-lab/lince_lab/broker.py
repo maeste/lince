@@ -22,19 +22,24 @@ real unix socket with no VM.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import threading
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable
 
 from lince_lab import protocol
 from lince_lab.backend import Backend, ExecResult, VmState
 from lince_lab.capture import Capture
+from lince_lab.config import apply_preset
 from lince_lab.errors import DataError, LabError
+from lince_lab.paths import VM_NAME_PREFIX, parse_size
+from lince_lab.policy import artifacts_root
 from lince_lab.policy import check as policy_check
-from lince_lab.recipe import load_recipe, run_recipe, validate
+from lince_lab.policy import check_capture as policy_check_capture
+from lince_lab.recipe import Recipe, effective_egress, load_recipe, run_recipe, validate
+from lince_lab.templates import build_template
 
 
 class BrokerServer:
@@ -53,9 +58,13 @@ class BrokerServer:
         self.config = dict(config or {})
         self.home = home
         self._sock: socket.socket | None = None
-        self._locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
+        self._locks: dict[str, threading.Lock] = {}
         self._stop = threading.Event()
         self._dispatch: dict[str, Callable[[dict[str, Any]], Any]] = self._build_dispatch()
+
+    # Cap on the per-VM lock table so a long-lived broker churning many VM names
+    # cannot grow it without bound (see :meth:`_lock_for`).
+    _MAX_LOCKS = 256
 
     # ── server lifecycle ─────────────────────────────────────────────────────
     def bind(self) -> None:
@@ -108,7 +117,7 @@ class BrokerServer:
         """Serve newline-JSON requests on ``conn`` until the peer closes it."""
         rbuf = bytearray()
         while True:
-            line = _read_line(conn, rbuf)
+            line = protocol.read_line(conn.recv, rbuf)
             if line is None:
                 return
             response, capture_setup = self._handle_line(line)
@@ -138,16 +147,29 @@ class BrokerServer:
                 None,
             )
 
+    # Verbs that take a recipe path and run an orchestration over a loaded recipe.
+    _RECIPE_VERBS: frozenset[str] = frozenset({"recipe.validate", "recipe.run", "bisect.run"})
+
     def _dispatch_request(
         self, request_id: str, verb: str, args: dict[str, Any]
     ) -> tuple[dict[str, Any], "_CaptureSetup | None"]:
-        """Policy-check then route a validated request to its handler."""
-        recipe_ctx = self._recipe_ctx_for(verb, args)
+        """Policy-check then route a validated request to its handler.
+
+        For orchestration verbs the recipe TOML is loaded **once** here, used both
+        to derive the trusted policy context and passed to the handler, so the file
+        is never parsed twice per request.
+        """
+        recipe = self._load_recipe_for(verb, args)
+        recipe_ctx = self._recipe_ctx(recipe)
         safe_args = policy_check(verb, args, recipe_ctx, home=self.home)
 
         if verb == "capture.open":
             setup = self._open_capture(safe_args)
             return protocol.make_ok(request_id, {"opened": True}), setup
+
+        if recipe is not None:
+            result = self._run_recipe_handler(verb, recipe, safe_args)
+            return protocol.make_ok(request_id, result), None
 
         handler = self._dispatch.get(verb)
         if handler is None:
@@ -156,31 +178,70 @@ class BrokerServer:
 
         vm_name = args.get("name")
         if isinstance(vm_name, str) and vm_name:
-            with self._locks[vm_name]:
+            with self._lock_for(vm_name):
                 result = handler(safe_args)
         else:
             result = handler(safe_args)
         return protocol.make_ok(request_id, result), None
 
-    # ── recipe context (server-side trusted facts for policy) ────────────────
-    def _recipe_ctx_for(self, verb: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Build the trusted recipe context a policy check for ``verb`` needs.
+    # ── recipe loading + context (server-side trusted facts for policy) ──────
+    def _load_recipe_for(self, verb: str, args: dict[str, Any]) -> Recipe | None:
+        """Load the recipe for an orchestration ``verb`` once (else ``None``).
 
-        For ``recipe.run`` / ``bisect.run`` it loads the recipe and exposes its
-        workspace dir + network posture; for ``vm.copy_in`` it passes through a
-        caller-provided ``workspace_dir`` (the broker sets this during a recipe
-        run). Recipe-load failures surface as ``DATA_ERROR`` to the client.
+        A non-recipe verb yields ``None``. A recipe verb missing its ``recipe``
+        path, or whose TOML fails to load, raises ``DATA_ERROR`` (exit 65) — the
+        client gets a clear data error rather than a confusing fall-through.
         """
-        if verb in ("recipe.run", "bisect.run", "recipe.validate"):
-            recipe_path = args.get("recipe")
-            if isinstance(recipe_path, str) and recipe_path:
-                recipe = load_recipe(recipe_path)
-                workspace = recipe.workspace.get("host_dir")
-                workspace_dir = str((recipe.source_dir / str(workspace)).resolve()) if workspace else None
-                return {"workspace_dir": workspace_dir, "network": recipe.network}
-        if verb == "vm.copy_in":
-            return {"workspace_dir": args.get("workspace_dir")}
-        return {}
+        if verb not in self._RECIPE_VERBS:
+            return None
+        recipe_path = args.get("recipe")
+        if not isinstance(recipe_path, str) or not recipe_path:
+            raise DataError(f"{verb} requires a 'recipe' path")
+        return load_recipe(recipe_path)
+
+    def _recipe_ctx(self, recipe: Recipe | None) -> dict[str, Any]:
+        """Build the trusted recipe context the policy check needs from a recipe.
+
+        Exposes the recipe's resolved workspace dir + network posture. A **bare**
+        ``vm.copy_in`` over the wire carries *no* server-side recipe context — the
+        recipe run flow stages the workspace via ``backend.copy_in`` directly,
+        never through this verb — so the broker supplies an empty context and
+        policy fail-closes (a client ``workspace_dir`` is never trusted, §3.3).
+        """
+        if recipe is None:
+            return {}
+        workspace = recipe.workspace.get("host_dir")
+        workspace_dir = str((recipe.source_dir / str(workspace)).resolve()) if workspace else None
+        return {"workspace_dir": workspace_dir, "network": recipe.network}
+
+    def _run_recipe_handler(self, verb: str, recipe: Recipe, args: dict[str, Any]) -> dict[str, Any]:
+        """Route an orchestration verb to its handler with the pre-loaded recipe."""
+        if verb == "recipe.validate":
+            return self._h_recipe_validate(recipe)
+        if verb == "recipe.run":
+            return self._h_recipe_run(recipe, args)
+        return self._h_bisect_run(recipe, args)
+
+    def _lock_for(self, vm_name: str) -> threading.Lock:
+        """Return the per-VM lock, capping the lock table so it cannot grow without bound.
+
+        A future threaded accept loop serializes operations on the same instance
+        via this lock. The table is bounded: once it reaches ``_MAX_LOCKS`` an
+        unheld lock is evicted to make room (a held one is never evicted), so a long
+        broker uptime churning many VM names cannot leak unbounded locks.
+        """
+        lock = self._locks.get(vm_name)
+        if lock is not None:
+            return lock
+        if len(self._locks) >= self._MAX_LOCKS:
+            for name, existing in list(self._locks.items()):
+                if existing.acquire(blocking=False):
+                    existing.release()
+                    del self._locks[name]
+                    break
+        lock = threading.Lock()
+        self._locks[vm_name] = lock
+        return lock
 
     # ── verb routing table ───────────────────────────────────────────────────
     def _build_dispatch(self) -> dict[str, Callable[[dict[str, Any]], Any]]:
@@ -199,9 +260,6 @@ class BrokerServer:
             "snap.apply": self._h_snap_apply,
             "snap.delete": self._h_snap_delete,
             "snap.list": self._h_snap_list,
-            "recipe.validate": self._h_recipe_validate,
-            "recipe.run": self._h_recipe_run,
-            "bisect.run": self._h_bisect_run,
         }
 
     # ── liveness ─────────────────────────────────────────────────────────────
@@ -210,10 +268,19 @@ class BrokerServer:
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _h_create(self, args: dict[str, Any]) -> dict[str, Any]:
-        # Template is forced server-side: policy stripped any client one, so the
-        # broker supplies the (possibly empty) template the backend should use.
-        template = args.get("template_yaml") or self.config.get("template_yaml", "")
-        self.backend.create(args["name"], str(template))
+        # Template is forced server-side and the client's template is ignored
+        # ENTIRELY (policy already strips ``template_yaml``; we never read it). The
+        # broker rebuilds the policy-forced template from its own config + the
+        # request's declared sizing needs. A bare ``vm up`` declares no image, so
+        # there is nothing to build — the backend gets an empty template.
+        needs = {
+            "image": args.get("image"),
+            "cpus": args.get("cpus"),
+            "memory": args.get("memory"),
+            "disk": args.get("disk"),
+        }
+        template = build_template(self.config, needs) if needs["image"] else ""
+        self.backend.create(args["name"], template)
         return {"created": args["name"]}
 
     def _h_start(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +299,11 @@ class BrokerServer:
         return _vmstate_to_dict(self.backend.status(args["name"]))
 
     def _h_list(self, args: dict[str, Any]) -> list[dict[str, Any]]:
-        return [_vmstate_to_dict(s) for s in self.backend.list()]
+        # Disclose ONLY lab-namespaced instances; a user's other VMs (which a real
+        # `limactl list` would include) are never surfaced over the broker.
+        return [
+            _vmstate_to_dict(s) for s in self.backend.list() if s.name.startswith(VM_NAME_PREFIX)
+        ]
 
     # ── exec / files ─────────────────────────────────────────────────────────
     def _h_exec(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -282,20 +353,64 @@ class BrokerServer:
         return {"snapshots": self.backend.snapshot_list(args["name"])}
 
     # ── recipe / bisect ──────────────────────────────────────────────────────
-    def _h_recipe_validate(self, args: dict[str, Any]) -> dict[str, Any]:
-        recipe = load_recipe(str(args["recipe"]))
+    # These handlers receive the Recipe already loaded once by _dispatch_request,
+    # so the TOML is never parsed twice per orchestration request.
+    def _h_recipe_validate(self, recipe: Recipe) -> dict[str, Any]:
         validate(recipe, self.config or None)
         return {"valid": True, "recipe": recipe.name}
 
-    def _h_recipe_run(self, args: dict[str, Any]) -> dict[str, Any]:
-        recipe = load_recipe(str(args["recipe"]))
-        exit_code = run_recipe(self.backend, recipe, self.config, keep=bool(args.get("keep", False)))
-        return {"exit_code": exit_code, "recipe": recipe.name}
+    def _h_recipe_run(self, recipe: Recipe, args: dict[str, Any]) -> dict[str, Any]:
+        # Record the effective egress decision (deny, or the resolved allow rules)
+        # to <artifacts>/egress.log BEFORE running, so the log reflects the posture
+        # the run is about to enforce even if a step later fails (blueprint §3.2).
+        config = self._effective_config(args)
+        egress_log = self._write_egress_log(recipe)
+        exit_code = run_recipe(self.backend, recipe, config, keep=self._effective_keep(config, args))
+        return {"exit_code": exit_code, "recipe": recipe.name, "egress_log": str(egress_log)}
 
-    def _h_bisect_run(self, args: dict[str, Any]) -> dict[str, Any]:
+    def _effective_config(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return the run config with the request's named ``preset`` overlaid.
+
+        A ``--preset`` carried on the request overlays the broker's base config so
+        the preset's resource / lifecycle knobs (cpus / memory / disk, keep_vm,
+        step_timeout_s, retain_base_snapshot) take effect for this run. An unknown
+        preset is a client data error (exit 65).
+        """
+        preset = args.get("preset")
+        if not preset:
+            return self.config
+        try:
+            return apply_preset(self.config, str(preset))
+        except KeyError as exc:
+            raise DataError(f"unknown preset {preset!r}") from exc
+
+    @staticmethod
+    def _effective_keep(config: dict[str, Any], args: dict[str, Any]) -> bool:
+        """Resolve whether to keep the VM: explicit client ``keep`` wins, else the preset's ``keep_vm``."""
+        if "keep" in args:
+            return bool(args["keep"])
+        return bool(config.get("keep_vm", False))
+
+    def _write_egress_log(self, recipe: Recipe) -> Path:
+        """Write the effective egress decision to ``<artifacts>/egress.log``.
+
+        The artifacts root is server-derived (:func:`policy.artifacts_root`) under
+        the broker's home — never a client value. The decision is the same one
+        :func:`build_template` bakes into the boot script, so the log is an honest
+        record of the posture the VM will run under. Returns the log path.
+        """
+        home = self.home if self.home is not None else Path.home()
+        out_root = artifacts_root(home)
+        out_root.mkdir(parents=True, exist_ok=True)
+        decision = effective_egress(recipe)
+        document = {"recipe": recipe.name, "egress": decision}
+        log_path = out_root / "egress.log"
+        log_path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return log_path
+
+    def _h_bisect_run(self, recipe: Recipe, args: dict[str, Any]) -> dict[str, Any]:
         from lince_lab.bisect import run_bisect
 
-        recipe = load_recipe(str(args["recipe"]))
         document = run_bisect(
             self.backend,
             recipe,
@@ -311,7 +426,7 @@ class BrokerServer:
     # ── capture stream ───────────────────────────────────────────────────────
     def _open_capture(self, args: dict[str, Any]) -> "_CaptureSetup":
         program = [str(a) for a in (args.get("program") or [])]
-        cols, rows = _parse_size(str(args.get("size", "80x24")))
+        cols, rows = parse_size(str(args.get("size", "80x24")))
         channel = self.backend.open_capture(args["name"], program, cols, rows)
         return _CaptureSetup(Capture(channel, cols, rows))
 
@@ -326,14 +441,18 @@ class BrokerServer:
         capture = setup.capture
         try:
             while True:
-                line = _read_line(conn, rbuf)
+                line = protocol.read_line(conn.recv, rbuf)
                 if line is None:
                     return
                 request_id = "unknown"
                 try:
                     envelope = protocol.decode(line)
                     request_id, verb, args = protocol.validate_request(envelope)
-                    result = self._handle_capture_verb(capture, verb, args)
+                    # Gate every capture-stream verb through policy before it can
+                    # drive the live channel — the upgraded stream is NOT a policy
+                    # bypass (blueprint §3).
+                    safe_args = policy_check_capture(verb, args, home=self.home)
+                    result = self._handle_capture_verb(capture, verb, safe_args)
                     conn.sendall(protocol.encode(protocol.make_ok(request_id, result)))
                 except LabError as exc:
                     conn.sendall(
@@ -378,28 +497,6 @@ class _CaptureSetup:
 # ── module-level helpers ─────────────────────────────────────────────────────
 
 
-def _read_line(conn: socket.socket, rbuf: bytearray) -> bytes | None:
-    """Read one newline-terminated frame from ``conn``, buffering the remainder.
-
-    Returns the line without its trailing newline, a final partial line at clean
-    EOF, or ``None`` when the peer closes with nothing buffered.
-    """
-    while True:
-        newline = rbuf.find(b"\n")
-        if newline != -1:
-            line = bytes(rbuf[:newline])
-            del rbuf[: newline + 1]
-            return line
-        chunk = conn.recv(65536)
-        if not chunk:
-            if rbuf:
-                line = bytes(rbuf)
-                rbuf.clear()
-                return line
-            return None
-        rbuf.extend(chunk)
-
-
 def _vmstate_to_dict(state: VmState) -> dict[str, Any]:
     """Serialize a :class:`VmState` for the wire."""
     return {"name": state.name, "status": state.status.value, "snapshots": list(state.snapshots)}
@@ -408,12 +505,3 @@ def _vmstate_to_dict(state: VmState) -> dict[str, Any]:
 def _grid_to_dict(grid: Any) -> dict[str, Any]:
     """Serialize a :class:`~lince_lab.capture.Grid` for the wire."""
     return {"cols": grid.cols, "rows": grid.rows, "text": grid.text}
-
-
-def _parse_size(size: str) -> tuple[int, int]:
-    """Parse ``"<cols>x<rows>"`` into ``(cols, rows)``; raise ``DataError`` if malformed."""
-    try:
-        cols_s, rows_s = size.lower().split("x", 1)
-        return int(cols_s), int(rows_s)
-    except (ValueError, AttributeError) as exc:
-        raise DataError(f"invalid capture size {size!r}; expected '<cols>x<rows>'") from exc
