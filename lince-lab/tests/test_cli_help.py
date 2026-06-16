@@ -133,6 +133,14 @@ class CliStructureTests(unittest.TestCase):
                 parser.parse_args(["run", "recipe", "r.toml", "--preset", "nope"])
 
 
+# Realistic broker config so a bare `vm up` resolves the default image.
+_FAKE_CONFIG = {
+    "default_image": "fedora",
+    "images": {"fedora": {"location": "https://example/Fedora.qcow2", "arch": "x86_64", "digest": ""}},
+    "vm": {"cpus": 2, "memory": "2GiB", "disk": "20GiB"},
+}
+
+
 class CliEndToEndTests(unittest.TestCase):
     """CLI subprocess → real socket → in-process broker → FakeBackend."""
 
@@ -140,7 +148,7 @@ class CliEndToEndTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.sock_path = str(pathlib.Path(self.tmp.name) / "lince-lab.sock")
         self.backend = FakeBackend()
-        self.server = BrokerServer(self.sock_path, self.backend, config={})
+        self.server = BrokerServer(self.sock_path, self.backend, config=_FAKE_CONFIG)
         self.server.bind()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()

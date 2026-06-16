@@ -26,6 +26,8 @@ from typing import Any
 DEFAULTS: dict[str, Any] = {
     "socket_path": str(Path.home() / ".agent-sandbox" / "lince-lab.sock"),
     "grid_size": "80x24",
+    # Image a bare `vm up <name>` (no recipe) boots; must key into `images` below.
+    "default_image": "fedora",
     "vm": {
         "cpus": 2,
         "memory": "2GiB",

@@ -272,14 +272,16 @@ class BrokerServer:
         # ENTIRELY (policy already strips ``template_yaml``; we never read it). The
         # broker rebuilds the policy-forced template from its own config + the
         # request's declared sizing needs. A bare ``vm up`` declares no image, so
-        # there is nothing to build — the backend gets an empty template.
+        # we fall back to the config's ``default_image`` — a real Lima backend
+        # rejects an empty template ("got empty instConfig"), so a bootable image
+        # is always resolved.
         needs = {
-            "image": args.get("image"),
+            "image": args.get("image") or self.config.get("default_image", "fedora"),
             "cpus": args.get("cpus"),
             "memory": args.get("memory"),
             "disk": args.get("disk"),
         }
-        template = build_template(self.config, needs) if needs["image"] else ""
+        template = build_template(self.config, needs)
         self.backend.create(args["name"], template)
         return {"created": args["name"]}
 

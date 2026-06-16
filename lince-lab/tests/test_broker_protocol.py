@@ -87,6 +87,15 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(err["error"]["exit"], 13)
 
 
+# A realistic-enough broker config: an image allowlist + default image (so a bare
+# vm.create can build a Fake-ignored template) + VM sizing defaults.
+_FAKE_CONFIG = {
+    "default_image": "fedora",
+    "images": {"fedora": {"location": "https://example/Fedora.qcow2", "arch": "x86_64", "digest": ""}},
+    "vm": {"cpus": 2, "memory": "2GiB", "disk": "20GiB"},
+}
+
+
 class _ServerFixture(unittest.TestCase):
     """Starts a FakeBackend-backed BrokerServer on a real unix socket in a thread."""
 
@@ -94,7 +103,7 @@ class _ServerFixture(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.sock_path = str(pathlib.Path(self.tmp.name) / "lince-lab.sock")
         self.backend = FakeBackend()
-        self.server = BrokerServer(self.sock_path, self.backend, config={})
+        self.server = BrokerServer(self.sock_path, self.backend, config=_FAKE_CONFIG)
         self.server.bind()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -186,11 +195,18 @@ class RoundTripTests(_ServerFixture):
         self.assertEqual(exc.exception.exit_code, POLICY_DENIED)
 
     def test_template_forcing_drops_client_template(self):
-        # The client template is stripped by policy; the broker stores its own.
+        # The client template is ignored entirely; the broker builds its own
+        # policy-forced template server-side.
         with self.client() as c:
             c.call("vm.create", {"name": LAB_VM, "template_yaml": "mounts: [/home]"})
         stored = self.backend.fs_of(LAB_VM)["/.lince-lab/template.yaml"].decode()
-        self.assertNotIn("mounts", stored)
+        # The client's attempted host mount is dropped, and the non-overridable
+        # isolation invariants are present: no host mounts, plain mode, no host
+        # ssh keys.
+        self.assertNotIn("/home", stored)
+        self.assertIn('"mounts": []', stored)
+        self.assertIn('"plain": true', stored)
+        self.assertIn('"loadDotSSHPubKeys": false', stored)
 
     def test_bare_copy_in_with_forged_workspace_is_denied(self):
         # The broker never trusts a client workspace_dir: a bare vm.copy_in (no

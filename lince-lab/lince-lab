@@ -138,7 +138,10 @@ def _emit(args: argparse.Namespace, result, human: str | None = None) -> None:
 def cmd_vm_up(args: argparse.Namespace) -> int:
     """Create + start a disposable VM (``vm.create`` then ``vm.start``)."""
     client = _client(args)
-    client.call("vm.create", {"name": args.name, "template_yaml": ""})
+    create_args: dict = {"name": args.name, "template_yaml": ""}
+    if getattr(args, "image", None):
+        create_args["image"] = args.image
+    client.call("vm.create", create_args)
     client.call("vm.start", {"name": args.name})
     _emit(args, {"started": args.name}, f"started {args.name}")
     return 0
@@ -555,6 +558,7 @@ def _build_vm_group(sub: argparse._SubParsersAction) -> None:
 
     up = vsub.add_parser("up", help="create and start a disposable VM")
     up.add_argument("name", help="VM name (lince-lab-* namespace)")
+    up.add_argument("--image", help="base image (key into config images); default: config default_image")
     _add_socket_flag(up)
     _add_json_flag(up)
     _add_quiet_flag(up)
