@@ -114,6 +114,17 @@ class LifecycleArgvTestCase(unittest.TestCase):
         self.assertEqual(self._argv(run), ["limactl", "snapshot", "list", "lab"])
         self.assertEqual(tags, ["base-clean", "candidate-2"])
 
+    def test_snapshot_list_parses_qemu_table_tag_column(self) -> None:
+        # The real QEMU backend prints qemu's table: the tag is the 2nd column,
+        # under a TAG header, after a "List of snapshots ..." preamble line.
+        stdout = (
+            "List of snapshots present on all disks:\n"
+            "ID        TAG          VM SIZE    DATE                  VM CLOCK\n"
+            "1         base         0 B        2026-06-16 09:00:00   00:00:00.000\n"
+            "2         other        0 B        2026-06-16 09:01:00   00:00:00.000\n"
+        )
+        self.assertEqual(LimaBackend._parse_snapshot_list(stdout), ["base", "other"])
+
 
 class StatusListTestCase(unittest.TestCase):
     """Assert `limactl list --json` argv + parsing into VmState."""

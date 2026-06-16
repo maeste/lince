@@ -301,22 +301,29 @@ class LimaBackend(Backend):
 
     @staticmethod
     def _parse_snapshot_list(stdout: str) -> list[str]:
-        """Parse ``limactl snapshot list`` output into a list of tags.
+        """Parse ``limactl snapshot list`` output into a list of snapshot tags.
 
-        The command prints a header line (``TAG ...``) followed by one tag per
-        line. We take the first whitespace-delimited field of each non-header,
-        non-empty line.
+        The QEMU backend surfaces qemu's snapshot table, whose columns are
+        ``ID  TAG  VM SIZE  DATE  VM CLOCK`` — the tag is the **second** column,
+        under a ``TAG`` header (usually preceded by a ``List of snapshots ...``
+        line). We locate the ``TAG`` header column and read that column from each
+        following row. If no recognizable header is found we fall back to
+        one-tag-per-line (first field), tolerating a simpler ``TAG``-then-tags
+        layout.
         """
-        tags: list[str] = []
-        for raw in stdout.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            first = line.split()[0]
-            if first.upper() == "TAG":
-                continue
-            tags.append(first)
-        return tags
+        lines = [ln for ln in stdout.splitlines() if ln.strip()]
+        for i, line in enumerate(lines):
+            upper = [f.upper() for f in line.split()]
+            if "TAG" in upper:
+                tag_col = upper.index("TAG")
+                tags: list[str] = []
+                for row in lines[i + 1 :]:
+                    cols = row.split()
+                    if len(cols) > tag_col:
+                        tags.append(cols[tag_col])
+                return tags
+        # No header row → assume one tag per line (first field).
+        return [line.split()[0] for line in lines]
 
     # ── capture ──────────────────────────────────────────────────────────────
     def open_capture(self, name: str, argv: list[str], cols: int, rows: int) -> CaptureChannel:
