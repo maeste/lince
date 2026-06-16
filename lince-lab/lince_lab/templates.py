@@ -127,6 +127,12 @@ _NFT_FAILCLOSED_PREAMBLE = (
     "nft add table inet lince_lab\n"
     "nft add chain inet lince_lab output '{ type filter hook output priority 0 ; policy drop ; }'\n"
     "nft add rule inet lince_lab output oif lo accept\n"
+    # Allow replies to connections opened from OUTSIDE the guest — notably Lima's
+    # management SSH (host -> guest). Without this the guest's SSH reply packets
+    # are egress and get dropped, so Lima never connects ("waiting for ssh" -> the
+    # VM never reaches 'running'). This does NOT let the agent initiate egress: a
+    # NEW outbound connection still has no accept rule and hits the default drop.
+    "nft add rule inet lince_lab output ct state established,related accept\n"
 )
 
 
@@ -153,8 +159,8 @@ def _net_allow_script(allow_ips: list[str], allow_ports: list[int]) -> str:
     lines = [
         "#!/bin/sh",
         f"# {NET_ALLOW_MARKER}",
+        # The preamble already permits established/related replies (Lima SSH).
         _NFT_FAILCLOSED_PREAMBLE.rstrip("\n"),
-        "nft add rule inet lince_lab output ct state established,related accept",
     ]
     ports = [int(p) for p in allow_ports] or [443]
     for ip in allow_ips:
