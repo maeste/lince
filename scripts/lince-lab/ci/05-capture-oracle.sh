@@ -36,14 +36,16 @@ assert "$LINCE_LAB_BIN" --socket "$SOCK" vm up "$VM" -- "vm up for capture"
 # wait_for_substring on the echoed text proves the channel + sync primitive work
 # end-to-end without any fixed sleep.
 log "watch wait --for over a live ht channel (deterministic, no sleep)"
-# Two requirements for a deterministic capture check:
-#   1) `wait --for` (not `grab`): polls until the needle appears, no fixed sleep.
-#   2) a LONG-LIVED program: a bare `echo` prints then exits, so ht tears its grid
-#      down before we can snapshot it (the old "timed out waiting for terminal
-#      snapshot" flake). `sh -c 'echo MARKER; cat'` prints the marker and then
-#      blocks in `cat`, keeping ht alive until the channel is closed (cat then
-#      sees EOF and exits cleanly — no leftover process, no fixed sleep).
-GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 --cmd-timeout 30 --for lince-capture-ok --program sh -c 'echo lince-capture-ok; cat')"
+# The capture program must satisfy two constraints:
+#   1) LONG-LIVED so ht keeps its grid up for the snapshot (a print-then-exit
+#      program races ht's teardown — the old "timed out waiting for terminal
+#      snapshot" flake).
+#   2) SIMPLE argv — no space-containing element, no shell metacharacters —
+#      because `limactl shell` word-splits a multi-word arg in transit (a
+#      `sh -c '...; ...'` script gets mangled in the guest). `yes <marker>` meets
+#      both: it floods the marker forever (long-lived) with single-word argv that
+#      survives the transport, and exits cleanly when the channel closes.
+GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 --cmd-timeout 30 --for lince-capture-ok --program yes lince-capture-ok)"
 assert_contains "$GRID" "lince-capture-ok" "ht grid contains the program output"
 
 log "watch keys sends input through the channel"
@@ -54,7 +56,7 @@ assert "$LINCE_LAB_BIN" --socket "$SOCK" watch keys "$VM" --size 80x24 \
     -- "watch keys injected the sequence"
 
 WAITED="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 \
-    --cmd-timeout 30 --for READY-SUBSTRING --program sh -c 'echo READY-SUBSTRING; cat')"
+    --cmd-timeout 30 --for READY-SUBSTRING --program yes READY-SUBSTRING)"
 assert_contains "$WAITED" "READY-SUBSTRING" "wait_for_substring returned the settled grid"
 
 # ── #256: pixel-PNG capture artifact (optional Pillow layer over the grid) ───
@@ -70,7 +72,7 @@ ARTIFACTS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/lince/lince-lab/artifacts"
 CAP_NAME="ci05-capture-$$"
 rm -f "$ARTIFACTS_DIR/$CAP_NAME.png" "$ARTIFACTS_DIR/$CAP_NAME.txt" 2>/dev/null || true
 "$LINCE_LAB_BIN" --socket "$SOCK" watch grab "$VM" --size 80x24 \
-    --cmd-timeout 30 --png "$CAP_NAME" --program sh -c 'echo lince-png-ok; cat' >/dev/null
+    --cmd-timeout 30 --png "$CAP_NAME" --program yes lince-png-ok >/dev/null
 if python3 -c 'import PIL' >/dev/null 2>&1; then
     PNG="$ARTIFACTS_DIR/$CAP_NAME.png"
     assert_file "$PNG" "PNG capture artifact written (Pillow present)"
