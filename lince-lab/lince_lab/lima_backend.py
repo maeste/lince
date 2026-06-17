@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -59,6 +60,9 @@ HT_BINARY = "ht"
 # Where the host-side ht is copied to inside the guest. A disposable, world-safe
 # /tmp path: it carries no host access — it is just our own capture driver.
 GUEST_HT_PATH = "/tmp/lince-lab-ht"
+
+# Sentinel queued by the stdout reader thread when ht closes its stdout (EOF).
+_STDOUT_EOF = object()
 
 
 def _host_ht_path() -> str:
@@ -99,11 +103,14 @@ class LimaCaptureChannel(CaptureChannel):
     newline-delimited JSON to the process stdin; events (``output`` /
     ``snapshot`` / ...) are read as newline-delimited JSON from its stdout.
 
-    :meth:`read_line` honours an absolute ``time.monotonic()`` ``deadline`` so
-    the capture wait primitives stay sleep-free: it blocks on the readline
-    thread's queue only until the deadline, returning ``None`` on silence.
+    :meth:`read_line` honours an absolute ``time.monotonic()`` ``deadline``: a
+    daemon reader thread drains ht's stdout into a queue, and ``read_line`` blocks
+    on that queue only until the deadline, returning ``None`` on silence. This is
+    load-bearing — a naive ``proc.stdout.readline()`` blocks FOREVER while ht is
+    alive but quiet (a long-lived TUI that has not changed), so the deadline must
+    bound the *queue wait*, not a raw pipe read.
 
-    For diagnosability, ``ht``'s **stderr is drained on a background thread**
+    For diagnosability, ``ht``'s **stderr is drained on a background thread too**
     (otherwise it is invisible and a full pipe could deadlock ht), and the tail
     of both streams plus the spawn argv and exit status are kept in ring buffers
     so :meth:`diagnostics` can explain a capture timeout (e.g. ``ht: command not
@@ -117,12 +124,36 @@ class LimaCaptureChannel(CaptureChannel):
         self._argv = list(argv or [])
         self._stdout_tail: deque[str] = deque(maxlen=50)
         self._stderr_tail: deque[str] = deque(maxlen=50)
+        # Reader thread → queue, so read_line's deadline bounds a quiet-but-alive ht.
+        self._stdout_q: queue.Queue = queue.Queue()
+        self._stdout_eof = False
+        self._stdout_thread: threading.Thread | None = None
+        if self._proc.stdout is not None:
+            self._stdout_thread = threading.Thread(target=self._drain_stdout, daemon=True)
+            self._stdout_thread.start()
         # Drain stderr continuously so it is captured AND cannot fill the pipe and
         # wedge ht. A daemon thread ends on its own when ht closes stderr/exits.
         self._stderr_thread: threading.Thread | None = None
         if self._proc.stderr is not None:
             self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
             self._stderr_thread.start()
+
+    def _drain_stdout(self) -> None:
+        stdout = self._proc.stdout
+        if stdout is None:
+            return
+        try:
+            # iter(readline, "") yields each line AS IT ARRIVES (no read-ahead
+            # buffering, unlike `for line in stdout`), then stops at EOF ("").
+            for line in iter(stdout.readline, ""):
+                stripped = line.strip()
+                if stripped:
+                    self._stdout_tail.append(stripped[:500])
+                    self._stdout_q.put(stripped)
+        except (ValueError, OSError):
+            pass
+        finally:
+            self._stdout_q.put(_STDOUT_EOF)
 
     def _drain_stderr(self) -> None:
         stderr = self._proc.stderr
@@ -144,26 +175,27 @@ class LimaCaptureChannel(CaptureChannel):
     def read_line(self, deadline: float) -> dict | None:
         if self._proc.stdout is None:
             return None
-        # Block on the pipe until a line arrives or the deadline elapses. We use
-        # a short bounded poll (no fixed sleep semantics — the loop advances the
-        # instant a line is available and returns the moment the deadline hits).
+        # Pull parsed events from the reader thread's queue, bounded by the
+        # deadline. A quiet-but-alive ht just yields nothing → None at the deadline
+        # (never an infinite block); EOF yields None for good.
         while True:
-            line = self._proc.stdout.readline()
-            if line:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                self._stdout_tail.append(stripped[:500])
-                try:
-                    return json.loads(stripped)
-                except json.JSONDecodeError:
-                    # Skip non-JSON noise (e.g. ssh banners) rather than fail.
-                    continue
-            # EOF or empty read: respect the deadline.
-            if time.monotonic() >= deadline:
+            if self._stdout_eof:
                 return None
-            if self._proc.poll() is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return None
+            try:
+                item = self._stdout_q.get(timeout=remaining)
+            except queue.Empty:
+                return None
+            if item is _STDOUT_EOF:
+                self._stdout_eof = True
+                return None
+            try:
+                return json.loads(item)
+            except json.JSONDecodeError:
+                # Skip non-JSON noise (e.g. ssh banners); recompute the deadline.
+                continue
 
     def diagnostics(self) -> str:
         """Explain what ``ht`` did — argv, exit status, and stderr/stdout tails."""

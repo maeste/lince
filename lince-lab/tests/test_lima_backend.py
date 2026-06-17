@@ -21,6 +21,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -292,7 +293,8 @@ class OpenCaptureTestCase(unittest.TestCase):
             host_ht.write(b"#!/bin/sh\n")
             host_ht.flush()
             fake_proc = mock.MagicMock(spec=subprocess.Popen)
-            fake_proc.stderr = None  # no drain thread in this argv-only assertion
+            fake_proc.stdout = None  # no reader/drain threads in this argv-only assertion
+            fake_proc.stderr = None
             with mock.patch.dict(os.environ, {"LINCE_LAB_HT": host_ht.name}, clear=False):
                 with mock.patch(
                     "lince_lab.lima_backend.subprocess.run",
@@ -336,7 +338,8 @@ class OpenCaptureTestCase(unittest.TestCase):
         missing = str(pathlib.Path(tempfile.gettempdir()) / "lince-lab-no-such-ht-binary")
         self.assertFalse(os.path.exists(missing))
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
-        fake_proc.stderr = None  # no drain thread in this argv-only assertion
+        fake_proc.stdout = None  # no reader/drain threads in this argv-only assertion
+        fake_proc.stderr = None
         with mock.patch.dict(os.environ, {"LINCE_LAB_HT": missing}, clear=False):
             with mock.patch(
                 "lince_lab.lima_backend.subprocess.run",
@@ -399,6 +402,30 @@ class CaptureChannelTestCase(unittest.TestCase):
         event = channel.read_line(deadline=9e18)
         self.assertIsNone(event)
 
+    def test_read_line_respects_deadline_when_alive_and_silent(self) -> None:
+        # Regression: a long-lived ht that has gone quiet (no new events, no EOF)
+        # must NOT make read_line block forever — the deadline has to bound the
+        # wait. Model it with a real pipe whose WRITE end stays open: readline()
+        # in the reader thread blocks (no data, no EOF), the queue stays empty.
+        r_fd, w_fd = os.pipe()
+        rf = os.fdopen(r_fd, "r")
+        proc = mock.MagicMock(spec=subprocess.Popen)
+        proc.stdin = mock.MagicMock()
+        proc.stdout = rf
+        proc.stderr = None
+        proc.poll.return_value = None  # still alive
+        channel = LimaCaptureChannel(proc)
+        try:
+            start = time.monotonic()
+            result = channel.read_line(deadline=time.monotonic() + 0.2)
+            elapsed = time.monotonic() - start
+            self.assertIsNone(result)
+            self.assertLess(elapsed, 2.0)  # bounded by the deadline, did not hang
+        finally:
+            os.close(w_fd)  # EOF → the reader thread unblocks and exits
+            rf.close()
+            channel.close()
+
     def test_close_terminates_process(self) -> None:
         channel, proc = self._make_channel([])
         channel.close()
@@ -441,7 +468,7 @@ class CaptureDiagnosticsTestCase(unittest.TestCase):
     def test_diagnostics_notes_still_running_with_empty_stderr(self) -> None:
         proc = mock.MagicMock(spec=subprocess.Popen)
         proc.stdin = mock.MagicMock()
-        proc.stdout = mock.MagicMock()
+        proc.stdout = None  # diagnostics-only: no reader thread
         proc.stderr = None
         proc.poll.return_value = None  # still alive
         channel = LimaCaptureChannel(proc, argv=["ht"])
