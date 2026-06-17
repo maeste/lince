@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -253,10 +254,17 @@ def _build_base_vm(
     template_yaml = build_template(config, recipe_needs(recipe))
     backend.create(vm_name, template_yaml)
     backend.start(vm_name)
-    for entry in recipe.provision:
-        script = entry.get("script")
-        if script:
-            backend.exec(vm_name, ["sh", "-c", str(script)], timeout=step_timeout)
+    provisions = [e for e in recipe.provision if e.get("script")]
+    for i, entry in enumerate(provisions, 1):
+        # Captured (not streamed) — announce so a slow `dnf install` is not a
+        # silent multi-minute wait that looks hung.
+        print(
+            f"lince-lab: provisioning bisect VM {vm_name!r} (step {i}/{len(provisions)}; "
+            "this can take a few minutes, output is captured)…",
+            file=sys.stderr,
+            flush=True,
+        )
+        backend.exec(vm_name, ["sh", "-c", str(entry["script"])], timeout=step_timeout)
     apply_egress_lockdown(backend, vm_name, recipe, step_timeout=step_timeout)
     # Stage the (non-root) workspace dir INTO the base snapshot, so every
     # per-candidate reset restores a user-owned guest_dir the unprivileged copy

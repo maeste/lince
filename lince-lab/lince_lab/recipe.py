@@ -21,6 +21,7 @@ Three public entry points:
 
 from __future__ import annotations
 
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -223,11 +224,20 @@ def run_recipe(
         # (ht / node / git / ...); the egress lock-down is applied AFTER provision
         # and BEFORE the snapshot so every reset candidate runs restricted, and
         # BEFORE the (untrusted) recipe steps. A lock-down failure fails the run.
-        for entry in recipe.provision:
-            script = entry.get("script")
-            if not script:
-                continue
-            backend.exec(vm_name, ["sh", "-c", str(script)], timeout=step_timeout)
+        provisions = [e for e in recipe.provision if e.get("script")]
+        for i, entry in enumerate(provisions, 1):
+            # Provision output is captured (not streamed), so a slow step (e.g.
+            # `dnf install nodejs npm`) is an otherwise-silent multi-minute wait.
+            # Announce it so the run does not look hung.
+            print(
+                f"lince-lab: provisioning VM {vm_name!r} (step {i}/{len(provisions)}; "
+                "installing the toolchain — this can take a few minutes, output is captured)…",
+                file=sys.stderr,
+                flush=True,
+            )
+            backend.exec(vm_name, ["sh", "-c", str(entry["script"])], timeout=step_timeout)
+        if provisions:
+            print(f"lince-lab: provisioning complete on {vm_name!r}", file=sys.stderr, flush=True)
         apply_egress_lockdown(backend, vm_name, recipe, step_timeout=step_timeout)
         backend.snapshot_create(vm_name, BASE_SNAPSHOT_TAG)
 
