@@ -60,8 +60,14 @@ def resolve_allow_ips(allow_hosts: list[str]) -> list[str]:
     Caveat: CDN / load-balanced hosts churn their IPs, so an allowlist pinned at
     lock-down time can drift from the host's live IP set during a long-lived VM;
     this is the intentional trade-off for a host-scoped, exfil-resistant
-    allowlist. Order is preserved (first-seen) and both A (IPv4) and AAAA (IPv6)
-    records are kept.
+    allowlist. Order is preserved (first-seen).
+
+    Only **A (IPv4)** records are kept: the guest network (Lima slirp) is
+    IPv4-only and the runtime nft allow rules are ``ip daddr`` (IPv4 family), so
+    an AAAA result is both unroutable in the guest AND an invalid nft rule
+    (``ip daddr <ipv6>`` is rejected). IPv6 destinations stay dropped by the
+    default-DROP ``inet`` policy. A host with only AAAA records resolves to
+    nothing here and is omitted (fail-closed).
     """
     ips: list[str] = []
     seen: set[str] = set()
@@ -70,11 +76,17 @@ def resolve_allow_ips(allow_hosts: list[str]) -> list[str]:
         if not host_s:
             continue
         try:
-            infos = socket.getaddrinfo(host_s, None, proto=socket.IPPROTO_TCP)
+            # Hint AF_INET so the resolver returns A records only; an IPv6-only
+            # host raises here and is omitted (fail-closed).
+            infos = socket.getaddrinfo(host_s, None, family=socket.AF_INET, proto=socket.IPPROTO_TCP)
         except OSError:
-            # Unresolvable → omit (fail-closed). Never fall back to any-host.
+            # Unresolvable (incl. IPv6-only) → omit. Never fall back to any-host.
             continue
         for info in infos:
+            # Defensive: keep only IPv4 even if a resolver ignores the family hint
+            # — an IPv6 literal in an `ip daddr` rule is a hard nft error.
+            if info[0] != socket.AF_INET:
+                continue
             ip = info[4][0]
             if ip and ip not in seen:
                 seen.add(ip)

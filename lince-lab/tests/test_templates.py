@@ -22,6 +22,7 @@ Run with:
 
 import json
 import pathlib
+import socket
 import sys
 import unittest
 from unittest import mock
@@ -93,6 +94,30 @@ class ResolveAllowIpsTestCase(unittest.TestCase):
         resolver = _fake_getaddrinfo({"h.example": ["4.4.4.4"]})
         with mock.patch.object(templates_mod.socket, "getaddrinfo", resolver):
             self.assertEqual(resolve_allow_ips(["", "  ", "h.example"]), ["4.4.4.4"])
+
+    def test_ipv6_results_are_filtered_out(self) -> None:
+        # A resolver that ignores the AF_INET hint and returns BOTH AAAA and A
+        # (mirrors the real npm CDN result that broke oracle 06). Only the IPv4
+        # address may survive — an IPv6 literal in an `ip daddr` nft rule is a
+        # hard error, and the guest's slirp network is IPv4-only anyway.
+        def resolver(host, *_args, **_kwargs):
+            return [
+                (socket.AF_INET6, 1, 6, "", ("2606:4700::6810:22", 0, 0, 0)),
+                (socket.AF_INET, 1, 6, "", ("104.16.11.34", 0)),
+            ]
+
+        with mock.patch.object(templates_mod.socket, "getaddrinfo", resolver):
+            ips = resolve_allow_ips(["cdn.example"])
+        self.assertEqual(ips, ["104.16.11.34"])
+
+    def test_ipv6_only_host_is_omitted(self) -> None:
+        # An AAAA-only resolver result → nothing kept (fail-closed), never an
+        # IPv6 rule.
+        def resolver(host, *_args, **_kwargs):
+            return [(socket.AF_INET6, 1, 6, "", ("2606:4700::6810:22", 0, 0, 0))]
+
+        with mock.patch.object(templates_mod.socket, "getaddrinfo", resolver):
+            self.assertEqual(resolve_allow_ips(["v6only.example"]), [])
 
 
 class TemplateBootsNetworkedTestCase(unittest.TestCase):
