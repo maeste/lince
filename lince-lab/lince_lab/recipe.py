@@ -241,14 +241,7 @@ def run_recipe(
         # backend copies the right tree — limactl/rsync would otherwise resolve a
         # relative source against ITS own working directory, not the recipe's.
         abs_host_dir = str((recipe.source_dir / host_dir).resolve())
-        # The guest user is non-root, so an unprivileged rsync cannot create a dest
-        # like /work (mkdir → Permission denied). Pre-create it with sudo and open
-        # it so the copy AND the steps that write into it succeed. These are simple
-        # single-word argv (no multi-word shell string), so they pass through
-        # `limactl shell` unambiguously. Result is best-effort: if the dir truly
-        # cannot be made, the copy_in below fails loudly anyway.
-        backend.exec(vm_name, ["sudo", "mkdir", "-p", guest_dir], timeout=step_timeout)
-        backend.exec(vm_name, ["sudo", "chmod", "0777", guest_dir], timeout=step_timeout)
+        prepare_guest_dir(backend, vm_name, guest_dir, step_timeout=step_timeout)
         backend.copy_in(vm_name, abs_host_dir, guest_dir, recursive=True)
 
         # A single run never resets, so the base snapshot is dead weight unless the
@@ -268,6 +261,28 @@ def run_recipe(
     finally:
         if not keep:
             backend.delete(vm_name, force=True)
+
+
+def prepare_guest_dir(backend: Backend, vm_name: str, guest_dir: str, *, step_timeout: float | None = None) -> None:
+    """Create ``guest_dir`` in the VM and chown it to the (non-root) guest user.
+
+    A disposable Lima guest runs as a non-root user, so an unprivileged ``rsync``
+    copy can neither create a dest like ``/work`` (``mkdir`` → Permission denied)
+    nor set the group on a root-owned dest (``chgrp`` → Operation not permitted).
+    We pre-create the dir with sudo and hand it to the guest user so the workspace
+    copy — and the steps that write into it — succeed and rsync's
+    group-preservation becomes a no-op.
+
+    The user/group are looked up with simple single-word execs and the chown
+    target is a single token, so nothing relies on a multi-word shell argument
+    surviving the ``limactl shell`` transport. Best-effort: if the directory truly
+    cannot be staged, the subsequent ``copy_in`` fails loudly anyway.
+    """
+    owner = backend.exec(vm_name, ["id", "-un"], timeout=step_timeout).stdout.strip()
+    ogroup = backend.exec(vm_name, ["id", "-gn"], timeout=step_timeout).stdout.strip()
+    backend.exec(vm_name, ["sudo", "mkdir", "-p", guest_dir], timeout=step_timeout)
+    if owner and ogroup:
+        backend.exec(vm_name, ["sudo", "chown", f"{owner}:{ogroup}", guest_dir], timeout=step_timeout)
 
 
 def step_timeout_of(config: dict[str, Any]) -> float | None:

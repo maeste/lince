@@ -52,6 +52,7 @@ from lince_lab.recipe import (
     BASE_SNAPSHOT_TAG,
     Recipe,
     apply_egress_lockdown,
+    prepare_guest_dir,
     recipe_needs,
     run_steps_and_assert,
     step_timeout_of,
@@ -257,6 +258,11 @@ def _build_base_vm(
         if script:
             backend.exec(vm_name, ["sh", "-c", str(script)], timeout=step_timeout)
     apply_egress_lockdown(backend, vm_name, recipe, step_timeout=step_timeout)
+    # Stage the (non-root) workspace dir INTO the base snapshot, so every
+    # per-candidate reset restores a user-owned guest_dir the unprivileged copy
+    # can populate (see prepare_guest_dir).
+    guest_dir = str(recipe.workspace.get("guest_dir", "/work"))
+    prepare_guest_dir(backend, vm_name, guest_dir, step_timeout=step_timeout)
     backend.snapshot_create(vm_name, BASE_SNAPSHOT_TAG)
 
 
