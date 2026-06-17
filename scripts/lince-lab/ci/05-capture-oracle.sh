@@ -36,7 +36,10 @@ assert "$LINCE_LAB_BIN" --socket "$SOCK" vm up "$VM" -- "vm up for capture"
 # wait_for_substring on the echoed text proves the channel + sync primitive work
 # end-to-end without any fixed sleep.
 log "watch wait --for over a live ht channel (deterministic, no sleep)"
-GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch grab "$VM" --size 80x24 --program echo lince-capture-ok)"
+# `grab` is an INSTANT snapshot and would race a program that prints then exits;
+# `wait --for` is the deterministic primitive (polls snapshots until the needle
+# appears, no fixed sleep), so use it for the "grid contains the output" check.
+GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 --for lince-capture-ok --program echo lince-capture-ok)"
 assert_contains "$GRID" "lince-capture-ok" "ht grid contains the program output"
 
 log "watch keys sends input through the channel"
