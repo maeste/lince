@@ -106,9 +106,9 @@ class ScriptedChannel(CaptureChannel):
 class _SnapshotAnsweringChannel(ScriptedChannel):
     """ScriptedChannel that answers ``takeSnapshot`` from its current text.
 
-    Capture.snapshot/_take_snapshot send ``{"type":"takeSnapshot"}`` and then
-    read until a ``snapshot`` event. We satisfy that by pushing the current grid
-    to the FRONT of the script whenever a ``takeSnapshot`` command is sent.
+    Capture's snapshot helpers send ``{"type":"takeSnapshot"}`` and then read
+    until a ``snapshot`` event. We satisfy that by pushing the current grid to
+    the FRONT of the script whenever a ``takeSnapshot`` command is sent.
     """
 
     def send_line(self, obj: dict) -> None:
@@ -181,6 +181,28 @@ class CaptureTestCase(unittest.TestCase):
         cap = Capture(ch, cols=80, rows=24)
         with self.assertRaises(CaptureTimeout):
             cap.wait_for_stable(debounce_ms=150, timeout_s=1.0)
+
+    # ── fire-and-exit: output seen, then EOF before any snapshot ─────────────
+    def test_wait_for_substring_matches_output_then_eof(self) -> None:
+        # Models `echo MARKER` under ht v0.4.0: ht emits one object-shaped output
+        # burst carrying the text, then the program exits and the channel goes to
+        # EOF — never answering a takeSnapshot. The needle must still match off the
+        # accumulated output, not raise a spurious "no snapshot" timeout.
+        script = [(0.1, {"type": "output", "data": {"seq": "lince-capture-ok\r\n"}})]
+        # A plain ScriptedChannel never answers takeSnapshot, so every _try_snapshot
+        # returns None — exactly the "grid already torn down" situation.
+        ch = ScriptedChannel(self.clock, script, initial_text="")
+        cap = Capture(ch, cols=80, rows=24)
+        grid = cap.wait_for_substring("lince-capture-ok", timeout_s=10.0)
+        self.assertTrue(grid.contains("lince-capture-ok"))
+
+    def test_wait_for_substring_eof_without_match_raises(self) -> None:
+        # Output that never carries the needle, then EOF → genuine timeout.
+        script = [(0.1, {"type": "output", "data": {"seq": "something-else\r\n"}})]
+        ch = ScriptedChannel(self.clock, script, initial_text="")
+        cap = Capture(ch, cols=80, rows=24)
+        with self.assertRaises(CaptureTimeout):
+            cap.wait_for_substring("lince-capture-ok", timeout_s=1.0)
 
     # ── snapshot() basic round-trip ──────────────────────────────────────────
     def test_snapshot_returns_current_grid(self) -> None:

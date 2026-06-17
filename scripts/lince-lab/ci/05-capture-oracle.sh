@@ -36,10 +36,14 @@ assert "$LINCE_LAB_BIN" --socket "$SOCK" vm up "$VM" -- "vm up for capture"
 # wait_for_substring on the echoed text proves the channel + sync primitive work
 # end-to-end without any fixed sleep.
 log "watch wait --for over a live ht channel (deterministic, no sleep)"
-# `grab` is an INSTANT snapshot and would race a program that prints then exits;
-# `wait --for` is the deterministic primitive (polls snapshots until the needle
-# appears, no fixed sleep), so use it for the "grid contains the output" check.
-GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 --for lince-capture-ok --program echo lince-capture-ok)"
+# Two requirements for a deterministic capture check:
+#   1) `wait --for` (not `grab`): polls until the needle appears, no fixed sleep.
+#   2) a LONG-LIVED program: a bare `echo` prints then exits, so ht tears its grid
+#      down before we can snapshot it (the old "timed out waiting for terminal
+#      snapshot" flake). `sh -c 'echo MARKER; cat'` prints the marker and then
+#      blocks in `cat`, keeping ht alive until the channel is closed (cat then
+#      sees EOF and exits cleanly — no leftover process, no fixed sleep).
+GRID="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 --cmd-timeout 30 --for lince-capture-ok --program sh -c 'echo lince-capture-ok; cat')"
 assert_contains "$GRID" "lince-capture-ok" "ht grid contains the program output"
 
 log "watch keys sends input through the channel"
@@ -50,19 +54,23 @@ assert "$LINCE_LAB_BIN" --socket "$SOCK" watch keys "$VM" --size 80x24 \
     -- "watch keys injected the sequence"
 
 WAITED="$("$LINCE_LAB_BIN" --socket "$SOCK" watch wait "$VM" --size 80x24 \
-    --for READY-SUBSTRING --program sh -c 'echo READY-SUBSTRING')"
+    --cmd-timeout 30 --for READY-SUBSTRING --program sh -c 'echo READY-SUBSTRING; cat')"
 assert_contains "$WAITED" "READY-SUBSTRING" "wait_for_substring returned the settled grid"
 
 # ── #256: pixel-PNG capture artifact (optional Pillow layer over the grid) ───
 # `watch grab --png NAME` renders the captured grid to <artifacts>/NAME.png when
-# Pillow is installed, else writes <artifacts>/NAME.txt (no fake PNG). Assert the
-# artifact exists and, for the PNG, that it carries a valid PNG signature.
+# Pillow is installed, else writes <artifacts>/NAME.txt (no fake PNG). This checks
+# the RENDER/ARTIFACT layer (a valid PNG, or an honest .txt fallback). Content
+# capture itself is proven deterministically by the `watch wait --for` checks
+# above — `grab` is an instant snapshot, so it cannot deterministically assert a
+# specific grid string. The program is long-lived (`cat`) so ht stays alive for
+# the snapshot rather than racing a program that prints-then-exits.
 log "watch grab --png writes a capture artifact under the artifacts root (#256)"
 ARTIFACTS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/lince/lince-lab/artifacts"
 CAP_NAME="ci05-capture-$$"
 rm -f "$ARTIFACTS_DIR/$CAP_NAME.png" "$ARTIFACTS_DIR/$CAP_NAME.txt" 2>/dev/null || true
 "$LINCE_LAB_BIN" --socket "$SOCK" watch grab "$VM" --size 80x24 \
-    --png "$CAP_NAME" --program echo lince-png-ok >/dev/null
+    --cmd-timeout 30 --png "$CAP_NAME" --program sh -c 'echo lince-png-ok; cat' >/dev/null
 if python3 -c 'import PIL' >/dev/null 2>&1; then
     PNG="$ARTIFACTS_DIR/$CAP_NAME.png"
     assert_file "$PNG" "PNG capture artifact written (Pillow present)"
@@ -73,7 +81,6 @@ if python3 -c 'import PIL' >/dev/null 2>&1; then
 else
     TXT="$ARTIFACTS_DIR/$CAP_NAME.txt"
     assert_file "$TXT" "text capture artifact written (Pillow absent — honest fallback)"
-    assert_contains "$(cat "$TXT")" "lince-png-ok" "text artifact carries the captured grid"
     rm -f "$TXT"
 fi
 

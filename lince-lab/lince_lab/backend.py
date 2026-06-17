@@ -77,6 +77,16 @@ class CaptureChannel(ABC):
         """Close the channel and release its resources."""
         ...
 
+    def diagnostics(self) -> str:
+        """Return a human-readable diagnostic blob for failure messages.
+
+        Concrete transports override this to surface what the capture process
+        actually did — its argv, exit status, and the tail of its stderr/stdout —
+        so a capture timeout reports *why* (e.g. ``ht: command not found``) rather
+        than a bare deadline. The default is empty (in-process test channels have
+        nothing useful to add)."""
+        return ""
+
 
 class Backend(ABC):
     """The VM substrate contract. Methods map 1:1 to broker verbs."""

@@ -14,6 +14,7 @@ Run with:
     python3 lince-lab/tests/test_lima_backend.py
 """
 
+import io
 import json
 import os
 import pathlib
@@ -291,6 +292,7 @@ class OpenCaptureTestCase(unittest.TestCase):
             host_ht.write(b"#!/bin/sh\n")
             host_ht.flush()
             fake_proc = mock.MagicMock(spec=subprocess.Popen)
+            fake_proc.stderr = None  # no drain thread in this argv-only assertion
             with mock.patch.dict(os.environ, {"LINCE_LAB_HT": host_ht.name}, clear=False):
                 with mock.patch(
                     "lince_lab.lima_backend.subprocess.run",
@@ -326,12 +328,15 @@ class OpenCaptureTestCase(unittest.TestCase):
             ],
         )
         self.assertIsInstance(channel, LimaCaptureChannel)
+        # The spawn argv is recorded on the channel so diagnostics() can report it.
+        self.assertEqual(channel._argv, popen.call_args.args[0])
 
     def test_open_capture_falls_back_to_bare_ht_without_host_binary(self) -> None:
         # No host ht: LINCE_LAB_HT points nowhere and no share binary exists.
         missing = str(pathlib.Path(tempfile.gettempdir()) / "lince-lab-no-such-ht-binary")
         self.assertFalse(os.path.exists(missing))
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
+        fake_proc.stderr = None  # no drain thread in this argv-only assertion
         with mock.patch.dict(os.environ, {"LINCE_LAB_HT": missing}, clear=False):
             with mock.patch(
                 "lince_lab.lima_backend.subprocess.run",
@@ -372,6 +377,8 @@ class CaptureChannelTestCase(unittest.TestCase):
         proc.stdin = mock.MagicMock()
         proc.stdout = mock.MagicMock()
         proc.stdout.readline.side_effect = lines
+        # No stderr stream → no drain thread (these cases test stdout framing only).
+        proc.stderr = None
         proc.poll.return_value = None
         return LimaCaptureChannel(proc), proc
 
@@ -400,6 +407,47 @@ class CaptureChannelTestCase(unittest.TestCase):
         # Idempotent: a second close is a no-op.
         channel.close()
         proc.terminate.assert_called_once()
+
+
+class CaptureDiagnosticsTestCase(unittest.TestCase):
+    """diagnostics() must surface ht's argv, exit status, and stderr tail.
+
+    This is the blind-spot fix: without draining ht's stderr a capture timeout
+    reported only a bare deadline, hiding the real cause (e.g. ``ht: command not
+    found`` in a guest with no ht). The drain runs on a daemon thread.
+    """
+
+    def _drained_channel(self, stderr_text: str, returncode: int, argv: list[str]) -> LimaCaptureChannel:
+        proc = mock.MagicMock(spec=subprocess.Popen)
+        proc.stdin = mock.MagicMock()
+        proc.stdout = mock.MagicMock()
+        proc.stdout.readline.side_effect = [""]
+        proc.stderr = io.StringIO(stderr_text)
+        proc.poll.return_value = returncode
+        channel = LimaCaptureChannel(proc, argv=argv)
+        # The StringIO is finite, so the drain thread finishes promptly; join it.
+        if channel._stderr_thread is not None:
+            channel._stderr_thread.join(timeout=2.0)
+        return channel
+
+    def test_diagnostics_reports_argv_exit_and_stderr(self) -> None:
+        argv = ["limactl", "shell", "lab", "--", "ht", "--size", "80x24", "--", "./tui"]
+        channel = self._drained_channel("ht: command not found\n", returncode=127, argv=argv)
+        diag = channel.diagnostics()
+        self.assertIn("ht: command not found", diag)
+        self.assertIn("exited with code 127", diag)
+        self.assertIn("./tui", diag)  # the argv is echoed for context
+
+    def test_diagnostics_notes_still_running_with_empty_stderr(self) -> None:
+        proc = mock.MagicMock(spec=subprocess.Popen)
+        proc.stdin = mock.MagicMock()
+        proc.stdout = mock.MagicMock()
+        proc.stderr = None
+        proc.poll.return_value = None  # still alive
+        channel = LimaCaptureChannel(proc, argv=["ht"])
+        diag = channel.diagnostics()
+        self.assertIn("still running", diag)
+        self.assertIn("(empty)", diag)
 
 
 if __name__ == "__main__":

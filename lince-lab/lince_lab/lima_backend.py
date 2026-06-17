@@ -34,7 +34,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from pathlib import Path
 
 from lince_lab.backend import (
@@ -100,11 +102,38 @@ class LimaCaptureChannel(CaptureChannel):
     :meth:`read_line` honours an absolute ``time.monotonic()`` ``deadline`` so
     the capture wait primitives stay sleep-free: it blocks on the readline
     thread's queue only until the deadline, returning ``None`` on silence.
+
+    For diagnosability, ``ht``'s **stderr is drained on a background thread**
+    (otherwise it is invisible and a full pipe could deadlock ht), and the tail
+    of both streams plus the spawn argv and exit status are kept in ring buffers
+    so :meth:`diagnostics` can explain a capture timeout (e.g. ``ht: command not
+    found`` in a guest with no ht) instead of leaving a bare deadline.
     """
 
-    def __init__(self, proc: subprocess.Popen[str]) -> None:
+    def __init__(self, proc: subprocess.Popen[str], argv: list[str] | None = None) -> None:
         self._proc = proc
         self.closed = False
+        # Spawn argv + bounded tails of each stream, for diagnostics() on timeout.
+        self._argv = list(argv or [])
+        self._stdout_tail: deque[str] = deque(maxlen=50)
+        self._stderr_tail: deque[str] = deque(maxlen=50)
+        # Drain stderr continuously so it is captured AND cannot fill the pipe and
+        # wedge ht. A daemon thread ends on its own when ht closes stderr/exits.
+        self._stderr_thread: threading.Thread | None = None
+        if self._proc.stderr is not None:
+            self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
+            self._stderr_thread.start()
+
+    def _drain_stderr(self) -> None:
+        stderr = self._proc.stderr
+        if stderr is None:
+            return
+        try:
+            for line in stderr:  # blocks until EOF; ht exit closes the pipe
+                self._stderr_tail.append(line.rstrip("\n"))
+        except (ValueError, OSError):
+            # Pipe closed underneath us during teardown — nothing to drain.
+            pass
 
     def send_line(self, obj: dict) -> None:
         if self.closed or self._proc.stdin is None:
@@ -124,6 +153,7 @@ class LimaCaptureChannel(CaptureChannel):
                 stripped = line.strip()
                 if not stripped:
                     continue
+                self._stdout_tail.append(stripped[:500])
                 try:
                     return json.loads(stripped)
                 except json.JSONDecodeError:
@@ -134,6 +164,28 @@ class LimaCaptureChannel(CaptureChannel):
                 return None
             if self._proc.poll() is not None:
                 return None
+
+    def diagnostics(self) -> str:
+        """Explain what ``ht`` did — argv, exit status, and stderr/stdout tails."""
+        rc = self._proc.poll()
+        status = "still running" if rc is None else f"exited with code {rc}"
+        # Snapshot the deques first — the stderr drain thread may still be appending
+        # concurrently, and iterating a deque mid-mutation raises in CPython.
+        stderr_tail = list(self._stderr_tail)
+        stdout_tail = list(self._stdout_tail)
+        lines = [
+            f"ht argv : {' '.join(self._argv) if self._argv else '(unknown)'}",
+            f"ht state: {status}",
+        ]
+        if stderr_tail:
+            lines.append("ht stderr (last lines):")
+            lines += [f"  {ln}" for ln in stderr_tail]
+        else:
+            lines.append("ht stderr: (empty)")
+        if stdout_tail:
+            lines.append("ht stdout (last lines seen):")
+            lines += [f"  {ln}" for ln in stdout_tail]
+        return "\n".join(lines)
 
     def close(self) -> None:
         if self.closed:
@@ -389,4 +441,4 @@ class LimaBackend(Backend):
             text=True,
             bufsize=1,
         )
-        return LimaCaptureChannel(proc)
+        return LimaCaptureChannel(proc, argv=cmd)
