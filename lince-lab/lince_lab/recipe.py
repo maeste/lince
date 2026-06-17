@@ -21,6 +21,7 @@ Three public entry points:
 
 from __future__ import annotations
 
+import shlex
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -31,7 +32,7 @@ from lince_lab.backend import Backend
 from lince_lab.capture import Capture, Grid
 from lince_lab.errors import BackendError, DataError
 from lince_lab.paths import parse_size, resolves_under, slug_vm_name
-from lince_lab.templates import build_template, egress_lockdown_argv, resolve_allow_ips
+from lince_lab.templates import build_template, egress_lockdown_argv, resolve_allow_ips, resolve_allow_map
 
 # Snapshot tag baked after provisioning so retries / bisect can reset cheaply.
 BASE_SNAPSHOT_TAG = "base-clean"
@@ -238,10 +239,12 @@ def run_recipe(
             backend.exec(vm_name, ["sh", "-c", str(entry["script"])], timeout=step_timeout)
         if provisions:
             print(f"lince-lab: provisioning complete on {vm_name!r}", file=sys.stderr, flush=True)
+        print("lince-lab: applying egress lock-down…", file=sys.stderr, flush=True)
         apply_egress_lockdown(backend, vm_name, recipe, step_timeout=step_timeout)
         backend.snapshot_create(vm_name, BASE_SNAPSHOT_TAG)
 
         # 4. stage the single workspace dir (policy-bounded host_dir).
+        print("lince-lab: staging workspace…", file=sys.stderr, flush=True)
         host_dir = str(recipe.workspace["host_dir"])
         guest_dir = str(recipe.workspace.get("guest_dir", "/work"))
         if not resolves_under(recipe.source_dir, host_dir):
@@ -332,7 +335,14 @@ def run_steps_and_assert(
     """
     last_exit = 0
     final_grid: Grid | None = None
-    for step in recipe.steps:
+    for i, step in enumerate(recipe.steps, 1):
+        # Step output is captured, so announce each step — a network-bound step
+        # (e.g. `npm install`) is otherwise a silent wait that reads as a hang.
+        print(
+            f"lince-lab: running step {i}/{len(recipe.steps)}: {step.get('name', '?')!r}…",
+            file=sys.stderr,
+            flush=True,
+        )
         if step.get("capture"):
             final_grid = _run_capture_step(backend, vm_name, recipe, step)
         else:
@@ -412,16 +422,58 @@ def apply_egress_lockdown(
     nonzero exit raises :class:`~lince_lab.errors.BackendError`: a VM that cannot
     enforce egress must NOT go on to run the (now-untrusted) recipe steps.
     """
-    allow_ips, allow_ports = lockdown_posture(recipe)
     # Cap the lock-down exec so a wedged script errors out instead of hanging
     # forever; honor a tighter step_timeout when the caller provides one.
     timeout = step_timeout if step_timeout is not None else 180.0
+
+    # Resolve the allow map ONCE and derive both the nft IPs and the guest
+    # /etc/hosts pin from it, so the two are consistent (the guest never connects
+    # to an IP the nft rules did not allow).
+    allow_ports: list[int] = []
+    host_ip_map: dict[str, list[str]] = {}
+    if recipe.network.get("mode") == "allow":
+        allow_ports = [int(p) for p in (recipe.network.get("allow_ports") or [])]
+        host_ip_map = resolve_allow_map(list(recipe.network.get("allow_hosts") or []))
+    allow_ips = [ip for ips in host_ip_map.values() for ip in ips]
+    if recipe.network.get("mode") == "allow" and not allow_ips:
+        # Fail-closed: an allow recipe whose hosts all failed DNS becomes a deny.
+        allow_ports = []
+
+    # Pin the resolved IPs into the guest's /etc/hosts BEFORE the lock-down, so
+    # the guest's name lookups resolve to exactly the allow-listed IPs without
+    # needing DNS (DNS egress to the slirp resolver is dropped by the lock-down,
+    # and a CDN's own DNS could otherwise return a different, non-allowed IP).
+    if host_ip_map and allow_ips:
+        _pin_guest_etc_hosts(backend, vm_name, host_ip_map, timeout=timeout)
+
     result = backend.exec(vm_name, egress_lockdown_argv(allow_ips, allow_ports), timeout=timeout)
     if result.exit_code != 0:
         raise BackendError(
             f"egress lock-down failed on {vm_name} (exit {result.exit_code}): "
             f"{result.stderr.strip() or 'no detail'}; refusing to run steps unprotected"
         )
+
+
+def _pin_guest_etc_hosts(
+    backend: Backend,
+    vm_name: str,
+    host_ip_map: dict[str, list[str]],
+    *,
+    timeout: float | None = None,
+) -> None:
+    """Append ``<ip> <host>`` lines to the guest's ``/etc/hosts`` (sudo).
+
+    Pins each allow_host to its FIRST host-resolved IP — which is also an
+    nft-allowed IP — so the guest connects to exactly that destination without a
+    DNS round-trip. The here-doc body is a single quoted ``sh -c`` argument (which
+    survives the single-``--`` ``limactl shell`` transport, as provisioning shows).
+    """
+    lines = [f"{ips[0]} {host}" for host, ips in host_ip_map.items() if ips]
+    if not lines:
+        return
+    body = "\n".join(lines)
+    script = f"printf '%s\\n' {shlex.quote(body)} | sudo tee -a /etc/hosts >/dev/null"
+    backend.exec(vm_name, ["sh", "-c", script], timeout=timeout)
 
 
 def effective_egress(recipe: Recipe) -> dict[str, Any]:

@@ -430,15 +430,37 @@ class RunFlowTest(unittest.TestCase):
         vm_name = recipe_mod._vm_name(recipe)
         self.backend.on(vm_name, ["npm", "install"], ExecResult(0, "", ""))
         # Resolve deterministically (no real DNS) and register the resulting
-        # allow-posture lock-down argv to succeed.
-        orig = recipe_mod.resolve_allow_ips
-        recipe_mod.resolve_allow_ips = lambda hosts: ["104.16.11.34"] if hosts else []
+        # allow-posture lock-down argv to succeed. apply_egress_lockdown resolves
+        # the host→IP MAP once (feeding both the nft rules and the /etc/hosts pin),
+        # so patch that single source.
+        orig = recipe_mod.resolve_allow_map
+        recipe_mod.resolve_allow_map = lambda hosts: {"registry.npmjs.org": ["104.16.11.34"]} if hosts else {}
         try:
             _register_lockdown(self.backend, vm_name, allow_ips=["104.16.11.34"], allow_ports=[443])
             rc = run_recipe(self.backend, recipe, CONFIG, keep=True)
         finally:
-            recipe_mod.resolve_allow_ips = orig
+            recipe_mod.resolve_allow_map = orig
         self.assertEqual(rc, 0)
+
+    def test_pin_guest_etc_hosts_appends_resolved_ip(self) -> None:
+        # The /etc/hosts pin makes the guest connect to exactly the allow-listed
+        # IP without DNS. Capture the issued exec and assert its content.
+        self.backend.create("pinvm", "")
+        seen: list[list[str]] = []
+
+        def capture(_fs: dict, argv: list[str]) -> ExecResult:
+            seen.append(list(argv))
+            return ExecResult(0, "", "")
+
+        self.backend.on("pinvm", None, capture)
+        recipe_mod._pin_guest_etc_hosts(self.backend, "pinvm", {"registry.npmjs.org": ["104.16.11.34", "1.2.3.4"]})
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][:2], ["sh", "-c"])
+        script = seen[0][-1]
+        # Pins the FIRST resolved IP (also nft-allowed) and writes /etc/hosts.
+        self.assertIn("104.16.11.34 registry.npmjs.org", script)
+        self.assertIn("/etc/hosts", script)
+        self.assertNotIn("1.2.3.4", script)  # only the first IP is pinned
 
     def test_grid_contains_and_absent_pass(self) -> None:
         clock = FakeClock()

@@ -49,28 +49,23 @@ NET_CUT_MARKER = "lince-lab: egress cut (deny-by-default)"
 NET_ALLOW_MARKER = "lince-lab: egress allowlist"
 
 
-def resolve_allow_ips(allow_hosts: list[str]) -> list[str]:
-    """Resolve ``allow_hosts`` to a de-duplicated list of literal IP addresses.
+def resolve_allow_map(allow_hosts: list[str]) -> dict[str, list[str]]:
+    """Resolve each host in ``allow_hosts`` to its IPv4 list (host → [ip, ...]).
 
     Resolution happens **host-side** (in the broker process) at lock-down time
-    via :func:`socket.getaddrinfo`, so the runtime nft rules pin concrete
-    destination IPs rather than trusting in-guest DNS. A host that does not
-    resolve is silently **omitted** (fail-closed: it never widens to any-host).
+    via :func:`socket.getaddrinfo`. The same resolution feeds BOTH the nft allow
+    rules (pin the IPs) AND the guest ``/etc/hosts`` pin (point the guest's name
+    lookups at exactly those IPs) — resolving once keeps the two consistent, so
+    the guest never connects to an IP the nft rules did not allow.
 
-    Caveat: CDN / load-balanced hosts churn their IPs, so an allowlist pinned at
-    lock-down time can drift from the host's live IP set during a long-lived VM;
-    this is the intentional trade-off for a host-scoped, exfil-resistant
-    allowlist. Order is preserved (first-seen).
-
-    Only **A (IPv4)** records are kept: the guest network (Lima slirp) is
-    IPv4-only and the runtime nft allow rules are ``ip daddr`` (IPv4 family), so
-    an AAAA result is both unroutable in the guest AND an invalid nft rule
-    (``ip daddr <ipv6>`` is rejected). IPv6 destinations stay dropped by the
-    default-DROP ``inet`` policy. A host with only AAAA records resolves to
-    nothing here and is omitted (fail-closed).
+    A host that does not resolve is **omitted** (fail-closed; never widened to
+    any-host). Only **A (IPv4)** records are kept: the guest network (Lima slirp)
+    is IPv4-only and the nft allow rules are ``ip daddr`` (IPv4 family), so an
+    AAAA result is both unroutable in the guest and an invalid nft rule; an
+    IPv6-only host resolves to nothing and is omitted. Per-host order is preserved
+    (first-seen, de-duplicated).
     """
-    ips: list[str] = []
-    seen: set[str] = set()
+    out: dict[str, list[str]] = {}
     for host in allow_hosts:
         host_s = str(host).strip()
         if not host_s:
@@ -82,12 +77,33 @@ def resolve_allow_ips(allow_hosts: list[str]) -> list[str]:
         except OSError:
             # Unresolvable (incl. IPv6-only) → omit. Never fall back to any-host.
             continue
+        seen: set[str] = set()
+        ips: list[str] = []
         for info in infos:
             # Defensive: keep only IPv4 even if a resolver ignores the family hint
             # — an IPv6 literal in an `ip daddr` rule is a hard nft error.
             if info[0] != socket.AF_INET:
                 continue
             ip = info[4][0]
+            if ip and ip not in seen:
+                seen.add(ip)
+                ips.append(ip)
+        if ips:
+            out[host_s] = ips
+    return out
+
+
+def resolve_allow_ips(allow_hosts: list[str]) -> list[str]:
+    """Resolve ``allow_hosts`` to a de-duplicated, flattened list of IPv4 addresses.
+
+    Thin wrapper over :func:`resolve_allow_map` that flattens the per-host IP
+    lists into a single first-seen-ordered list for the nft ``ip daddr`` rules.
+    Fail-closed and IPv4-only — see :func:`resolve_allow_map`.
+    """
+    ips: list[str] = []
+    seen: set[str] = set()
+    for host_ips in resolve_allow_map(allow_hosts).values():
+        for ip in host_ips:
             if ip and ip not in seen:
                 seen.add(ip)
                 ips.append(ip)

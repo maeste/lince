@@ -373,12 +373,17 @@ class EgressLogTests(unittest.TestCase):
         # The allow recipe resolves its host to 104.16.11.34 and applies the
         # host-scoped lock-down for that ip:443 before its steps.
         _register_lockdown(backend, "lince-lab-allow-demo", allow_ips=["104.16.11.34"], allow_ports=[443])
-        orig = recipe_mod.resolve_allow_ips
+        # The egress LOG uses resolve_allow_ips; the lock-down + /etc/hosts pin use
+        # resolve_allow_map. Patch both so neither hits real DNS.
+        orig_ips = recipe_mod.resolve_allow_ips
+        orig_map = recipe_mod.resolve_allow_map
         recipe_mod.resolve_allow_ips = lambda hosts: ["104.16.11.34"] if hosts else []
+        recipe_mod.resolve_allow_map = lambda hosts: {"registry.npmjs.org": ["104.16.11.34"]} if hosts else {}
         try:
             server._h_recipe_run(recipe_mod.load_recipe(str(recipe_path)), {})
         finally:
-            recipe_mod.resolve_allow_ips = orig
+            recipe_mod.resolve_allow_ips = orig_ips
+            recipe_mod.resolve_allow_map = orig_map
         doc = json.loads(self._egress_log().read_text(encoding="utf-8"))
         self.assertEqual(doc["egress"]["decision"], "allow")
         self.assertEqual(doc["egress"]["resolved_ips"], ["104.16.11.34"])
