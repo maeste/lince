@@ -236,7 +236,20 @@ def run_recipe(
         guest_dir = str(recipe.workspace.get("guest_dir", "/work"))
         if not resolves_under(recipe.source_dir, host_dir):
             raise DataError(f"workspace host_dir {host_dir!r} escapes the recipe directory; refusing copy_in")
-        backend.copy_in(vm_name, host_dir, guest_dir, recursive=True)
+        # host_dir is recipe-RELATIVE (e.g. "./fixtures/npm-smoke", shipped beside
+        # the recipe). Resolve it to an absolute path under the recipe dir so the
+        # backend copies the right tree — limactl/rsync would otherwise resolve a
+        # relative source against ITS own working directory, not the recipe's.
+        abs_host_dir = str((recipe.source_dir / host_dir).resolve())
+        # The guest user is non-root, so an unprivileged rsync cannot create a dest
+        # like /work (mkdir → Permission denied). Pre-create it with sudo and open
+        # it so the copy AND the steps that write into it succeed. These are simple
+        # single-word argv (no multi-word shell string), so they pass through
+        # `limactl shell` unambiguously. Result is best-effort: if the dir truly
+        # cannot be made, the copy_in below fails loudly anyway.
+        backend.exec(vm_name, ["sudo", "mkdir", "-p", guest_dir], timeout=step_timeout)
+        backend.exec(vm_name, ["sudo", "chmod", "0777", guest_dir], timeout=step_timeout)
+        backend.copy_in(vm_name, abs_host_dir, guest_dir, recursive=True)
 
         # A single run never resets, so the base snapshot is dead weight unless the
         # effective config asks to keep it; drop it to reclaim disk (consumes the
