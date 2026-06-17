@@ -20,11 +20,6 @@ oracle_header "07 bisect (#258)"
 skip_if_no_kvm
 
 SOCK="$LINCE_LAB_SOCK"
-RECIPE="${LINCE_LAB_RECIPE:-$LINCE_LAB_SHARE/recipes/generic-npm.toml}"
-if [ ! -f "$RECIPE" ]; then
-    REPO_RECIPE="$SCRIPT_DIR/../../../lince-lab/recipes/generic-npm.toml"
-    [ -f "$REPO_RECIPE" ] && RECIPE="$REPO_RECIPE"
-fi
 
 WORK="$(mktemp -d)"
 REPO="$WORK/seeded-repo"
@@ -51,6 +46,48 @@ git -C "$REPO" commit -qam c4-regression
 FIRST_BAD="$(git -C "$REPO" rev-parse HEAD)"
 git -C "$REPO" commit -qam c5 --allow-empty
 BAD="$(git -C "$REPO" rev-parse HEAD)"
+
+# The verdict recipe must test the STAGED REPO (the bisect copies each candidate's
+# checkout into the workspace), not install an unrelated package. Generate a
+# marker recipe whose single step passes iff the repo's marker reads 'ok' — so
+# good commits verdict good and the regression (marker='regression') verdicts bad.
+# (The shipped generic-npm recipe ignores the repo, so every candidate would look
+# good — that is NOT a valid bisect oracle.) A deny network posture: the check is
+# purely local, no egress needed.
+log "write the bisect verdict recipe (verdict = staged repo's marker reads 'ok')"
+RECIPE_DIR="$WORK/recipe"
+mkdir -p "$RECIPE_DIR/ws"
+: >"$RECIPE_DIR/ws/.keep"
+RECIPE="${LINCE_LAB_RECIPE:-$RECIPE_DIR/bisect-marker.toml}"
+if [ ! -f "$RECIPE" ]; then
+    cat >"$RECIPE_DIR/bisect-marker.toml" <<'TOML'
+[recipe]
+name = "bisect-marker"
+description = "Bisect verdict oracle: the staged repo's marker file must read 'ok' (the seeded regression flips it to 'regression')."
+version = "1"
+
+[vm]
+image = "fedora"
+
+[network]
+mode = "deny"
+
+[workspace]
+host_dir = "./ws"
+guest_dir = "/work"
+
+[[step]]
+name = "check-marker"
+# Bisect stages the checked-out repo into /work. Pass iff the marker reads 'ok';
+# robust to whether the copy lands the repo's contents directly at /work or under
+# a subdirectory.
+run = ["sh", "-c", "grep -hqx ok /work/marker /work/*/marker 2>/dev/null"]
+
+[assert]
+exit_code = 0
+TOML
+    RECIPE="$RECIPE_DIR/bisect-marker.toml"
+fi
 
 log "run find bisect over the live broker"
 LINCE_LAB_FAKE="" start_broker "$SOCK"
