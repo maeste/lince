@@ -15,9 +15,11 @@ Run with:
 """
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -27,6 +29,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from lince_lab.backend import VmStatus  # noqa: E402
 from lince_lab.errors import BackendError  # noqa: E402
 from lince_lab.lima_backend import (  # noqa: E402
+    GUEST_HT_PATH,
     LimaBackend,
     LimaCaptureChannel,
 )
@@ -274,16 +277,74 @@ class LifecycleFailureTestCase(unittest.TestCase):
 
 
 class OpenCaptureTestCase(unittest.TestCase):
-    """open_capture must spawn `limactl shell N -- ht --size ... -- argv`."""
+    """open_capture ships ht HOST-SIDE: copy it in, chmod +x, then spawn it.
 
-    def test_open_capture_argv(self) -> None:
+    When a host ht binary exists (``$LINCE_LAB_HT`` → a real file), open_capture
+    must (a) copy it to the guest ``/tmp/lince-lab-ht``, (b) ``chmod +x`` it in the
+    guest, and (c) spawn the in-guest ``/tmp/lince-lab-ht``. With NO host ht it
+    falls back to the bare ``ht`` on the guest PATH and copies nothing.
+    """
+
+    def test_open_capture_copies_host_ht_and_spawns_guest_path(self) -> None:
+        # Point LINCE_LAB_HT at a real tempfile so the host ht "exists" on disk.
+        with tempfile.NamedTemporaryFile(suffix="-ht") as host_ht:
+            host_ht.write(b"#!/bin/sh\n")
+            host_ht.flush()
+            fake_proc = mock.MagicMock(spec=subprocess.Popen)
+            with mock.patch.dict(os.environ, {"LINCE_LAB_HT": host_ht.name}, clear=False):
+                with mock.patch(
+                    "lince_lab.lima_backend.subprocess.run",
+                    return_value=_ok(),
+                ) as run, mock.patch(
+                    "lince_lab.lima_backend.subprocess.Popen",
+                    return_value=fake_proc,
+                ) as popen:
+                    backend = LimaBackend()
+                    channel = backend.open_capture("lab", ["./my-tui"], cols=80, rows=24)
+
+        # (a) the host ht is copied to the guest /tmp/lince-lab-ht via limactl copy.
+        copy_argv = run.call_args_list[0].args[0]
+        self.assertEqual(copy_argv, ["limactl", "copy", host_ht.name, f"lab:{GUEST_HT_PATH}"])
+        # (b) chmod +x runs in the guest.
+        chmod_argv = run.call_args_list[1].args[0]
+        self.assertEqual(chmod_argv, ["limactl", "shell", "lab", "--", "chmod", "+x", GUEST_HT_PATH])
+        # (c) the ht process is spawned with the in-guest path + grid + subscribe.
+        self.assertEqual(
+            popen.call_args.args[0],
+            [
+                "limactl",
+                "shell",
+                "lab",
+                "--",
+                GUEST_HT_PATH,
+                "--size",
+                "80x24",
+                "--subscribe",
+                "init,output,snapshot",
+                "--",
+                "./my-tui",
+            ],
+        )
+        self.assertIsInstance(channel, LimaCaptureChannel)
+
+    def test_open_capture_falls_back_to_bare_ht_without_host_binary(self) -> None:
+        # No host ht: LINCE_LAB_HT points nowhere and no share binary exists.
+        missing = str(pathlib.Path(tempfile.gettempdir()) / "lince-lab-no-such-ht-binary")
+        self.assertFalse(os.path.exists(missing))
         fake_proc = mock.MagicMock(spec=subprocess.Popen)
-        with mock.patch(
-            "lince_lab.lima_backend.subprocess.Popen",
-            return_value=fake_proc,
-        ) as popen:
-            backend = LimaBackend()
-            channel = backend.open_capture("lab", ["./my-tui"], cols=80, rows=24)
+        with mock.patch.dict(os.environ, {"LINCE_LAB_HT": missing}, clear=False):
+            with mock.patch(
+                "lince_lab.lima_backend.subprocess.run",
+                return_value=_ok(),
+            ) as run, mock.patch(
+                "lince_lab.lima_backend.subprocess.Popen",
+                return_value=fake_proc,
+            ) as popen:
+                backend = LimaBackend()
+                channel = backend.open_capture("lab", ["./my-tui"], cols=80, rows=24)
+        # No copy_in / chmod when there is no host ht to ship.
+        run.assert_not_called()
+        # Spawns the bare `ht` on the guest PATH.
         self.assertEqual(
             popen.call_args.args[0],
             [

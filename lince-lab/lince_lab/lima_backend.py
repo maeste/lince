@@ -31,9 +31,11 @@ is deliberately kept separate so it can return the guest code without raising.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from lince_lab.backend import (
     Backend,
@@ -48,8 +50,30 @@ from lince_lab.errors import BackendError
 # install scripts. Kept as a module constant so tests can assert on argv[0].
 LIMACTL = "limactl"
 
-# Default headless-terminal binary run inside the guest for capture.
+# Default headless-terminal binary name on the guest PATH (fallback when no
+# host-side ht is available to copy in).
 HT_BINARY = "ht"
+
+# Where the host-side ht is copied to inside the guest. A disposable, world-safe
+# /tmp path: it carries no host access — it is just our own capture driver.
+GUEST_HT_PATH = "/tmp/lince-lab-ht"
+
+
+def _host_ht_path() -> str:
+    """Resolve the HOST-side ``ht`` binary path the broker ships and copies in.
+
+    Honors ``$LINCE_LAB_HT`` if set; otherwise falls back to the lince-lab share
+    dir's ``bin/ht`` (``$XDG_DATA_HOME`` then ``$HOME/.local/share``), matching the
+    install/update scripts. The returned path is expanded (``~``) but not required
+    to exist — :meth:`LimaBackend.open_capture` checks for it on disk and falls
+    back to the bare guest ``ht`` when it is absent.
+    """
+    env = os.environ.get("LINCE_LAB_HT")
+    if env:
+        return str(Path(env).expanduser())
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return str((base / "lince" / "lince-lab" / "bin" / "ht").expanduser())
 
 
 def _map_status(raw: str) -> VmStatus:
@@ -130,13 +154,17 @@ class LimaBackend(Backend):
 
     Args:
         limactl: path/name of the limactl executable (default :data:`LIMACTL`).
-        ht_binary: name of the in-guest headless-terminal binary (default
-            :data:`HT_BINARY`).
+        ht_binary: name of the in-guest headless-terminal binary used as the
+            fallback when no host-side ht is available (default :data:`HT_BINARY`).
     """
 
     def __init__(self, limactl: str = LIMACTL, ht_binary: str = HT_BINARY) -> None:
         self._limactl = limactl
+        # In-guest fallback name on PATH (used when the host has no shippable ht).
         self._ht = ht_binary
+        # HOST-side ht the broker ships; copied into the guest on demand by
+        # open_capture so capture works on any guest, even a deny-locked one.
+        self._host_ht = _host_ht_path()
 
     # ── one lifecycle shell-out helper (raises on nonzero) ───────────────────
     def _run(
@@ -327,6 +355,17 @@ class LimaBackend(Backend):
 
     # ── capture ──────────────────────────────────────────────────────────────
     def open_capture(self, name: str, argv: list[str], cols: int, rows: int) -> CaptureChannel:
+        # `ht` ships HOST-SIDE. If the host binary exists on disk, copy it into the
+        # guest first (and make it executable) so capture works on ANY guest — even
+        # a deny-locked one that can't fetch ht itself. Copying our own disposable
+        # capture driver into a disposable guest does NOT widen the agent's host
+        # access. If no host ht is present, fall back to a bare `ht` on guest PATH.
+        if os.path.isfile(self._host_ht):
+            self.copy_in(name, self._host_ht, GUEST_HT_PATH)
+            self._run(["shell", name, "--", "chmod", "+x", GUEST_HT_PATH])
+            guest_ht = GUEST_HT_PATH
+        else:
+            guest_ht = self._ht
         # Spawn `ht` inside the guest, wrapping `argv` at a fixed grid, streaming
         # init/output/snapshot events over stdout; drive it over stdin.
         cmd = [
@@ -334,7 +373,7 @@ class LimaBackend(Backend):
             "shell",
             name,
             "--",
-            self._ht,
+            guest_ht,
             "--size",
             f"{cols}x{rows}",
             "--subscribe",

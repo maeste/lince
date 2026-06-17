@@ -34,18 +34,20 @@ guest_dir = "/work"
 # ── provisioning (runs with network UP, before the egress lock-down) ─────────
 # Provisioning is trusted setup: the VM boots networked, these scripts install
 # tooling, THEN the broker applies the egress lock-down (deny — this recipe needs
-# no runtime egress) and snapshots base-clean. So `dnf install` / fetching `ht`
-# succeed here even though the wizard step itself runs network-denied.
+# no runtime egress) and snapshots base-clean. So `dnf install` succeeds here even
+# though the wizard step itself runs network-denied.
+#
+# NOTE: `ht` (the headless-terminal capture driver) is NO LONGER fetched here. It
+# ships HOST-SIDE with lince-lab and the broker copies it into the guest on demand
+# at capture time, so terminal capture works on ANY guest — even a deny-locked one
+# that could not download ht itself.
 [[provision]]
 mode = "system"
 script = """
 #!/bin/bash
 set -eux
-# Toolchain the lince quickstart + the `ht` capture driver need in-guest.
+# Toolchain the lince quickstart + lince-config need in-guest.
 dnf install -y git python3 python3-pip
-# `ht` (headless terminal) drives the capture step; pin a known release.
-curl -fsSL -o /usr/local/bin/ht https://github.com/andyk/ht/releases/download/v0.4.0/ht-x86_64-unknown-linux-musl
-chmod +x /usr/local/bin/ht
 """
 
 [[provision]]

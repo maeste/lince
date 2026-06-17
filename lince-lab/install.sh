@@ -80,6 +80,23 @@ if [ -d "$TEMPLATES_SRC" ]; then
 else
     echo -e "${YELLOW}  ⚠ templates/ not found — skipping templates${NC}"
 fi
+
+# `ht` (headless terminal) is shipped HOST-SIDE and copied into a guest on demand
+# by the broker, so terminal capture (watch / wizard recipe) works on ANY guest —
+# even a deny-locked one that cannot fetch it itself. Download is idempotent (skip
+# if already present) and NON-FATAL (a failed download only warns).
+HT_VER=v0.4.0
+HT_URL="https://github.com/andyk/ht/releases/download/${HT_VER}/ht-$(uname -m)-unknown-linux-musl"
+mkdir -p "$SHARE_DIR/bin"
+if [ ! -x "$SHARE_DIR/bin/ht" ]; then
+    if curl -fsSL -o "$SHARE_DIR/bin/ht" "$HT_URL" && chmod +x "$SHARE_DIR/bin/ht"; then
+        echo -e "${GREEN}  ✓ ht -> $SHARE_DIR/bin/ht${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ ht download failed; terminal capture (watch / wizard recipe) will be unavailable until ht is installed${NC}"
+    fi
+else
+    echo -e "${GREEN}  ✓ ht already present -> $SHARE_DIR/bin/ht${NC}"
+fi
 echo ""
 
 # ── Step 4: Install skill ──────────────────────────────────────────────
