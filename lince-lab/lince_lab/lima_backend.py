@@ -403,6 +403,38 @@ class LimaBackend(Backend):
 
     def snapshot_apply(self, name: str, tag: str) -> None:
         self._run(["snapshot", "apply", name, "--tag", tag])
+        # `limactl snapshot apply` does a QEMU loadvm: it rewinds the GUEST's TCP
+        # stack to the snapshot moment, which desyncs the SSH ControlMaster the
+        # host holds. limactl reuses that master, so the NEXT `limactl shell` hangs
+        # on the dead channel (a fresh connection works — the guest sshd is fine).
+        # Drop the stale master so the next op re-establishes cleanly. This is the
+        # per-candidate reset path of the bisect loop.
+        self._reset_ssh_master(name)
+
+    def _reset_ssh_master(self, name: str) -> None:
+        """Tear down the cached SSH ControlMaster for ``name`` (best-effort).
+
+        After a ``loadvm`` the multiplexed master connection is desynced; ``ssh -O
+        exit`` talks to the master over its LOCAL control socket (never the dead
+        TCP, so it cannot hang) and terminates it. The next ``limactl shell`` then
+        opens a fresh master. No-op when the instance's ssh.config is absent (e.g.
+        the unit suite's fake VM names), so the mocked tests are unaffected.
+        """
+        lima_home = Path(os.environ.get("LIMA_HOME", str(Path.home() / ".lima")))
+        cfg = lima_home / name / "ssh.config"
+        if not cfg.is_file():
+            return
+        try:
+            subprocess.run(
+                ["ssh", "-F", str(cfg), "-O", "exit", f"lima-{name}"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            # Best-effort: if the master cannot be dropped, the next op may still
+            # reconnect on its own; we must not fail the reset on this.
+            pass
 
     def snapshot_delete(self, name: str, tag: str) -> None:
         self._run(["snapshot", "delete", name, "--tag", tag])

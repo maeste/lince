@@ -106,7 +106,30 @@ class LifecycleArgvTestCase(unittest.TestCase):
     def test_snapshot_apply(self) -> None:
         run = self._patch_run(_ok())
         self.backend.snapshot_apply("lab", "base-clean")
+        # No ssh.config for the fake instance → the SSH-master reset is skipped, so
+        # the only subprocess call is the snapshot apply itself.
         self.assertEqual(self._argv(run), ["limactl", "snapshot", "apply", "lab", "--tag", "base-clean"])
+
+    def test_snapshot_apply_resets_ssh_master_when_config_present(self) -> None:
+        # When the instance's ssh.config exists, snapshot_apply (loadvm desyncs the
+        # SSH master) must drop the cached master with `ssh -O exit` so the next
+        # limactl shell reconnects fresh.
+        with tempfile.TemporaryDirectory() as lima_home:
+            inst = pathlib.Path(lima_home) / "lab"
+            inst.mkdir()
+            cfg = inst / "ssh.config"
+            cfg.write_text("Host lima-lab\n", encoding="utf-8")
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, *args, **kwargs):
+                calls.append(list(cmd))
+                return _ok()
+
+            with mock.patch.dict(os.environ, {"LIMA_HOME": lima_home}, clear=False):
+                with mock.patch("lince_lab.lima_backend.subprocess.run", side_effect=fake_run):
+                    self.backend.snapshot_apply("lab", "base-clean")
+        self.assertEqual(calls[0], ["limactl", "snapshot", "apply", "lab", "--tag", "base-clean"])
+        self.assertIn(["ssh", "-F", str(cfg), "-O", "exit", "lima-lab"], calls)
 
     def test_snapshot_delete(self) -> None:
         run = self._patch_run(_ok())
