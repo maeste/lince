@@ -26,8 +26,9 @@ argparse CLI (`lince-lab`), one skill, no MCP.
 This document is the authoritative design. It is written for **both audiences**:
 a user deciding whether/how to use lince-lab, and an agent driving it through the
 skill. The decisions below are recorded as ADR-01..ADR-10 (titles follow the
-blueprint §10). They are not relitigated in implementation; deviations from the
-blueprint are noted inline with a one-line justification.
+blueprint §10), plus ADR-11 recording the substrate-hardening findings from the
+real-VM verification run. They are not relitigated in implementation; deviations
+from the blueprint are noted inline with a one-line justification.
 
 ### 0.1 Design invariants
 
@@ -372,6 +373,30 @@ wait primitives already produce — an independent output layer that needed no
 change to the broker, the recipe contract, or the wait primitives.
 
 ---
+
+## 11. ADR-11: Real-VM verification findings (substrate hardening)
+
+ADR-01..10 were validated end-to-end against a real KVM host via the
+`scripts/lince-lab/ci/NN-*.sh` oracle chain (#252–#261, all green). The run
+surfaced non-obvious substrate behaviours that are now load-bearing decisions —
+recorded here so future changes do not regress them. Each is covered by a unit
+test and a real-VM oracle.
+
+| # | Symptom (real VM) | Cause | Decision / where |
+|---|---|---|---|
+| F1 | `cd /work && ./lince-config/install.sh` → exit 127 | `limactl copy DIR vm:/work` copies the dir **INTO** the dest (`/work/<basename>/…`) and ignores a trailing-slash source | `stage_workspace()` copies then flattens contents up (`cp -a <base>/. ./`, preserves modes); tolerant of either copy semantics — `recipe.py` |
+| F2 | After a bisect reset, the next `limactl shell` hangs forever | `snapshot_apply` (QEMU `loadvm`) rewinds the guest TCP stack, desyncing the SSH ControlMaster the host holds | `snapshot_apply` drops the stale master with `ssh -O exit` (a local control-socket op, can't hang); next op reconnects — `LimaBackend._reset_ssh_master` |
+| F3 | `npm install` / any fetch hangs under `mode=allow` | deny egress drops the guest's own DNS (UDP 53 to the slirp resolver); a CDN's DNS can also return an IP the nft rules didn't pin | resolve the allow map **once**, feed BOTH the nft rules AND a guest `/etc/hosts` pin from it — guest connects to exactly the allow-listed IP, no DNS — `recipe.apply_egress_lockdown` / `templates.resolve_allow_map` |
+| F4 | `nft … ip daddr <ipv6>` → "Address family not supported" | allow-host resolved to an AAAA record; `ip daddr` is IPv4-only and slirp is IPv4-only | resolve **A records only**, fail-closed for IPv6-only hosts — `templates.resolve_allow_ips` |
+| F5 | capture `watch wait` hangs (live-but-quiet ht) or times out blind | a raw `proc.stdout.readline()` blocks forever while ht is alive; ht stderr was undrained | a reader **thread → queue** with a deadline-bounded `get`; stderr drained on a daemon thread; `CaptureTimeout` carries ht argv/exit/stderr diagnostics — `LimaCaptureChannel` / `capture.py` |
+| F6 | ht renders a mangled command grid | `limactl shell -- ht … -- <argv>` (the double-`--` path) word-splits a **space-containing** argv element | drive synthetic capture with simple single-word argv (`yes <marker>`); single-`--` exec (recipe steps, provision scripts) is unaffected — oracle 05 |
+| F7 | rsync `chgrp` denied; `/root/...` asserts wrong; `dnf` no-ops | the Lima guest is a **non-root** user (`maeste`, `HOME=/home/<user>.guest`) with passwordless sudo | workspace dir is created + **chowned to the guest user** (`prepare_guest_dir`); `dnf`/system installs use `sudo`; config/CLI paths are `$HOME`-relative, never `/root` — `recipe.py` / recipes |
+| F8 | step hangs in `pip install` for minutes | provisioning runs network-**UP** (before lock-down); steps run network-**denied**, so a deny-time `pip` blocks | install the toolchain **and Python deps (tomlkit) in provisioning, system-wide via sudo**, so deny-time steps never reach the network; `PIP_*` fast-fail env as a backstop — recipes |
+| F9 | wizard oracle drove `lince-config quickstart` (nonexistent) | the New-Agent wizard is the **dashboard WASM TUI**, not a CLI command | the #259 oracle verifies the #202 contract against the real `lince-config resolve` (agent list == `enabled_agents`, each once) via `verify-agents.py` — `recipes/lince-wizard.toml` |
+
+Cross-cutting: provisioning / lock-down / staging / per-step progress is now
+announced to the broker's stderr (captured step output is not streamed), so a
+slow `dnf`/`npm` step is not a silent multi-minute wait that reads as a hang.
 
 ## Appendix A — file layout (reference)
 
