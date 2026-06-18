@@ -387,50 +387,18 @@ def _vm_name(recipe: Recipe) -> str:
 def recipe_needs(recipe: Recipe) -> dict[str, Any]:
     """Project a recipe into the ``recipe_needs`` dict :func:`build_template` wants.
 
-    For ``mode = "allow"`` the declared ``allow_hosts`` are resolved to IPs
-    **host-side** here (once) and passed through as ``allow_ips`` so the baked nft
-    rules pin concrete destinations. Resolution is fail-closed: a host that does
-    not resolve is dropped, never widened to any-host.
+    Only the boot-template inputs (image + resources + provision scripts) — egress
+    is NOT baked into the template; it is resolved and enforced at runtime by
+    :func:`apply_egress_lockdown`, so ``allow_hosts`` are deliberately not resolved
+    here.
     """
-    needs: dict[str, Any] = {
+    return {
         "image": recipe.vm.get("image"),
         "cpus": recipe.vm.get("cpus"),
         "memory": recipe.vm.get("memory"),
         "disk": recipe.vm.get("disk"),
         "provision": list(recipe.provision),
     }
-    if recipe.network.get("mode") == "allow":
-        allow_hosts = list(recipe.network.get("allow_hosts") or [])
-        needs["allow_hosts"] = allow_hosts
-        needs["allow_ports"] = list(recipe.network.get("allow_ports") or [])
-        needs["allow_ips"] = resolve_allow_ips(allow_hosts)
-    return needs
-
-
-def lockdown_posture(recipe: Recipe) -> tuple[list[str], list[int]]:
-    """Resolve the runtime egress lock-down posture for ``recipe``.
-
-    Returns ``(allow_ips, allow_ports)`` to hand to
-    :func:`~lince_lab.templates.egress_lockdown_argv`:
-
-    * ``mode = "deny"`` (the default) → ``([], [])``: a drop-only lock-down
-      (deny-by-default; only loopback + established/related survive).
-    * ``mode = "allow"`` → the declared ``allow_hosts`` are resolved to IPs
-      **host-side** (fail-closed: a host that does not resolve is dropped, never
-      widened to any-host) paired with the declared ``allow_ports``. If *zero*
-      hosts resolve the posture fails closed to deny (``([], [])``), matching the
-      template/egress-log behaviour.
-    """
-    if recipe.network.get("mode") != "allow":
-        return [], []
-    allow_hosts = list(recipe.network.get("allow_hosts") or [])
-    allow_ports = [int(p) for p in (recipe.network.get("allow_ports") or [])]
-    allow_ips = resolve_allow_ips(allow_hosts)
-    if not allow_ips:
-        # Fail-closed: an allow recipe whose hosts all failed DNS becomes a deny
-        # lock-down (never any-host).
-        return [], []
-    return allow_ips, allow_ports
 
 
 def apply_egress_lockdown(
@@ -442,11 +410,13 @@ def apply_egress_lockdown(
 ) -> None:
     """Apply the runtime egress lock-down to a provisioned, network-up VM.
 
-    Resolves the recipe's posture (:func:`lockdown_posture`) and runs the nft
-    lock-down script via ``backend.exec(vm, egress_lockdown_argv(...))`` while the
-    network is still up (so the script can still install ``nft`` if needed). A
-    nonzero exit raises :class:`~lince_lab.errors.BackendError`: a VM that cannot
-    enforce egress must NOT go on to run the (now-untrusted) recipe steps.
+    Resolves the recipe's allow posture (``mode = "allow"`` → its ``allow_hosts``
+    resolved to IPs host-side, fail-closed to deny when none resolve; else a
+    drop-only deny), pins the resolved IPs into the guest ``/etc/hosts``, and runs
+    the nft lock-down via ``backend.exec(vm, egress_lockdown_argv(...))`` while the
+    network is still up (so the script can install ``nft`` if needed). A nonzero
+    exit raises :class:`~lince_lab.errors.BackendError`: a VM that cannot enforce
+    egress must NOT go on to run the (now-untrusted) recipe steps.
     """
     # Cap the lock-down exec so a wedged script errors out instead of hanging
     # forever; honor a tighter step_timeout when the caller provides one.
@@ -454,16 +424,12 @@ def apply_egress_lockdown(
 
     # Resolve the allow map ONCE and derive both the nft IPs and the guest
     # /etc/hosts pin from it, so the two are consistent (the guest never connects
-    # to an IP the nft rules did not allow).
-    allow_ports: list[int] = []
-    host_ip_map: dict[str, list[str]] = {}
-    if recipe.network.get("mode") == "allow":
-        allow_ports = [int(p) for p in (recipe.network.get("allow_ports") or [])]
-        host_ip_map = resolve_allow_map(list(recipe.network.get("allow_hosts") or []))
+    # to an IP the nft rules did not allow). Fail-closed: if no host resolves, the
+    # map is empty → no allow IPs → deny (drop-only), and no ports are opened.
+    is_allow = recipe.network.get("mode") == "allow"
+    host_ip_map = resolve_allow_map(list(recipe.network.get("allow_hosts") or [])) if is_allow else {}
     allow_ips = [ip for ips in host_ip_map.values() for ip in ips]
-    if recipe.network.get("mode") == "allow" and not allow_ips:
-        # Fail-closed: an allow recipe whose hosts all failed DNS becomes a deny.
-        allow_ports = []
+    allow_ports = [int(p) for p in (recipe.network.get("allow_ports") or [])] if (is_allow and allow_ips) else []
 
     # Pin the resolved IPs into the guest's /etc/hosts BEFORE the lock-down, so
     # the guest's name lookups resolve to exactly the allow-listed IPs without

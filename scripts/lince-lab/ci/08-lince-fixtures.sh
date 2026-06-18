@@ -3,8 +3,9 @@
 # 08-lince-fixtures.sh — sub-issue #259 oracle (blueprint §11).
 #
 # Lince fixtures. Drives the two real Lince fixture recipes in a VM:
-#   • lince-wizard.toml  — drive `lince-config quickstart` to completion via ht
-#                          and assert the config file is written.
+#   • lince-wizard.toml  — install lince-config + the agent registry, seed
+#                          enabled_agents, and assert `lince-config resolve` lists
+#                          exactly those agents, each once (the #202 contract).
 #   • lince-installer.toml — run install.sh twice and assert the second run is a
 #                          clean idempotent no-op (exit 0 unchanged).
 # Both recipes are the everyday entry point exercised against a real substrate.
