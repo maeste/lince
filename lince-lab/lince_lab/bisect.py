@@ -158,7 +158,9 @@ def _default_verdict_runner(
     def run(sha: str) -> Verdict:
         started = time.monotonic()
         _git_checkout(sha, repo_dir)
-        backend.copy_in(vm_name, str(repo_dir), guest_dir, recursive=True)
+        # Trailing slash → copy the repo's CONTENTS into guest_dir (so the staged
+        # tree is at <guest_dir>/<file>, e.g. /work/marker), matching run_recipe.
+        backend.copy_in(vm_name, str(repo_dir).rstrip("/") + "/", guest_dir, recursive=True)
         try:
             exit_code, step_failed = run_steps_and_assert(backend, recipe, vm_name, step_timeout=step_timeout)
         except DataError as exc:

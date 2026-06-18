@@ -253,7 +253,10 @@ def run_recipe(
         # the recipe). Resolve it to an absolute path under the recipe dir so the
         # backend copies the right tree — limactl/rsync would otherwise resolve a
         # relative source against ITS own working directory, not the recipe's.
-        abs_host_dir = str((recipe.source_dir / host_dir).resolve())
+        # Trailing slash → copy the host_dir's CONTENTS into guest_dir (rsync
+        # semantics), so a recipe step finds its files at <guest_dir>/<file> (e.g.
+        # /work/lince-config), not under a basename subdirectory.
+        abs_host_dir = str((recipe.source_dir / host_dir).resolve()).rstrip("/") + "/"
         prepare_guest_dir(backend, vm_name, guest_dir, step_timeout=step_timeout)
         backend.copy_in(vm_name, abs_host_dir, guest_dir, recursive=True)
 

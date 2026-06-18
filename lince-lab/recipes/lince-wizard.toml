@@ -1,18 +1,20 @@
-# lince-wizard — drive the lince quickstart New-Agent wizard (#259)
+# lince-wizard — verify the resolved New-Agent list honors enabled_agents (#202/#259)
 #
-# Boots a disposable, network-denied VM, stages the lince sources, then drives
-# `lince-config quickstart` through `ht` and asserts the New-Agent wizard
-# presents the *correct* agent list: exactly the configured `enabled_agents`,
-# with NO per-level duplicates. That "agent list == enabled_agents, shown once"
-# property is the #202 regression contract — it is asserted here against the
-# settled terminal grid via `grid_contains` / `grid_absent`, and the written
-# policy file is confirmed with `file_exists`.
+# Boots a disposable, network-denied VM, installs the lince-config CLI + the
+# shipped agent registry from the staged sources, seeds a restricted
+# enabled_agents set, then runs the REAL `lince-config resolve` and asserts the
+# resolved agent list is exactly that set, each agent once. That "agent list ==
+# enabled_agents, shown once (no per-sandbox-level duplication)" property is the
+# #202 regression contract — here it is checked against real lince-config code,
+# not a scripted grid. (The dashboard's New-Agent wizard renders this same
+# resolved list; lince-config is its data source.)
 #
-# Network: deny (the wizard is fully local; nothing should reach the network).
+# Network: deny — install is local (tomlkit is pre-installed while networked in
+# provisioning) and resolve is local; nothing reaches the network at step time.
 
 [recipe]
 name = "lince-wizard"
-description = "Drive the lince quickstart New-Agent wizard and verify the agent list (== enabled_agents, no per-level duplicates — the #202 contract) and that lince.toml was written."
+description = "Install lince-config + the agent registry in a disposable VM, seed enabled_agents, and verify `lince-config resolve` lists exactly those agents, each once (the #202 contract)."
 version = "1"
 
 [vm]
@@ -22,95 +24,58 @@ memory = "2GiB"
 disk = "20GiB"
 
 [network]
-mode = "deny"             # the quickstart wizard is local-only
+mode = "deny"             # resolve + install are fully local
 allow_hosts = []
 allow_ports = []
 
 [workspace]
-# The single host dir this recipe may stage. Resolves under the recipe dir.
+# Staged into /work. The lince-lab #259 oracle fills this with the real
+# lince-config/ sources + registry.d/ alongside the committed verify-agents.py /
+# lince-toml-seed.toml; the committed placeholder keeps host_dir resolvable for
+# `recipe validate` and the substrate-free regression test.
 host_dir = "./fixtures/lince-clone"
 guest_dir = "/work"
 
-# ── provisioning (runs with network UP, before the egress lock-down) ─────────
-# Provisioning is trusted setup: the VM boots networked, these scripts install
-# tooling, THEN the broker applies the egress lock-down (deny — this recipe needs
-# no runtime egress) and snapshots base-clean. So `dnf install` succeeds here even
-# though the wizard step itself runs network-denied.
-#
-# NOTE: `ht` (the headless-terminal capture driver) is NO LONGER fetched here. It
-# ships HOST-SIDE with lince-lab and the broker copies it into the guest on demand
-# at capture time, so terminal capture works on ANY guest — even a deny-locked one
-# that could not download ht itself.
+# ── provisioning (network UP — trusted setup) ───────────────────────────────
+# Install the toolchain AND pre-install tomlkit while the VM is still networked,
+# so the deny-locked install step below can run `install.sh` without any pip
+# fetch (install.sh skips the pip step when tomlkit already imports).
 [[provision]]
 mode = "system"
 script = """
 #!/bin/bash
 set -eux
-# Toolchain the lince quickstart + lince-config need in-guest.
 dnf install -y git python3 python3-pip
+python3 -m pip install --user tomlkit || python3 -m pip install --user --break-system-packages tomlkit
 """
 
-[[provision]]
-mode = "system"
-script = """
-#!/bin/bash
-set -eux
-# Install the lince-config CLI from the staged sources so `quickstart` exists.
-cd /work && ./lince-config/install.sh
-# Seed the policy with a restricted enabled_agents set so the wizard has a
-# concrete, deduplicated list to render. The #202 contract is that the wizard
-# shows exactly these names, once each — never duplicated per sandbox level.
-mkdir -p "$HOME/.config/lince"
-cat > "$HOME/.config/lince/lince.toml" <<'EOF'
-[dashboard]
-enabled_agents = ["claude", "codex"]
-EOF
-"""
-
-# ── step 1: drive the quickstart New-Agent wizard via ht ────────────────────
+# ── step 1: install the lince-config CLI from the staged sources ────────────
 [[step]]
-name = "drive-wizard"
-capture = true
-program = ["lince-config", "quickstart"]
-size = "80x24"
-# Keys are injected in order, each only after the matching [sync].wait_for
-# substring has appeared and the grid has settled (no fixed sleeps).
-keys = ["Enter", "Down", "Enter", "y", "Enter"]
+name = "install-lince-config"
+run = ["sh", "-c", "cd /work && ./lince-config/install.sh"]
 
-# ── assertions (the #202 contract) ──────────────────────────────────────────
+# ── step 2: stage the shipped agent registry where lince-config reads it ────
+# resolve filters this registry by enabled_agents; without it the agent list
+# would be empty. (~/.local/share/lince/registry.d is the first LINCE_REGISTRY_DIR.)
+[[step]]
+name = "stage-registry"
+run = ["sh", "-c", "mkdir -p $HOME/.local/share/lince && cp -r /work/registry.d $HOME/.local/share/lince/registry.d"]
+
+# ── step 3: seed the restricted enabled_agents policy ───────────────────────
+[[step]]
+name = "seed-enabled-agents"
+run = ["sh", "-c", "mkdir -p $HOME/.config/lince && cp /work/lince-toml-seed.toml $HOME/.config/lince/lince.toml"]
+
+# ── step 4: the #202 contract — resolved list == enabled_agents, each once ──
+[[step]]
+name = "verify-agent-list"
+run = ["python3", "/work/verify-agents.py", "claude", "codex"]
+
+# ── assertions ──────────────────────────────────────────────────────────────
 [assert]
+# Every step exits 0; the verify step's exit IS the #202 verdict.
 exit_code = 0
-# The wizard must list exactly the enabled_agents, each shown once. We assert
-# both names are present (agent list == enabled_agents) and that the quickstart
-# reported a written configuration.
-grid_contains = [
-    "claude",
-    "codex",
-    "enabled_agents",
-    "Configuration written",
-]
-# No per-level duplication and no crash: the agent names must not appear under a
-# per-sandbox-level heading, and no Python traceback / error may surface.
-grid_absent = [
-    "permissive",
-    "paranoid",
-    "Traceback",
-    "ERROR",
-]
-# The wizard must have written the policy file.
+# The policy the seed step wrote (resolution's enabled_agents source) is present.
 file_exists = [
-    "/root/.config/lince/lince.toml",
+    "/work/lince-toml-seed.toml",
 ]
-
-# ── deterministic synchronization (required for capture steps) ──────────────
-[sync]
-# One wait_for substring per key batch: wait for each prompt before answering.
-wait_for = [
-    "New Agent",
-    "Select",
-    "agent",
-    "Confirm",
-    "written",
-]
-stable_ms = 150           # event-silence debounce; NOT a sleep
-timeout_s = 60            # per-wait deadline

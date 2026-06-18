@@ -36,21 +36,44 @@ resolve_recipe() {
 }
 WIZARD_RECIPE="$(resolve_recipe lince-wizard.toml)"
 INSTALLER_RECIPE="$(resolve_recipe lince-installer.toml)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-cleanup() { stop_broker "$SOCK"; }
+# Both fixture recipes install lince-config + stage the agent registry FROM the
+# staged workspace (/work). The committed fixtures/lince-clone is a placeholder
+# (it only carries verify-agents.py + lince-toml-seed.toml so host_dir resolves
+# and the substrate-free test works). For a real run we overlay the actual
+# lince-config/ sources + registry.d/ into a throwaway copy of the recipe dir and
+# point the recipes at THAT — never mutating the committed/installed fixture.
+STAGE="$(mktemp -d)"
+FIX="$STAGE/fixtures/lince-clone"
+mkdir -p "$FIX"
+cp "$WIZARD_RECIPE" "$STAGE/lince-wizard.toml"
+cp "$INSTALLER_RECIPE" "$STAGE/lince-installer.toml"
+SRC_FIX="$(dirname "$WIZARD_RECIPE")/fixtures/lince-clone"
+cp "$SRC_FIX/verify-agents.py" "$FIX/"
+cp "$SRC_FIX/lince-toml-seed.toml" "$FIX/"
+cp -r "$REPO_ROOT/lince-config" "$FIX/lince-config"
+cp -r "$REPO_ROOT/registry.d" "$FIX/registry.d"
+# Drop bytecode caches the copy may have carried over.
+find "$FIX/lince-config" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+STAGED_WIZARD="$STAGE/lince-wizard.toml"
+STAGED_INSTALLER="$STAGE/lince-installer.toml"
+
+cleanup() { stop_broker "$SOCK"; rm -rf "$STAGE"; }
 trap cleanup EXIT
 
 LINCE_LAB_FAKE="" start_broker "$SOCK"
 
-log "drive the lince quickstart wizard to completion (#259 wizard fixture)"
+log "verify the resolved New-Agent list == enabled_agents, each once (#202 wizard fixture)"
 assert_file "$WIZARD_RECIPE" "lince-wizard recipe present"
+assert_file "$FIX/lince-config/install.sh" "real lince-config sources staged into the workspace"
 assert_exit 0 "run recipe lince-wizard -> 0" -- \
-    "$LINCE_LAB_BIN" --socket "$SOCK" run recipe "$WIZARD_RECIPE"
+    "$LINCE_LAB_BIN" --socket "$SOCK" run recipe "$STAGED_WIZARD"
 
 log "install.sh run-twice idempotency (#259 installer fixture)"
 assert_file "$INSTALLER_RECIPE" "lince-installer recipe present"
 assert_exit 0 "run recipe lince-installer -> 0 (idempotent)" -- \
-    "$LINCE_LAB_BIN" --socket "$SOCK" run recipe "$INSTALLER_RECIPE"
+    "$LINCE_LAB_BIN" --socket "$SOCK" run recipe "$STAGED_INSTALLER"
 
 ok "08 lince-fixtures oracle passed"
 exit 0
