@@ -253,12 +253,12 @@ def run_recipe(
         # the recipe). Resolve it to an absolute path under the recipe dir so the
         # backend copies the right tree — limactl/rsync would otherwise resolve a
         # relative source against ITS own working directory, not the recipe's.
-        # Trailing slash → copy the host_dir's CONTENTS into guest_dir (rsync
-        # semantics), so a recipe step finds its files at <guest_dir>/<file> (e.g.
-        # /work/lince-config), not under a basename subdirectory.
-        abs_host_dir = str((recipe.source_dir / host_dir).resolve()).rstrip("/") + "/"
+        # host_dir is recipe-RELATIVE; resolve it absolute under the recipe dir,
+        # then stage its CONTENTS into guest_dir (see stage_workspace) so a recipe
+        # step finds its files at <guest_dir>/<file> (e.g. /work/lince-config).
+        abs_host_dir = str((recipe.source_dir / host_dir).resolve())
         prepare_guest_dir(backend, vm_name, guest_dir, step_timeout=step_timeout)
-        backend.copy_in(vm_name, abs_host_dir, guest_dir, recursive=True)
+        stage_workspace(backend, vm_name, abs_host_dir, guest_dir, step_timeout=step_timeout)
 
         # A single run never resets, so the base snapshot is dead weight unless the
         # effective config asks to keep it; drop it to reclaim disk (consumes the
@@ -277,6 +277,29 @@ def run_recipe(
     finally:
         if not keep:
             backend.delete(vm_name, force=True)
+
+
+def stage_workspace(
+    backend: Backend, vm_name: str, host_dir_abs: str, guest_dir: str, *, step_timeout: float | None = None
+) -> None:
+    """Copy ``host_dir_abs`` into the VM so its CONTENTS land at ``guest_dir``.
+
+    ``limactl copy`` copies a directory INTO the destination
+    (``<guest_dir>/<basename>/...``), so after the copy we move that basename
+    subdir's contents up to ``guest_dir`` — recipes address staged files at
+    ``<guest_dir>/<name>`` (e.g. ``/work/lince-config``), not under a subdir. The
+    flatten is tolerant: if a backend instead placed the contents directly (no
+    basename subdir), the move is a harmless no-op (``|| true``) and the workspace
+    is already in place. ``cp -a`` preserves modes (``install.sh`` stays
+    executable) and copies dotfiles via the trailing ``/.``.
+    """
+    base = Path(host_dir_abs).name
+    backend.copy_in(vm_name, host_dir_abs, guest_dir, recursive=True)
+    flatten = (
+        f"cd {shlex.quote(guest_dir)} && [ -d {shlex.quote(base)} ] "
+        f"&& cp -a {shlex.quote(base + '/.')} ./ && rm -rf {shlex.quote(base)} || true"
+    )
+    backend.exec(vm_name, ["sh", "-c", flatten], timeout=step_timeout)
 
 
 def prepare_guest_dir(backend: Backend, vm_name: str, guest_dir: str, *, step_timeout: float | None = None) -> None:

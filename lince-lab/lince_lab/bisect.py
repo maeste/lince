@@ -56,6 +56,7 @@ from lince_lab.recipe import (
     prepare_guest_dir,
     recipe_needs,
     run_steps_and_assert,
+    stage_workspace,
     step_timeout_of,
     validate,
 )
@@ -158,9 +159,9 @@ def _default_verdict_runner(
     def run(sha: str) -> Verdict:
         started = time.monotonic()
         _git_checkout(sha, repo_dir)
-        # Trailing slash → copy the repo's CONTENTS into guest_dir (so the staged
-        # tree is at <guest_dir>/<file>, e.g. /work/marker), matching run_recipe.
-        backend.copy_in(vm_name, str(repo_dir).rstrip("/") + "/", guest_dir, recursive=True)
+        # Stage the repo's CONTENTS into guest_dir (so the tree is at
+        # <guest_dir>/<file>, e.g. /work/marker), matching run_recipe.
+        stage_workspace(backend, vm_name, str(repo_dir), guest_dir, step_timeout=step_timeout)
         try:
             exit_code, step_failed = run_steps_and_assert(backend, recipe, vm_name, step_timeout=step_timeout)
         except DataError as exc:
