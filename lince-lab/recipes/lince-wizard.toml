@@ -1,0 +1,90 @@
+# lince-wizard — verify the resolved New-Agent list honors enabled_agents (#202/#259)
+#
+# Boots a disposable, network-denied VM, installs the lince-config CLI + the
+# shipped agent registry from the staged sources, seeds a restricted
+# enabled_agents set, then runs the REAL `lince-config resolve` and asserts the
+# resolved agent list is exactly that set, each agent once. That "agent list ==
+# enabled_agents, shown once (no per-sandbox-level duplication)" property is the
+# #202 regression contract — here it is checked against real lince-config code,
+# not a scripted grid. (The dashboard's New-Agent wizard renders this same
+# resolved list; lince-config is its data source.)
+#
+# Network: deny — install is local (tomlkit is pre-installed while networked in
+# provisioning) and resolve is local; nothing reaches the network at step time.
+
+[recipe]
+name = "lince-wizard"
+description = "Install lince-config + the agent registry in a disposable VM, seed enabled_agents, and verify `lince-config resolve` lists exactly those agents, each once (the #202 contract)."
+version = "1"
+
+[vm]
+image = "fedora"          # must be in the config image allowlist
+cpus = 2
+memory = "2GiB"
+disk = "20GiB"
+
+[network]
+mode = "deny"             # resolve + install are fully local
+allow_hosts = []
+allow_ports = []
+
+[workspace]
+# Staged into /work. The lince-lab #259 oracle fills this with the real
+# lince-config/ sources + registry.d/ alongside the committed verify-agents.py /
+# lince-toml-seed.toml; the committed placeholder keeps host_dir resolvable for
+# `recipe validate` and the substrate-free regression test.
+host_dir = "./fixtures/lince-clone"
+guest_dir = "/work"
+
+# ── provisioning (network UP — trusted setup) ───────────────────────────────
+# Install the toolchain AND pre-install tomlkit while the VM is still networked,
+# so the deny-locked install step below can run `install.sh` without any pip
+# fetch (install.sh skips the pip step when tomlkit already imports).
+[[provision]]
+mode = "system"
+script = """
+#!/bin/bash
+set -eux
+sudo dnf install -y git python3 python3-pip
+# tomlkit must be importable BEFORE the deny lock-down so install.sh (run
+# network-denied) never reaches its pip fallback. Install it system-wide with
+# sudo while the network is UP — distro package first, then pip.
+python3 -c 'import tomlkit' \
+  || sudo dnf install -y python3-tomlkit \
+  || sudo python3 -m pip install tomlkit \
+  || sudo python3 -m pip install --break-system-packages tomlkit
+python3 -c 'import tomlkit'
+"""
+
+# ── step 1: install the lince-config CLI from the staged sources ────────────
+# PIP_* fast-fail env so that even if tomlkit were somehow missing, install.sh's
+# pip fallback errors in seconds under the deny lock-down instead of hanging.
+[[step]]
+name = "install-lince-config"
+run = ["sh", "-c", "cd /work && PIP_NO_INPUT=1 PIP_RETRIES=1 PIP_DEFAULT_TIMEOUT=5 ./lince-config/install.sh"]
+
+# ── step 2: stage the shipped agent registry where lince-config reads it ────
+# resolve filters this registry by enabled_agents; without it the agent list
+# would be empty. (~/.local/share/lince/registry.d is the first LINCE_REGISTRY_DIR.)
+[[step]]
+name = "stage-registry"
+run = ["sh", "-c", "mkdir -p $HOME/.local/share/lince && cp -r /work/registry.d $HOME/.local/share/lince/registry.d"]
+
+# ── step 3: seed the restricted enabled_agents policy ───────────────────────
+[[step]]
+name = "seed-enabled-agents"
+run = ["sh", "-c", "mkdir -p $HOME/.config/lince && cp /work/lince-toml-seed.toml $HOME/.config/lince/lince.toml"]
+
+# ── step 4: the #202 contract — resolved list == enabled_agents, each once ──
+[[step]]
+name = "verify-agent-list"
+run = ["python3", "/work/verify-agents.py", "claude", "codex"]
+
+# ── assertions ──────────────────────────────────────────────────────────────
+[assert]
+# Every step exits 0; the verify step's exit IS the #202 verdict.
+exit_code = 0
+# The policy the seed step wrote (resolution's enabled_agents source) is present.
+file_exists = [
+    "/work/lince-toml-seed.toml",
+]

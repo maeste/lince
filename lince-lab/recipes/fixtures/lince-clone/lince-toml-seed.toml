@@ -1,0 +1,9 @@
+# Seed policy for the lince-wizard recipe: a restricted enabled_agents set so the
+# resolved New-Agent list has a concrete, de-duplicated value to verify. Copied
+# into the guest at ~/.config/lince/lince.toml by the recipe's seed step. The
+# #202 contract is that `lince-config resolve` then lists exactly these agents,
+# each once (verified by verify-agents.py).
+version = "2.0"
+
+[dashboard]
+enabled_agents = ["claude", "codex"]

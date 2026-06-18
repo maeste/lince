@@ -13,6 +13,8 @@ LINCE (Linux Intelligent Native Coding Environment) is a toolkit that turns your
 
 Optional voice input is available via [VoxCode](https://github.com/RisorseArtificiali/voxcode) (separate project).
 
+Optional, advanced: **lince-lab** — disposable Linux lab VMs an agent can create, drive, snapshot, and git-bisect without touching your host (Linux only in v1; needs Lima + KVM). See [Disposable lab VMs](#optional-disposable-lab-vms-lince-lab) below.
+
 ---
 
 ## Quick Install (Interactive)
@@ -106,11 +108,40 @@ For voice-controlled coding, install [VoxCode](https://github.com/RisorseArtific
 
 ---
 
+## Optional: Disposable lab VMs (lince-lab)
+
+`lince-lab` gives an AI agent an **isolated, disposable Linux VM** (via [Lima](https://lima-vm.io)) it can create, drive, snapshot, reset, and destroy — to install/test arbitrary things and **git-bisect regressions** — without touching your host or your real VMs.
+
+**How it runs (important).** The VM-control surface stays on the **host**. You start a **broker** there:
+
+```bash
+lince-lab lab broker start      # run on the HOST — it owns limactl/QEMU and needs /dev/kvm
+```
+
+Agents (including ones inside the agent-sandbox) drive it over a narrow unix socket — **the sandbox is never given `/dev/kvm`**. Then, from the host or a sandboxed agent:
+
+```bash
+lince-lab --help                                              # grouped, multi-level help
+lince-lab run recipe lince-lab/recipes/lince-wizard.toml      # run a recipe end-to-end
+lince-lab find bisect --recipe <r> --good <sha> --bad <sha>   # autonomous regression hunt
+```
+
+**Install:** pick it in `./quickstart.sh` (optional step, off by default), or directly:
+
+```bash
+cd lince-lab && ./install.sh
+```
+
+**Requirements:** Linux with **Lima** + **qemu-img** + KVM (`/dev/kvm`). v1 is Linux-only; a macOS/Seatbelt backend is planned ([#268](https://github.com/RisorseArtificiali/lince/issues/268)). See the design (ADRs) in [`docs/design/lince-lab-design.md`](docs/design/lince-lab-design.md) and user docs under [`docs/documentation/lince-lab/`](docs/documentation/lince-lab/).
+
+---
+
 ## Uninstall
 
 ```bash
 cd sandbox && ./uninstall.sh
 cd lince-dashboard && ./uninstall.sh
+cd lince-lab && ./uninstall.sh        # if you installed lince-lab
 ```
 
 ---
@@ -175,6 +206,7 @@ Option 2 — Via GUI: open **Terminator → Preferences → Keybindings**, find 
 | bubblewrap | Sandbox (Linux) | Isolation technology |
 | sandbox-exec (Seatbelt) | Sandbox (macOS) | Built into macOS; legacy nono backend is [deprecated](docs/documentation/sandbox/migration-nono-to-seatbelt.md) |
 | Python 3.11+ | Sandbox | Runtime |
+| Lima + qemu-img + KVM | lince-lab (optional) | Disposable lab VMs; broker runs on host; Linux-only in v1 |
 
 > **Ubuntu 24.04+ note**: unprivileged user namespaces are AppArmor-restricted
 > by default, so bwrap-based sandboxing can fail with

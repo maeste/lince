@@ -1,0 +1,7 @@
+{
+  "name": "lince-lab-npm-smoke",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Placeholder workspace staged by the generic-npm recipe; the recipe installs a small package and runs a smoke test against it.",
+  "license": "MIT"
+}

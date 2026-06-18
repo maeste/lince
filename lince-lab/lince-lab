@@ -1,0 +1,841 @@
+#!/usr/bin/env python3
+"""lince-lab — disposable lab-VM substrate for autonomous testing and bisecting.
+
+A thin argparse front-end (blueprint §4): every verb is a small ``cmd_*`` handler
+that calls :class:`~lince_lab.client.BrokerClient` and exits with the broker /
+guest exit code. The CLI never talks to a VM directly — it speaks the
+newline-JSON protocol to the host-side broker over a unix socket.
+
+The verbs are organised into five top-level **groups** so ``lince-lab --help``
+reads as grouped entry points, and ``lince-lab <group> --help`` drills into that
+group's verbs (two-level argparse subparsers):
+
+* ``vm``     — manage disposable lab VMs (up/down/exec/copy/snapshot/rm)
+* ``run``    — run a recipe end-to-end (validate / recipe / presets)
+* ``find``   — autonomous regression hunting (bisect)
+* ``watch``  — observe a VM's terminal (grab / keys / wait)
+* ``lab``    — broker & setup plumbing (broker / doctor / version)
+
+Exit codes (blueprint §4): ``vm exec`` / ``run recipe`` / ``find bisect`` pass the
+guest/recipe code verbatim; policy denial → 13; unknown verb → 64; data error →
+65; broker unreachable → 69.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+# Make the co-located ``lince_lab/`` package importable in BOTH modes (mirrors
+# how lince-config resolves bundled data: sys.path inserts at the executable
+# header). Absolute imports only.
+#
+# * dev / repo mode  — the package lives next to this executable in the module
+#   tree, so the executable's own directory is on the path.
+# * installed mode   — install.sh copies this CLI to ~/.local/bin/lince-lab and
+#   the package to ~/.local/share/lince/lince-lab/, so that share dir is added
+#   too. (`$XDG_DATA_HOME` is honored, falling back to ~/.local/share.)
+#
+# Both inserts are additive and harmless when the path is absent, so the repo
+# tests keep resolving ``lince_lab`` from the tree.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+_data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+_installed_pkg_dir = os.path.join(_data_home, "lince", "lince-lab")
+if os.path.isdir(_installed_pkg_dir):
+    sys.path.append(_installed_pkg_dir)
+
+from lince_lab import __version__, config as labconfig  # noqa: E402
+from lince_lab.client import BrokerClient  # noqa: E402
+from lince_lab.errors import (  # noqa: E402
+    DATA_ERROR,
+    LabError,
+)
+
+
+# ── shared-flag helpers (house idiom) ────────────────────────────────────────
+
+
+def _default_socket() -> str:
+    """The default broker socket path ($HOME/.agent-sandbox/lince-lab.sock)."""
+    return str(labconfig.DEFAULTS["socket_path"])
+
+
+def _add_global_flags(p: argparse.ArgumentParser) -> None:
+    """Attach the shared flags to the TOP-LEVEL parser with real defaults.
+
+    These are accepted *before* the group name (``lince-lab --socket X vm ...``).
+    The same flags are re-attached to every leaf with ``SUPPRESS`` defaults so a
+    leaf-level flag overrides the global one while its absence inherits it.
+    """
+    p.add_argument("--socket", default=_default_socket(), metavar="PATH", help="broker unix socket")
+    p.add_argument("--json", action="store_true", default=False, help="emit results as JSON")
+    p.add_argument("-q", "--quiet", action="store_true", default=False, help="suppress status output")
+    p.add_argument("--timeout", type=float, default=None, metavar="SECONDS", help="per-request socket timeout (s)")
+
+
+def _add_socket_flag(p: argparse.ArgumentParser) -> None:
+    # SUPPRESS: only set the attribute when given, so the top-level default wins.
+    p.add_argument(
+        "--socket",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help="broker unix socket (default: %s)" % _default_socket(),
+    )
+
+
+def _add_json_flag(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="emit the broker result as JSON",
+    )
+
+
+def _add_quiet_flag(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="suppress human-readable status output",
+    )
+
+
+def _add_timeout_flag(p: argparse.ArgumentParser, default: float | None = None) -> None:
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=argparse.SUPPRESS,
+        metavar="SECONDS",
+        help="per-request socket timeout in seconds",
+    )
+
+
+# ── client + output helpers ──────────────────────────────────────────────────
+
+
+def _client(args: argparse.Namespace) -> BrokerClient:
+    """Build a :class:`BrokerClient` from the parsed shared flags."""
+    socket_path = getattr(args, "socket", None) or _default_socket()
+    return BrokerClient(socket_path, timeout=getattr(args, "timeout", None))
+
+
+def _emit(args: argparse.Namespace, result, human: str | None = None) -> None:
+    """Print a broker result: JSON when ``--json``, else the human summary."""
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif human is not None and not getattr(args, "quiet", False):
+        print(human)
+
+
+# ── vm group ─────────────────────────────────────────────────────────────────
+
+
+def cmd_vm_up(args: argparse.Namespace) -> int:
+    """Create + start a disposable VM (``vm.create`` then ``vm.start``)."""
+    client = _client(args)
+    if not getattr(args, "quiet", False):
+        print(
+            f"lince-lab: bringing up {args.name!r} — first run downloads the base image "
+            "and boots a VM (several minutes). Live progress is in the broker's terminal; "
+            f"or watch ~/.lima/{args.name}/serial*.log",
+            file=sys.stderr,
+            flush=True,
+        )
+    create_args: dict = {"name": args.name, "template_yaml": ""}
+    if getattr(args, "image", None):
+        create_args["image"] = args.image
+    client.call("vm.create", create_args)
+    client.call("vm.start", {"name": args.name})
+    _emit(args, {"started": args.name}, f"started {args.name}")
+    return 0
+
+
+def cmd_vm_down(args: argparse.Namespace) -> int:
+    """Stop a running VM (``vm.stop``)."""
+    result = _client(args).call("vm.stop", {"name": args.name, "force": args.force})
+    _emit(args, result, f"stopped {args.name}")
+    return 0
+
+
+def cmd_vm_rm(args: argparse.Namespace) -> int:
+    """Delete a VM (``vm.delete``)."""
+    result = _client(args).call("vm.delete", {"name": args.name, "force": args.force})
+    _emit(args, result, f"deleted {args.name}")
+    return 0
+
+
+def cmd_vm_status(args: argparse.Namespace) -> int:
+    """Show a VM's status (``vm.status``)."""
+    result = _client(args).call("vm.status", {"name": args.name})
+    _emit(args, result, f"{result['name']}: {result['status']} (snapshots: {len(result['snapshots'])})")
+    return 0
+
+
+def cmd_vm_list(args: argparse.Namespace) -> int:
+    """List all lab VMs (``vm.list``)."""
+    result = _client(args).call("vm.list", {})
+    if not getattr(args, "json", False) and not args.quiet:
+        if not result:
+            print("(no VMs)")
+        for s in result:
+            print(f"{s['name']}: {s['status']}")
+    else:
+        _emit(args, result)
+    return 0
+
+
+def cmd_vm_exec(args: argparse.Namespace) -> int:
+    """Run a command in the VM, propagating the GUEST exit code (``vm.exec``)."""
+    result = _client(args).call(
+        "vm.exec",
+        {"name": args.name, "argv": args.argv, "workdir": args.workdir, "timeout": args.cmd_timeout},
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        if result.get("stdout"):
+            sys.stdout.write(result["stdout"])
+        if result.get("stderr"):
+            sys.stderr.write(result["stderr"])
+    # Exit-code propagation: the guest code is the CLI code (blueprint §4).
+    return int(result.get("exit_code", 0))
+
+
+def cmd_vm_copy(args: argparse.Namespace) -> int:
+    """Copy a file in or out of the VM (``vm.copy_in`` / ``vm.copy_out``).
+
+    Direction is inferred from which path carries the ``<name>:<path>`` form:
+    ``src`` host → ``name:dst`` is copy-in; ``name:src`` → host ``dst`` is
+    copy-out.
+    """
+    src_name, src_path = _split_vm_path(args.src)
+    dst_name, dst_path = _split_vm_path(args.dst)
+    client = _client(args)
+    if src_name is None and dst_name is not None:
+        result = client.call(
+            "vm.copy_in",
+            {"name": dst_name, "host_path": src_path, "guest_path": dst_path, "recursive": args.recursive},
+        )
+        _emit(args, result, f"copied {src_path} -> {dst_name}:{dst_path}")
+    elif src_name is not None and dst_name is None:
+        result = client.call(
+            "vm.copy_out",
+            {"name": src_name, "guest_path": src_path, "host_path": dst_path, "recursive": args.recursive},
+        )
+        _emit(args, result, f"copied {src_name}:{src_path} -> {dst_path}")
+    else:
+        raise LabError(
+            "exactly one of <src>/<dst> must carry a '<name>:<path>' prefix",
+            exit_code=DATA_ERROR,
+        )
+    return 0
+
+
+def cmd_vm_snapshot(args: argparse.Namespace) -> int:
+    """Snapshot sub-verbs (``snap.create`` / ``apply`` / ``delete`` / ``list``)."""
+    client = _client(args)
+    sub = args.snapshot_cmd
+    if sub == "create":
+        result = client.call("snap.create", {"name": args.name, "tag": args.tag})
+        _emit(args, result, f"snapshot {args.tag} created on {args.name}")
+    elif sub == "apply":
+        result = client.call("snap.apply", {"name": args.name, "tag": args.tag})
+        _emit(args, result, f"snapshot {args.tag} applied to {args.name}")
+    elif sub == "delete":
+        result = client.call("snap.delete", {"name": args.name, "tag": args.tag})
+        _emit(args, result, f"snapshot {args.tag} deleted from {args.name}")
+    elif sub == "list":
+        result = client.call("snap.list", {"name": args.name})
+        if not getattr(args, "json", False) and not args.quiet:
+            for tag in result.get("snapshots", []):
+                print(tag)
+        else:
+            _emit(args, result)
+    else:
+        return _print_help_rc(args.snapshot_parser)
+    return 0
+
+
+# ── run group ────────────────────────────────────────────────────────────────
+
+
+def cmd_run_validate(args: argparse.Namespace) -> int:
+    """Validate a recipe TOML (``recipe.validate``); data error → exit 65."""
+    result = _client(args).call("recipe.validate", {"recipe": args.recipe})
+    _emit(args, result, f"recipe {result.get('recipe', args.recipe)} is valid")
+    return 0
+
+
+def cmd_run_recipe(args: argparse.Namespace) -> int:
+    """Run a recipe end-to-end (``recipe.run``); propagates the recipe exit code."""
+    # Only send keep when --keep was given, so a preset's keep_vm can take effect
+    # when the user did not explicitly ask to keep the VM.
+    call_args: dict = {"recipe": args.recipe}
+    if args.keep:
+        call_args["keep"] = True
+    if getattr(args, "preset", None):
+        call_args["preset"] = args.preset
+    result = _client(args).call("recipe.run", call_args)
+    exit_code = int(result.get("exit_code", 0))
+    _emit(args, result, f"recipe {result.get('recipe', args.recipe)} -> exit {exit_code}")
+    return exit_code
+
+
+def cmd_run_presets(args: argparse.Namespace) -> int:
+    """List the named presets (local; reads config PRESETS)."""
+    presets = labconfig.list_presets()
+    if getattr(args, "json", False):
+        print(json.dumps(presets, indent=2, sort_keys=True))
+    else:
+        for p in presets:
+            print(f"{p['name']}: {p['description']}")
+    return 0
+
+
+# ── find group ───────────────────────────────────────────────────────────────
+
+
+def cmd_find_bisect(args: argparse.Namespace) -> int:
+    """Hunt the first-bad commit (``bisect.run``); writes bisect.json."""
+    call_args: dict = {
+        "recipe": args.recipe,
+        "good": args.good,
+        "bad": args.bad,
+        "repo_dir": args.repo_dir,
+        "out": args.out,
+    }
+    if args.keep:
+        call_args["keep"] = True
+    if getattr(args, "preset", None):
+        call_args["preset"] = args.preset
+    result = _client(args).call("bisect.run", call_args)
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif not args.quiet:
+        first_bad = result.get("first_bad")
+        status = result.get("status", "unknown")
+        if first_bad:
+            print(f"first bad commit: {first_bad} ({status})")
+        else:
+            print(f"bisect {status}: no bad commit found")
+    return 0
+
+
+# ── watch group ──────────────────────────────────────────────────────────────
+
+
+def cmd_watch_grab(args: argparse.Namespace) -> int:
+    """Snapshot a VM's terminal grid (``capture.open`` + ``capture.snapshot``).
+
+    With ``--png NAME`` the captured grid is *also* rendered to an artifact under
+    the lab artifacts root: a real PNG when the optional Pillow dependency is
+    installed, else an honest ``<NAME>.txt`` text artifact (ADR-10 — pixel PNG is
+    an optional layer over the canonical text grid, never a fake image).
+    """
+    with _client(args) as client:
+        client.call("capture.open", {"name": args.name, "program": args.program, "size": args.size})
+        grid = client.call("capture.snapshot", {"timeout_s": args.cmd_timeout})
+    png_name = getattr(args, "png", None)
+    if png_name:
+        artifact = _write_capture_artifact(grid, png_name)
+        if not getattr(args, "quiet", False) and not getattr(args, "json", False):
+            sys.stderr.write(f"capture artifact written: {artifact}\n")
+    if getattr(args, "json", False):
+        print(json.dumps(grid, indent=2, sort_keys=True))
+    else:
+        sys.stdout.write(grid.get("text", ""))
+        if not grid.get("text", "").endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
+
+
+def _write_capture_artifact(grid: dict, name: str) -> str:
+    """Render a captured ``grid`` to an artifact under the lab artifacts root.
+
+    Returns the artifact path. A PNG is produced when Pillow is importable; with
+    no Pillow we write the grid text to ``<name>.txt`` instead (no fake PNG). The
+    destination is the server-derived artifacts root, never a client path.
+    """
+    from pathlib import Path
+
+    from lince_lab import render
+    from lince_lab.policy import artifacts_root
+
+    out_root = artifacts_root(Path.home())
+    out_root.mkdir(parents=True, exist_ok=True)
+    text = grid.get("text", "")
+    cols = int(grid.get("cols", 80))
+    rows = int(grid.get("rows", 24))
+    stem = name[:-4] if name.endswith(".png") else name
+    if render.PIL_AVAILABLE:
+        out_path = out_root / f"{stem}.png"
+        out_path.write_bytes(render.grid_text_to_png(text, cols, rows))
+    else:
+        out_path = out_root / f"{stem}.txt"
+        out_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    return str(out_path)
+
+
+def cmd_watch_keys(args: argparse.Namespace) -> int:
+    """Send keys to a VM's terminal (``capture.open`` + ``capture.send``)."""
+    with _client(args) as client:
+        client.call("capture.open", {"name": args.name, "program": args.program, "size": args.size})
+        client.call("capture.send", {"keys": args.keys})
+    _emit(args, {"sent": args.keys}, f"sent {len(args.keys)} key(s) to {args.name}")
+    return 0
+
+
+def cmd_watch_wait(args: argparse.Namespace) -> int:
+    """Wait for a substring or grid-stability on a VM's terminal."""
+    if args.for_substr is None and not args.stable:
+        raise LabError("watch wait needs --for SUBSTR or --stable", exit_code=DATA_ERROR)
+    with _client(args) as client:
+        client.call("capture.open", {"name": args.name, "program": args.program, "size": args.size})
+        if args.for_substr is not None:
+            grid = client.call(
+                "capture.send",
+                {"wait_for": args.for_substr, "timeout_s": args.cmd_timeout},
+            )
+        else:
+            grid = client.call(
+                "capture.send",
+                {"stable_ms": args.stable_ms, "timeout_s": args.cmd_timeout},
+            )
+    if getattr(args, "json", False):
+        print(json.dumps(grid, indent=2, sort_keys=True))
+    elif not args.quiet:
+        sys.stdout.write(grid.get("text", ""))
+        if not grid.get("text", "").endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
+
+
+# ── lab group ────────────────────────────────────────────────────────────────
+
+
+def cmd_lab_broker(args: argparse.Namespace) -> int:
+    """Broker control: start (in-process), stop, status."""
+    sub = args.broker_cmd
+    if sub == "start":
+        return _broker_start(args)
+    if sub == "stop":
+        return _broker_stop(args)
+    if sub == "status":
+        return _broker_status(args)
+    return _print_help_rc(args.broker_parser)
+
+
+def _broker_start(args: argparse.Namespace) -> int:
+    """Start a :class:`BrokerServer` in-process and serve until interrupted.
+
+    Uses :class:`~lince_lab.lima_backend.LimaBackend` by default, or
+    :class:`~lince_lab.fake_backend.FakeBackend` when ``LINCE_LAB_FAKE=1`` (the
+    test path — no KVM required).
+    """
+    from lince_lab.broker import BrokerServer
+
+    cfg = labconfig.load_config()
+    if os.environ.get("LINCE_LAB_FAKE") == "1":
+        from lince_lab.fake_backend import FakeBackend
+
+        backend = FakeBackend()
+    else:
+        from lince_lab.lima_backend import LimaBackend
+
+        backend = LimaBackend()
+
+    server = BrokerServer(args.socket, backend, cfg)
+    server.bind()
+    if not args.quiet:
+        print(f"broker listening on {args.socket}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+    return 0
+
+
+def _broker_stop(args: argparse.Namespace) -> int:
+    """Stop a running broker by removing its socket file (best-effort)."""
+    from pathlib import Path
+
+    try:
+        Path(args.socket).unlink()
+    except FileNotFoundError:
+        if not args.quiet:
+            print("broker not running (no socket)")
+        return 0
+    if not args.quiet:
+        print(f"removed broker socket {args.socket}")
+    return 0
+
+
+def _broker_status(args: argparse.Namespace) -> int:
+    """Ping the broker; report reachability (ping → exit 0, unreachable → 69)."""
+    result = _client(args).call("ping", {})
+    _emit(args, result, f"broker reachable (protocol v{result.get('v')})")
+    return 0
+
+
+def cmd_lab_doctor(args: argparse.Namespace) -> int:
+    """Probe prerequisites: broker reachability + local tool availability."""
+    import shutil
+
+    checks: dict[str, object] = {}
+    try:
+        _client(args).call("ping", {})
+        checks["broker"] = "reachable"
+    except LabError as exc:
+        checks["broker"] = f"unreachable: {exc}"
+    checks["limactl"] = bool(shutil.which("limactl"))
+    checks["socket_path"] = args.socket
+    if getattr(args, "json", False):
+        print(json.dumps(checks, indent=2, sort_keys=True))
+    else:
+        for key, val in checks.items():
+            print(f"{key}: {val}")
+    return 0
+
+
+def cmd_lab_version(args: argparse.Namespace) -> int:
+    """Print the lince-lab version."""
+    if getattr(args, "json", False):
+        print(json.dumps({"version": __version__}))
+    else:
+        print(__version__)
+    return 0
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+
+def _split_vm_path(spec: str) -> tuple[str | None, str]:
+    """Split a ``<name>:<path>`` spec; return ``(None, spec)`` for a plain path.
+
+    Only the first colon is treated as the separator, and a non-empty name that
+    does not look like a host path (no leading ``/`` or ``.``) is required — so an
+    absolute or relative host path that happens to contain a colon is not mistaken
+    for a ``<name>:<path>`` spec.
+    """
+    if ":" not in spec:
+        return None, spec
+    name, _, path = spec.partition(":")
+    if not name or name.startswith("/") or name.startswith("."):
+        return None, spec
+    return name, path
+
+
+def _print_help_rc(parser: argparse.ArgumentParser) -> int:
+    """Print a parser's help and return 1 (the no-verb convention)."""
+    parser.print_help(sys.stderr)
+    return 1
+
+
+# ── parser construction ──────────────────────────────────────────────────────
+
+
+def _add_capture_open_flags(p: argparse.ArgumentParser) -> None:
+    """Flags shared by the watch verbs that open a capture channel."""
+    p.add_argument("name", help="target VM name")
+    p.add_argument(
+        "--program",
+        nargs=argparse.REMAINDER,
+        default=[],
+        metavar="ARGV",
+        help="program (and args) to drive under the headless terminal",
+    )
+    p.add_argument("--size", default=labconfig.DEFAULTS["grid_size"], help="grid size '<cols>x<rows>'")
+    _add_socket_flag(p)
+    _add_json_flag(p)
+    _add_quiet_flag(p)
+    _add_timeout_flag(p)
+    p.add_argument("--cmd-timeout", type=float, default=5.0, dest="cmd_timeout", help="per-capture-op timeout (s)")
+
+
+def _build_vm_group(sub: argparse._SubParsersAction) -> None:
+    grp = sub.add_parser("vm", help="Manage disposable lab VMs (create/boot/exec/snapshot)")
+    vsub = grp.add_subparsers(dest="vm_cmd", metavar="<verb>")
+    grp.set_defaults(_group_parser=grp)
+
+    up = vsub.add_parser("up", help="create and start a disposable VM")
+    up.add_argument("name", help="VM name (lince-lab-* namespace)")
+    up.add_argument("--image", help="base image (key into config images); default: config default_image")
+    _add_socket_flag(up)
+    _add_json_flag(up)
+    _add_quiet_flag(up)
+    _add_timeout_flag(up)
+    up.set_defaults(func=cmd_vm_up)
+
+    down = vsub.add_parser("down", help="stop a running VM")
+    down.add_argument("name")
+    down.add_argument("-f", "--force", action="store_true", help="force stop")
+    _add_socket_flag(down)
+    _add_json_flag(down)
+    _add_quiet_flag(down)
+    _add_timeout_flag(down)
+    down.set_defaults(func=cmd_vm_down)
+
+    rm = vsub.add_parser("rm", help="delete a VM")
+    rm.add_argument("name")
+    rm.add_argument("-f", "--force", action="store_true", help="force delete")
+    _add_socket_flag(rm)
+    _add_json_flag(rm)
+    _add_quiet_flag(rm)
+    _add_timeout_flag(rm)
+    rm.set_defaults(func=cmd_vm_rm)
+
+    status = vsub.add_parser("status", help="show a VM's status")
+    status.add_argument("name")
+    _add_socket_flag(status)
+    _add_json_flag(status)
+    _add_quiet_flag(status)
+    _add_timeout_flag(status)
+    status.set_defaults(func=cmd_vm_status)
+
+    lst = vsub.add_parser("list", help="list all lab VMs")
+    _add_socket_flag(lst)
+    _add_json_flag(lst)
+    _add_quiet_flag(lst)
+    _add_timeout_flag(lst)
+    lst.set_defaults(func=cmd_vm_list)
+
+    ex = vsub.add_parser("exec", help="run a command in the VM (propagates guest exit code)")
+    ex.add_argument("name")
+    ex.add_argument("--workdir", default=None, help="working directory inside the VM")
+    ex.add_argument("--cmd-timeout", type=float, default=None, dest="cmd_timeout", help="guest command timeout (s)")
+    _add_socket_flag(ex)
+    _add_json_flag(ex)
+    _add_quiet_flag(ex)
+    _add_timeout_flag(ex)
+    ex.add_argument("argv", nargs=argparse.REMAINDER, help="-- command and arguments")
+    ex.set_defaults(func=cmd_vm_exec)
+
+    cp = vsub.add_parser("copy", help="copy a file in/out (<name>:<path> marks the VM side)")
+    cp.add_argument("src", help="source (host path, or <name>:<guest_path>)")
+    cp.add_argument("dst", help="destination (<name>:<guest_path>, or host path)")
+    cp.add_argument("-r", "--recursive", action="store_true", help="recurse into directories")
+    _add_socket_flag(cp)
+    _add_json_flag(cp)
+    _add_quiet_flag(cp)
+    _add_timeout_flag(cp)
+    cp.set_defaults(func=cmd_vm_copy)
+
+    snap = vsub.add_parser("snapshot", help="snapshot create/apply/delete/list")
+    ssub = snap.add_subparsers(dest="snapshot_cmd", metavar="<verb>")
+    snap.set_defaults(snapshot_parser=snap, func=cmd_vm_snapshot)
+    for verb, blurb, with_tag in (
+        ("create", "create a snapshot", True),
+        ("apply", "restore a snapshot", True),
+        ("delete", "delete a snapshot", True),
+        ("list", "list snapshots", False),
+    ):
+        sp = ssub.add_parser(verb, help=blurb)
+        sp.add_argument("name")
+        if with_tag:
+            sp.add_argument("tag")
+        _add_socket_flag(sp)
+        _add_json_flag(sp)
+        _add_quiet_flag(sp)
+        _add_timeout_flag(sp)
+        sp.set_defaults(func=cmd_vm_snapshot, snapshot_parser=snap)
+
+
+def _build_run_group(sub: argparse._SubParsersAction) -> None:
+    grp = sub.add_parser("run", help="Run a recipe end-to-end (validate / provision / drive / assert)")
+    rsub = grp.add_subparsers(dest="run_cmd", metavar="<verb>")
+    grp.set_defaults(_group_parser=grp)
+
+    validate = rsub.add_parser("validate", help="validate a recipe TOML (data error -> exit 65)")
+    validate.add_argument("recipe", help="path to the recipe .toml")
+    _add_socket_flag(validate)
+    _add_json_flag(validate)
+    _add_quiet_flag(validate)
+    _add_timeout_flag(validate)
+    validate.set_defaults(func=cmd_run_validate)
+
+    recipe = rsub.add_parser("recipe", help="run a recipe end-to-end (propagates recipe exit code)")
+    recipe.add_argument("recipe", help="path to the recipe .toml")
+    recipe.add_argument("--keep", action="store_true", help="keep the VM after the run")
+    recipe.add_argument(
+        "--preset",
+        default=None,
+        choices=sorted(labconfig.PRESETS),
+        metavar="NAME",
+        help="apply a named preset to the effective config (run presets to list)",
+    )
+    _add_socket_flag(recipe)
+    _add_json_flag(recipe)
+    _add_quiet_flag(recipe)
+    _add_timeout_flag(recipe)
+    recipe.set_defaults(func=cmd_run_recipe)
+
+    presets = rsub.add_parser("presets", help="list the named presets")
+    _add_json_flag(presets)
+    _add_quiet_flag(presets)
+    presets.set_defaults(func=cmd_run_presets)
+
+
+def _build_find_group(sub: argparse._SubParsersAction) -> None:
+    grp = sub.add_parser("find", help="Autonomous regression hunting (bisect)")
+    fsub = grp.add_subparsers(dest="find_cmd", metavar="<verb>")
+    grp.set_defaults(_group_parser=grp)
+
+    bisect = fsub.add_parser("bisect", help="binary-search the first-bad commit using a recipe as oracle")
+    bisect.add_argument("recipe", help="path to the recipe .toml used as the verdict oracle")
+    bisect.add_argument("--good", required=True, help="known-good ref")
+    bisect.add_argument("--bad", required=True, help="known-bad ref")
+    bisect.add_argument("--repo-dir", required=True, dest="repo_dir", help="path to the git repo to bisect")
+    bisect.add_argument("--out", default="bisect.json", help="bisect.json output path (default: %(default)s)")
+    bisect.add_argument("--keep", action="store_true", help="keep the VM after the run")
+    bisect.add_argument(
+        "--preset",
+        default=None,
+        choices=sorted(labconfig.PRESETS),
+        metavar="NAME",
+        help="apply a named preset to the effective config (run presets to list)",
+    )
+    _add_socket_flag(bisect)
+    _add_json_flag(bisect)
+    _add_quiet_flag(bisect)
+    _add_timeout_flag(bisect)
+    bisect.set_defaults(func=cmd_find_bisect)
+
+
+def _build_watch_group(sub: argparse._SubParsersAction) -> None:
+    grp = sub.add_parser("watch", help="Observe a VM's terminal (grab / send keys / wait for output)")
+    wsub = grp.add_subparsers(dest="watch_cmd", metavar="<verb>")
+    grp.set_defaults(_group_parser=grp)
+
+    grab = wsub.add_parser("grab", help="snapshot the terminal text grid")
+    _add_capture_open_flags(grab)
+    grab.add_argument(
+        "--png",
+        default=None,
+        metavar="NAME",
+        help="also render the grid to <artifacts>/NAME.png (or NAME.txt if Pillow is absent)",
+    )
+    grab.set_defaults(func=cmd_watch_grab)
+
+    keys = wsub.add_parser("keys", help="send keys to the terminal")
+    _add_capture_open_flags(keys)
+    keys.add_argument("--keys", nargs="+", default=[], metavar="KEY", help="keys to send, in order")
+    keys.set_defaults(func=cmd_watch_keys)
+
+    wait = wsub.add_parser("wait", help="wait for a substring (--for) or grid-stability (--stable)")
+    _add_capture_open_flags(wait)
+    wait.add_argument("--for", dest="for_substr", default=None, metavar="SUBSTR", help="wait until this text appears")
+    wait.add_argument("--stable", action="store_true", help="wait until the grid stops changing")
+    wait.add_argument("--stable-ms", type=int, default=150, dest="stable_ms", help="stability debounce window (ms)")
+    wait.set_defaults(func=cmd_watch_wait)
+
+
+def _build_lab_group(sub: argparse._SubParsersAction) -> None:
+    grp = sub.add_parser("lab", help="Broker & setup plumbing (broker / doctor / version)")
+    lsub = grp.add_subparsers(dest="lab_cmd", metavar="<verb>")
+    grp.set_defaults(_group_parser=grp)
+
+    broker = lsub.add_parser("broker", help="start/stop/status the host-side broker")
+    bsub = broker.add_subparsers(dest="broker_cmd", metavar="<verb>")
+    broker.set_defaults(broker_parser=broker, func=cmd_lab_broker)
+    for verb, blurb in (
+        ("start", "start the broker in-process (LimaBackend; FakeBackend if LINCE_LAB_FAKE=1)"),
+        ("stop", "stop the broker (remove its socket)"),
+        ("status", "ping the broker"),
+    ):
+        sp = bsub.add_parser(verb, help=blurb)
+        _add_socket_flag(sp)
+        _add_json_flag(sp)
+        _add_quiet_flag(sp)
+        _add_timeout_flag(sp)
+        sp.set_defaults(func=cmd_lab_broker, broker_parser=broker)
+
+    doctor = lsub.add_parser("doctor", help="probe prerequisites (broker + limactl)")
+    _add_socket_flag(doctor)
+    _add_json_flag(doctor)
+    _add_quiet_flag(doctor)
+    _add_timeout_flag(doctor)
+    doctor.set_defaults(func=cmd_lab_doctor)
+
+    version = lsub.add_parser("version", help="print the lince-lab version")
+    _add_json_flag(version)
+    _add_quiet_flag(version)
+    version.set_defaults(func=cmd_lab_version)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the two-level grouped argparse parser (blueprint §4)."""
+    parser = argparse.ArgumentParser(
+        prog="lince-lab",
+        description=(
+            "Disposable lab-VM substrate for autonomous testing and regression hunting. "
+            "Commands are grouped: run `lince-lab <group> --help` to drill into a group's verbs."
+        ),
+        epilog=(
+            "groups:\n"
+            "  vm      Manage disposable lab VMs (create/boot/exec/snapshot)\n"
+            "  run     Run a recipe end-to-end (validate / provision / drive / assert)\n"
+            "  find    Autonomous regression hunting (bisect)\n"
+            "  watch   Observe a VM's terminal (grab / send keys / wait for output)\n"
+            "  lab     Broker & setup plumbing (broker / doctor / version)\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("-V", "--version", action="version", version=f"lince-lab {__version__}")
+    _add_global_flags(parser)
+    sub = parser.add_subparsers(dest="group", metavar="<group>")
+
+    _build_vm_group(sub)
+    _build_run_group(sub)
+    _build_find_group(sub)
+    _build_watch_group(sub)
+    _build_lab_group(sub)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse args and dispatch; map :class:`LabError` to its exit code.
+
+    No command → print top-level help and return 1. A group with no verb →
+    print that group's help and return 1.
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # Leaf shared flags use SUPPRESS so a leaf override beats the global default;
+    # backfill any the user did not give so every handler can read them plainly.
+    if not hasattr(args, "socket"):
+        args.socket = _default_socket()
+    if not hasattr(args, "json"):
+        args.json = False
+    if not hasattr(args, "quiet"):
+        args.quiet = False
+    if not hasattr(args, "timeout"):
+        args.timeout = None
+
+    if getattr(args, "group", None) is None:
+        parser.print_help()
+        return 1
+
+    func = getattr(args, "func", None)
+    if func is None:
+        # A group was named but no verb chosen: print the group's help.
+        group_parser = getattr(args, "_group_parser", parser)
+        group_parser.print_help(sys.stderr)
+        return 1
+
+    try:
+        return func(args)
+    except LabError as exc:
+        print(f"lince-lab: {exc}", file=sys.stderr)
+        return exc.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

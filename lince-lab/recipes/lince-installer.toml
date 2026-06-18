@@ -1,0 +1,76 @@
+# lince-installer — assert install.sh idempotency (#259)
+#
+# Boots a disposable, network-denied VM, stages the lince sources, then runs the
+# installer TWICE. The repo rule is that every module's install.sh must be
+# idempotent and safe to re-run; this recipe is the executable oracle for that.
+# A second `install.sh` run must exit 0 and leave the same expected state (the
+# CLI installed and runnable), proving re-running neither errors nor corrupts the
+# install.
+#
+# Network: deny — install copies local files. tomlkit is pre-installed while
+# networked in provisioning so install.sh needs no pip fetch at step time.
+
+[recipe]
+name = "lince-installer"
+description = "Run the lince installer twice in a disposable VM and assert idempotency: the second run exits 0 and leaves the same expected state (CLI installed and runnable)."
+version = "1"
+
+[vm]
+image = "fedora"          # must be in the config image allowlist
+cpus = 2
+memory = "2GiB"
+disk = "20GiB"
+
+[network]
+mode = "deny"             # installation is local; no network needed
+allow_hosts = []
+allow_ports = []
+
+[workspace]
+host_dir = "./fixtures/lince-clone"
+guest_dir = "/work"
+
+# ── provisioning (network UP — trusted setup) ───────────────────────────────
+# Install the toolchain AND pre-install tomlkit while networked, so the deny-locked
+# install.sh steps need no pip fetch (install.sh skips pip when tomlkit imports).
+[[provision]]
+mode = "system"
+script = """
+#!/bin/bash
+set -eux
+sudo dnf install -y git python3 python3-pip
+# tomlkit must be importable BEFORE the deny lock-down so install.sh (run
+# network-denied) never reaches its pip fallback. Install it system-wide with
+# sudo while the network is UP — distro package first, then pip.
+python3 -c 'import tomlkit' \
+  || sudo dnf install -y python3-tomlkit \
+  || sudo python3 -m pip install tomlkit \
+  || sudo python3 -m pip install --break-system-packages tomlkit
+python3 -c 'import tomlkit'
+"""
+
+# PIP_* fast-fail env so a stray pip (if tomlkit were missing) errors in seconds
+# under the deny lock-down rather than hanging.
+# ── step 1: first install ───────────────────────────────────────────────────
+[[step]]
+name = "install-first-run"
+run = ["sh", "-c", "cd /work && PIP_NO_INPUT=1 PIP_RETRIES=1 PIP_DEFAULT_TIMEOUT=5 ./lince-config/install.sh"]
+
+# ── step 2: second install — must be idempotent (exit 0, no error) ──────────
+[[step]]
+name = "install-second-run"
+run = ["sh", "-c", "cd /work && PIP_NO_INPUT=1 PIP_RETRIES=1 PIP_DEFAULT_TIMEOUT=5 ./lince-config/install.sh"]
+
+# ── step 3: confirm the expected end state after the re-run ─────────────────
+# install.sh installs the CLI to ~/.local/bin (the guest user is non-root). The
+# step's exit code asserts both "CLI at the documented target" and "runnable".
+[[step]]
+name = "verify-installed-state"
+run = ["sh", "-c", "test -x $HOME/.local/bin/lince-config && $HOME/.local/bin/lince-config --help >/dev/null"]
+
+# ── assertions ──────────────────────────────────────────────────────────────
+[assert]
+# Every step (including the second install run + the verify) must exit 0 — that
+# IS the idempotency proof: re-running the installer neither errors nor breaks
+# the CLI, which step 3 confirms is installed and runnable.
+exit_code = 0

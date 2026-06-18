@@ -33,6 +33,7 @@ NC='\033[0m'
 SELECTED_BACKENDS=()       # populated by select_backends(): "bwrap", "nono", "unsandboxed"
 SELECTED_AGENTS=()
 INSTALL_VOXCODE=false
+INSTALL_LINCE_LAB=false
 USE_DEFAULTS=false
 
 # Available agents: key|display_name|description
@@ -577,6 +578,60 @@ select_voxcode() {
     esac
 }
 
+# ── TUI: lince-lab (disposable lab VMs) ──────────────────────────────
+#
+# Optional, advanced. lince-lab gives an agent an isolated, disposable Linux VM
+# (via Lima) to install/test things and git-bisect regressions without touching
+# the host. The VM-control surface stays HOST-side: a broker (started on the host
+# with `lince-lab lab broker start`) owns limactl/QEMU//dev/kvm; sandboxed agents
+# reach it only through a unix socket — the sandbox is never given /dev/kvm.
+# Linux-only in v1 (a macOS backend is planned, GH #268).
+select_lince_lab() {
+    echo ""
+    print_separator
+    echo -e "${BOLD}Step 5: Disposable lab VMs (lince-lab)${NC}"
+    echo ""
+    echo -e "  An agent can spin up an isolated, throwaway Linux VM to install and"
+    echo -e "  test things — and git-bisect regressions — without touching your host."
+    echo ""
+    echo -e "  ${DIM}A host-side broker owns the VMs; agents drive it over a unix${NC}"
+    echo -e "  ${DIM}socket. You start it on the host: 'lince-lab lab broker start'.${NC}"
+    echo -e "  ${DIM}The sandbox is never given /dev/kvm.${NC}"
+    echo ""
+    echo -e "  ${DIM}To run VMs you'll need Lima + qemu-img + KVM (/dev/kvm).${NC}"
+    echo ""
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo -e "  ${DIM}macOS detected — lince-lab v1 is Linux-only; skipping.${NC}"
+        INSTALL_LINCE_LAB=false
+        return
+    fi
+    if command -v lince-lab >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ lince-lab already installed${NC}"
+        INSTALL_LINCE_LAB=false
+        return
+    fi
+
+    echo -e "  ${DIM}1)${NC} Yes — install lince-lab"
+    echo -e "  ${GREEN}2)${NC} ${BOLD}No${NC} — skip (install later) ${GREEN}[default]${NC}"
+    echo ""
+    read -p "  Choice [2]: " -n 1 -r
+    echo ""
+    case "${REPLY:-2}" in
+        1|y|Y)
+            INSTALL_LINCE_LAB=true
+            echo -e "  ${GREEN}✓${NC} lince-lab will be installed"
+            command -v limactl  >/dev/null 2>&1 || echo -e "  ${YELLOW}⚠${NC} limactl not found — install Lima to run VMs: ${DIM}https://lima-vm.io${NC}"
+            command -v qemu-img >/dev/null 2>&1 || echo -e "  ${YELLOW}⚠${NC} qemu-img not found — ${DIM}sudo dnf install qemu-img qemu-kvm${NC}"
+            [ -e /dev/kvm ] || echo -e "  ${YELLOW}⚠${NC} /dev/kvm not present — the broker host needs hardware virtualization (KVM)."
+            ;;
+        *)
+            INSTALL_LINCE_LAB=false
+            echo -e "  ${DIM}Skipped. Install later: lince-lab/install.sh${NC}"
+            ;;
+    esac
+}
+
 # ── TUI: Summary and confirm ────────────────────────────────────────
 confirm_installation() {
     echo ""
@@ -595,6 +650,9 @@ confirm_installation() {
 
     if [ "$INSTALL_VOXCODE" = true ]; then
         echo -e "  ${GREEN}✓${NC} voxcode          ${DIM}(voice input via Whisper)${NC}"
+    fi
+    if [ "$INSTALL_LINCE_LAB" = true ]; then
+        echo -e "  ${GREEN}✓${NC} lince-lab        ${DIM}(disposable lab VMs — broker on host)${NC}"
     fi
 
     echo ""
@@ -670,6 +728,29 @@ do_install_voxcode() {
         echo -e "  ${DIM}Cleaning up voxcode clone...${NC}"
         rm -rf "$VOXCODE_DIR"
     fi
+}
+
+# ── Install lince-lab (optional, opt-in) ─────────────────────────────
+do_install_lince_lab() {
+    if [ "$INSTALL_LINCE_LAB" = false ]; then
+        return
+    fi
+
+    echo ""
+    print_separator
+    echo -e "${BOLD}Installing lince-lab...${NC}"
+    echo ""
+
+    cd "$SCRIPT_DIR/lince-lab"
+    if bash install.sh; then
+        echo -e "${GREEN}✓ lince-lab installed${NC}"
+        echo -e "  ${DIM}Start the broker on the host:${NC} ${CYAN}lince-lab lab broker start${NC}"
+        echo -e "  ${DIM}Then run a recipe:${NC} ${CYAN}lince-lab run recipe <file>${NC}"
+    else
+        echo -e "${RED}✗ lince-lab installation failed${NC}"
+        if ! confirm "Continue anyway?"; then exit 1; fi
+    fi
+    cd "$SCRIPT_DIR"
 }
 
 # ── Install sandbox ─────────────────────────────────────────────────
@@ -1013,6 +1094,10 @@ print_summary() {
     if command -v voxcode >/dev/null 2>&1; then
         echo -e "  ${GREEN}✓${NC} voxcode (voice input)"
     fi
+    if [ "$INSTALL_LINCE_LAB" = true ]; then
+        echo -e "  ${GREEN}✓${NC} lince-lab (disposable lab VMs)"
+        echo -e "    ${DIM}Start the broker on the host: ${NC}${CYAN}lince-lab lab broker start${NC}"
+    fi
 
     if [ ${#SELECTED_AGENTS[@]} -gt 0 ]; then
         echo ""
@@ -1099,6 +1184,7 @@ else
     select_default_shell
     if [ "$(uname -s)" != "Darwin" ]; then
         select_voxcode
+        select_lince_lab
     fi
     confirm_installation
 fi
@@ -1111,5 +1197,6 @@ do_install_sandbox
 do_install_voxcode        # before dashboard so step 14 detects voxcode
 do_install_dashboard
 do_install_lince_config   # CLI required by the lince-configure skill
+do_install_lince_lab      # optional disposable-VM substrate (opt-in)
 configure_agent_selection # selection becomes data in lince.toml (#207)
 print_summary
