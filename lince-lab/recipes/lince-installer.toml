@@ -38,19 +38,28 @@ mode = "system"
 script = """
 #!/bin/bash
 set -eux
-dnf install -y git python3 python3-pip
-python3 -m pip install --user tomlkit || python3 -m pip install --user --break-system-packages tomlkit
+sudo dnf install -y git python3 python3-pip
+# tomlkit must be importable BEFORE the deny lock-down so install.sh (run
+# network-denied) never reaches its pip fallback. Install it system-wide with
+# sudo while the network is UP — distro package first, then pip.
+python3 -c 'import tomlkit' \
+  || sudo dnf install -y python3-tomlkit \
+  || sudo python3 -m pip install tomlkit \
+  || sudo python3 -m pip install --break-system-packages tomlkit
+python3 -c 'import tomlkit'
 """
 
+# PIP_* fast-fail env so a stray pip (if tomlkit were missing) errors in seconds
+# under the deny lock-down rather than hanging.
 # ── step 1: first install ───────────────────────────────────────────────────
 [[step]]
 name = "install-first-run"
-run = ["sh", "-c", "cd /work && ./lince-config/install.sh"]
+run = ["sh", "-c", "cd /work && PIP_NO_INPUT=1 PIP_RETRIES=1 PIP_DEFAULT_TIMEOUT=5 ./lince-config/install.sh"]
 
 # ── step 2: second install — must be idempotent (exit 0, no error) ──────────
 [[step]]
 name = "install-second-run"
-run = ["sh", "-c", "cd /work && ./lince-config/install.sh"]
+run = ["sh", "-c", "cd /work && PIP_NO_INPUT=1 PIP_RETRIES=1 PIP_DEFAULT_TIMEOUT=5 ./lince-config/install.sh"]
 
 # ── step 3: confirm the expected end state after the re-run ─────────────────
 # install.sh installs the CLI to ~/.local/bin (the guest user is non-root). The
