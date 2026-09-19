@@ -11,6 +11,8 @@ cp "$UI_SOURCE/lince-voice" "$HOME/.local/bin/lince-voice"
 chmod +x "$HOME/.local/bin/lince-voice"
 cp "$UI_SOURCE/lince-dashboard-launch" "$HOME/.local/bin/lince-dashboard-launch"
 chmod +x "$HOME/.local/bin/lince-dashboard-launch"
+cp "$UI_SOURCE/lince" "$HOME/.local/bin/lince"
+chmod +x "$HOME/.local/bin/lince"
 # The active session config is user-owned; refreshed defaults remain reviewable.
 if [ ! -f "$HOME/.config/lince-dashboard/zellij.kdl" ]; then
     cp "$UI_SOURCE/zellij-config/config.kdl" "$HOME/.config/lince-dashboard/zellij.kdl"
