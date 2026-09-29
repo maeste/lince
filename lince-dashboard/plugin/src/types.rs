@@ -458,11 +458,29 @@ pub struct AgentInfo {
     /// `.policy.json` written by agent-sandbox is polled. Runtime-only —
     /// re-read from disk after a restore.
     pub enforced: Option<EnforcedPolicy>,
+    /// Remote host (`user@machine`) when this agent runs on another machine
+    /// (#391). None for local agents. Remote agents are monitored read-only:
+    /// no local pane is spawned, status arrives via SSH polling, and
+    /// interaction goes through `ssh + zellij attach` (docs/remote-agents.md).
+    /// Not persisted — remote agents are config-derived, recreated by sync.
+    pub host: Option<String>,
+    /// Zellij session name on the remote host to attach to (Alt+o).
+    /// None → the open pane falls back to a plain SSH shell.
+    pub remote_session: Option<String>,
+    /// LINCE_AGENT_ID the agent runs under on the remote host. None → the
+    /// instance name doubles as the remote id.
+    pub remote_agent_id: Option<String>,
+    /// Last remote poll could not reach `host` — the status below is stale.
+    /// Rendered as `Unreachable` rather than a frozen state (#391).
+    pub unreachable: bool,
 }
 
 impl AgentInfo {
     /// Status label with exit code annotation for stopped agents.
     pub fn status_display(&self) -> String {
+        if self.unreachable {
+            return "Unreachable".to_string();
+        }
         if self.status == AgentStatus::Stopped {
             match self.exit_code {
                 Some(code) => format!("Stopped ({code})"),
@@ -775,6 +793,10 @@ mod tests {
             transcript_path: None,
             enforced: None,
             icon: String::new(),
+            host: None,
+            remote_session: None,
+            remote_agent_id: None,
+            unreachable: false,
         }
     }
 
@@ -836,6 +858,10 @@ mod tests {
             transcript_path: None,
             enforced: None,
             icon: String::new(), // not persisted
+            host: None,
+            remote_session: None,
+            remote_agent_id: None,
+            unreachable: false,
         };
 
         let saved: SavedAgentInfo = (&agent).into();

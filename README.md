@@ -110,6 +110,8 @@ The multi-agent TUI dashboard — a Zellij WASM plugin (Rust, ~900 KB) that mana
 
 Documentation: [Usage Guide](https://lince.sh/documentation/#/dashboard/usage-guide) | [Configuration](https://lince.sh/documentation/#/dashboard/config-reference) | [Agent Examples](https://lince.sh/documentation/#/dashboard/agent-examples)
 
+**Remote agents**: monitor agents on other hosts from one cockpit — status via SSH polling of the same 5-state contract, interaction through `ssh + zellij attach` on demand. No daemon, credentials stay per-host. See [docs/remote-agents.md](docs/remote-agents.md).
+
 ### [lince-messages/](lince-messages/)
 
 Optional skill-based conversations for Claude, Codex, Bob, Pi and OpenCode in their original

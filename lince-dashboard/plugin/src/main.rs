@@ -506,6 +506,16 @@ impl ZellijPlugin for State {
                 // reconciles everything else within the timer period.
                 config::poll_status_files_async(&self.config.status_file_dir);
 
+                // Remote agents (#391): one SSH per declared host per tick.
+                // Same `.state` contract, far side; failures degrade to the
+                // explicit Unreachable condition, never a frozen status.
+                let remote_hosts: Vec<String> = self.agents.iter()
+                    .filter_map(|a| a.host.clone())
+                    .collect();
+                if !remote_hosts.is_empty() {
+                    config::poll_remote_status_async(&remote_hosts, &self.config.status_file_dir);
+                }
+
                 // Clear transient status messages after timeout
                 if self.status_message.is_some() && self.config_error.is_none() {
                     self.status_message = None;
@@ -591,6 +601,10 @@ impl ZellijPlugin for State {
                             if self.config.provider_details_by_agent.is_empty() {
                                 self.config.provider_details_by_agent = prev_details;
                             }
+                            // Reconcile declared remote agents (#391). Deliberately
+                            // NOT preserved-when-empty like the three above: an
+                            // entry the user removed from config must disappear.
+                            self.sync_remote_agents();
                         }
                         // Mark as loaded so timer doesn't retry
                         self.config_mtime = 1;
@@ -856,6 +870,11 @@ impl ZellijPlugin for State {
                             }
                         }
                         changed
+                    }
+                    Some(config::CMD_POLL_STATUS_REMOTE) => {
+                        let host = context.get("host").cloned().unwrap_or_default();
+                        self.apply_remote_poll(&host, exit_code, &String::from_utf8_lossy(&stdout));
+                        true
                     }
                     Some(cmd_type) if cmd_type == config::CMD_EXTRACT_TRANSCRIPT => {
                         // Only process if relay is still in Extracting phase
@@ -1123,6 +1142,31 @@ impl ZellijPlugin for State {
                 }) {
                     self.selected_index = index;
                     self.kill_selected_agent(true);
+                    return true;
+                }
+                false
+            }
+            "lince-open-remote" => {
+                // Open an interactive pane into the selected agent's host
+                // (#391): `ssh -t <host> [zellij attach <session>]`. stdin
+                // never crosses a lince transport — control happens on the
+                // host where the agent lives, inside its own session.
+                if let Some(agent) = self.agents.get(self.selected_index) {
+                    match agent::remote_attach_command(agent) {
+                        Some(command) => {
+                            // Floating overlay, centered — same visual grammar
+                            // as a focused agent pane.
+                            open_command_pane_floating_near_plugin(command, None, BTreeMap::new());
+                            let host = agent.host.clone().unwrap_or_default();
+                            self.status_message = Some(format!("Opening {}@{}…", agent.name, host));
+                            set_timeout(3.0);
+                        }
+                        None => {
+                            self.status_message = Some(
+                                "Not a remote agent — declare it under [dashboard].remote_agents".into());
+                            set_timeout(3.0);
+                        }
+                    }
                     return true;
                 }
                 false
@@ -2136,6 +2180,12 @@ impl State {
         // Unfocus current agent if any.
         self.unfocus_current();
         self.selected_index = idx;
+        // Remote agents have no local pane to focus (#391): selection is
+        // purely logical (drives Alt+o and the sidebar highlight).
+        if self.agents[idx].host.is_some() {
+            self.focused_agent = Some(self.agents[idx].id.clone());
+            return;
+        }
         if self.agents[idx].pane_id.is_none() {
             // Agent terminals can appear before their first manifest reaches us,
             // especially when restoring a session with both bars suppressed.
@@ -2177,8 +2227,127 @@ impl State {
     /// Stop and remove the selected agent. A global kill keeps work flowing by
     /// focusing the next entry when one exists; list-local removal stays in the
     /// dashboard so the user can continue managing the list.
+    /// Reconcile the agent list with `[dashboard].remote_agents` (#391):
+    /// add newly declared instances, drop declarations that disappeared.
+    /// Identity is (name, host); local agents are never touched, and remote
+    /// instances keep their polled state across config reloads.
+    fn sync_remote_agents(&mut self) {
+        let declared = &self.config.remote_agents;
+        let still_declared = |a: &AgentInfo| {
+            a.host.as_ref().map_or(true, |h| {
+                declared.iter().any(|r| &r.name == &a.name && &r.host == h)
+            })
+        };
+        let before = self.agents.len();
+        self.agents.retain(still_declared);
+        let mut changed = before != self.agents.len();
+        for remote in declared {
+            if self.agents.iter().any(|a| {
+                a.host.as_deref() == Some(remote.host.as_str()) && a.name == remote.name
+            }) {
+                continue;
+            }
+            self.agents.push(agent::remote_agent_info(remote));
+            changed = true;
+        }
+        if changed {
+            self.sort_agents_by_dir();
+        }
+    }
+
+    /// Apply one remote-host poll result (#391).
+    ///
+    /// Nonzero exit is the Unreachable signal: remote agents on that host
+    /// degrade to an explicit stale condition (Unknown + `unreachable` flag)
+    /// instead of freezing their last status, and `last_polled_event` is
+    /// cleared so the first event after recovery is never swallowed by
+    /// change detection. A zero exit maps events through the same
+    /// event_map contract as the local poll.
+    fn apply_remote_poll(&mut self, host: &str, exit_code: Option<i32>, stdout: &str) {
+        let indexes: Vec<(usize, String)> = self.agents.iter().enumerate()
+            .filter(|(_, a)| a.host.as_deref() == Some(host))
+            .map(|(i, a)| {
+                let remote_id = a.remote_agent_id.clone()
+                    .unwrap_or_else(|| a.name.clone());
+                (i, remote_id)
+            })
+            .collect();
+        if indexes.is_empty() {
+            return;
+        }
+        if exit_code != Some(0) {
+            for (i, _) in indexes {
+                let a = &mut self.agents[i];
+                if a.status != AgentStatus::Unknown || !a.unreachable {
+                    a.status = AgentStatus::Unknown;
+                    a.unreachable = true;
+                    a.last_polled_event = None;
+                }
+            }
+            return;
+        }
+        let mut events: BTreeMap<&str, &str> = BTreeMap::new();
+        for line in stdout.lines() {
+            if let Some((key, event)) = line.split_once('\t') {
+                if !event.is_empty() {
+                    events.insert(key, event);
+                }
+            }
+        }
+        for (i, remote_id) in indexes {
+            // Exact `<agent_id>` basename first, then the wrapper shape
+            // `<status_pipe_name>-<agent_id>` used by the local poll.
+            let event = events.get(remote_id.as_str()).map(|v| *v).or_else(|| {
+                let suffix = format!("-{}", remote_id);
+                events.iter().find(|(k, _)| k.ends_with(&suffix)).map(|(_, v)| *v)
+            });
+            let a = &mut self.agents[i];
+            a.unreachable = false;
+            match event {
+                // Reachable but no state file (agent not launched yet, or gone).
+                None => {
+                    if a.status != AgentStatus::Unknown {
+                        a.status = AgentStatus::Unknown;
+                        a.last_polled_event = None;
+                    }
+                }
+                Some(event) if a.last_polled_event.as_deref() == Some(event) => {}
+                Some(event) => {
+                    a.last_polled_event = Some(event.to_string());
+                    let msg = StatusMessage {
+                        agent_id: a.id.clone(),
+                        event: event.to_string(),
+                        timestamp: None,
+                        error: None,
+                        session_id: None,
+                        transcript_path: None,
+                    };
+                    let new_status = msg.to_agent_status(
+                        self.config.event_map_for(&a.agent_type),
+                    );
+                    if a.status != new_status {
+                        a.status = new_status;
+                    }
+                }
+            }
+        }
+    }
+
     fn kill_selected_agent(&mut self, focus_successor: bool) {
         if self.selected_index >= self.agents.len() { return; }
+
+        // Remote agents are config-derived (#391): killing here would just be
+        // undone by the next sync. Point the operator at the config instead.
+        if let Some(agent) = self.agents.get(self.selected_index) {
+            if let Some(host) = &agent.host {
+                self.status_message = Some(format!(
+                    "{} runs on {} — remove it from [dashboard].remote_agents to detach",
+                    agent.name, host
+                ));
+                set_timeout(3.0);
+                return;
+            }
+        }
 
         let agent = self.agents.remove(self.selected_index);
         let name = agent.name.clone();
@@ -2612,6 +2781,9 @@ impl State {
 
         let saved: Vec<SavedAgentInfo> = self.agents.iter()
             .filter(|a| a.status != AgentStatus::Stopped)
+            // Remote agents are config-derived (#391): sync recreates them,
+            // restoring would try to spawn them locally.
+            .filter(|a| a.host.is_none())
             .map(SavedAgentInfo::from)
             .collect();
 
@@ -3324,5 +3496,131 @@ impl State {
     fn voice_quit(&mut self) {
         config::run_typed_command(&["sh", "-c", "exec lince-voice \"$@\"", "sh", "--controller", &self.own_id.to_string(),
             "--request", "{\"action\":\"shutdown\"}"], "voice_quit");
+    }
+}
+
+#[cfg(test)]
+mod remote_agents_tests {
+    use super::*;
+    use crate::config::RemoteAgentConfig;
+
+    fn remote_config(name: &str, host: &str) -> RemoteAgentConfig {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "agent_type": "claude", "host": host, "session": "lince"
+        })).expect("valid remote config")
+    }
+
+    #[test]
+    fn sync_adds_declared_remote_agents_without_touching_local_ones() {
+        let mut state = State::default();
+        state.agents = vec![dashboard::preview_agent("local-1", AgentStatus::Running)];
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        assert_eq!(state.agents.len(), 2);
+        let remote = state.agents.iter().find(|a| a.name == "wb-claude").expect("remote added");
+        assert_eq!(remote.host.as_deref(), Some("me@workbox"));
+        assert_eq!(remote.remote_session.as_deref(), Some("lince"));
+        assert_eq!(remote.id, "remote-wb-claude");
+        assert!(remote.pane_id.is_none());
+        assert_eq!(remote.status, AgentStatus::Unknown);
+        // Idempotent: a second sync must not duplicate.
+        state.sync_remote_agents();
+        assert_eq!(state.agents.len(), 2);
+    }
+
+    #[test]
+    fn sync_drops_remote_agents_removed_from_config_but_keeps_local() {
+        let mut state = State::default();
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        state.config.remote_agents = vec![remote_config("other", "me@server")];
+        state.sync_remote_agents();
+        assert_eq!(state.agents.len(), 1);
+        assert_eq!(state.agents[0].name, "other");
+    }
+
+    #[test]
+    fn sync_preserves_polled_remote_state_across_reload() {
+        let mut state = State::default();
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        state.agents[0].status = AgentStatus::PermissionRequired;
+        state.agents[0].last_polled_event = Some("permission".into());
+        // Config reload with the same declaration must not reset the agent.
+        state.sync_remote_agents();
+        assert_eq!(state.agents[0].status, AgentStatus::PermissionRequired);
+        assert_eq!(state.agents[0].last_polled_event.as_deref(), Some("permission"));
+    }
+
+    #[test]
+    fn unreachable_poll_degrades_explicitly_and_never_freezes() {
+        let mut state = State::default();
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        state.agents[0].status = AgentStatus::Running;
+        state.agents[0].last_polled_event = Some("running".into());
+        // Host down: exit code != 0 → Unreachable, stale status dropped.
+        state.apply_remote_poll("me@workbox", Some(255), "");
+        assert_eq!(state.agents[0].status, AgentStatus::Unknown);
+        assert!(state.agents[0].unreachable);
+        assert_eq!(state.agents[0].status_display(), "Unreachable");
+        assert_eq!(state.agents[0].last_polled_event, None);
+        // Recovery: the same event must be re-applied (not swallowed by
+        // change detection after the reset above).
+        state.apply_remote_poll("me@workbox", Some(0), "wb-claude\trunning\n");
+        assert_eq!(state.agents[0].status, AgentStatus::Running);
+        assert!(!state.agents[0].unreachable);
+    }
+
+    #[test]
+    fn remote_events_map_through_the_same_contract() {
+        let mut state = State::default();
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        // Wrapper-shaped basename `<pipe>-<agent_id>` matches too.
+        state.apply_remote_poll("me@workbox", Some(0), "claude-wb-claude\tpermission\n");
+        assert_eq!(state.agents[0].status, AgentStatus::PermissionRequired);
+        state.apply_remote_poll("me@workbox", Some(0), "claude-wb-claude\trunning\n");
+        assert_eq!(state.agents[0].status, AgentStatus::Running);
+        // Other hosts' output never crosses.
+        state.apply_remote_poll("me@server", Some(0), "wb-claude\tinput\n");
+        assert_eq!(state.agents[0].status, AgentStatus::Running);
+    }
+
+    #[test]
+    fn reachable_host_without_state_files_is_unknown_not_stale() {
+        let mut state = State::default();
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        state.agents[0].status = AgentStatus::Running;
+        state.apply_remote_poll("me@workbox", Some(0), "");
+        assert_eq!(state.agents[0].status, AgentStatus::Unknown);
+        assert!(!state.agents[0].unreachable);
+    }
+
+    #[test]
+    fn kill_selected_refuses_remote_agents_with_a_pointer_to_config() {
+        let mut state = State::default();
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        state.selected_index = 0;
+        state.kill_selected_agent(true);
+        assert_eq!(state.agents.len(), 1, "remote agent must not be removed");
+        assert!(state.status_message.as_deref().unwrap_or("").contains("remote_agents"));
+    }
+
+    #[test]
+    fn save_state_excludes_remote_agents() {
+        let mut state = State::default();
+        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
+        state.sync_remote_agents();
+        state.agents.push(dashboard::preview_agent("local-1", AgentStatus::Running));
+        // Mirror the save_and_quit filter: remote agents must not persist.
+        let saved: Vec<SavedAgentInfo> = state.agents.iter()
+            .filter(|a| a.status != AgentStatus::Stopped && a.host.is_none())
+            .map(SavedAgentInfo::from)
+            .collect();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].name, "local-1");
     }
 }

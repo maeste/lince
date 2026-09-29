@@ -566,7 +566,7 @@ fn render_agent_table(
                     let main_part = format!(
                         "{}{}{} {}{}",
                         prefix, pad_left(&idx_str, col_idx), type_col,
-                        icon_pre, pad_left(&agent.name, name_col),
+                        icon_pre, pad_left(&agent_display_name(agent), name_col),
                     );
                     let status_str = pad_left(&status_label, col_status);
                     let main_visible = strip_ansi_len(&main_part);
@@ -593,14 +593,14 @@ fn render_agent_table(
                 } else {
                     // For non-selected rows, use display_name (with group suffix) in the name column
                     let name_field = if agent.group.is_some() {
-                        let base = pad_left(&agent.name, name_col.saturating_sub(agent.group.as_ref().map_or(0, |g| g.len() + 3)));
+                        let base = pad_left(&agent_display_name(agent), name_col.saturating_sub(agent.group.as_ref().map_or(0, |g| g.len() + 3)));
                         if let Some(ref group) = agent.group {
                             format!("{}{} {}[{}]{}", icon_pre, base, DIM, group, RESET)
                         } else {
                             format!("{}{}", icon_pre, base)
                         }
                     } else {
-                        format!("{}{}", icon_pre, pad_left(&agent.name, name_col))
+                        format!("{}{}", icon_pre, pad_left(&agent_display_name(agent), name_col))
                     };
 
                     // Wrap the plain sandbox content with its color attribute
@@ -671,11 +671,15 @@ fn render_detail_panel(agent: &AgentInfo, cols: usize, max_rows: usize, agent_ty
                 (agent.agent_type.as_str(), RESET.to_string(), String::new())
             };
         let detail_status = agent.status_display();
+        let host_info = match &agent.host {
+            Some(host) => format!("  {}[@{}]{}", theme::color("cyan"), host, RESET),
+            None => String::new(),
+        };
         println!(
-            " {}Agent:{} {}  {}{}{}{} {}{}{}",
+            " {}Agent:{} {}  {}{}{}{} {}{}{}{}",
             theme::color("cyan"), RESET, agent.name,
             type_color, type_display, RESET, sandbox_info,
-            theme::status(&agent.status), detail_status, RESET,
+            theme::status(&agent.status), detail_status, RESET, host_info,
         );
         row += 1;
     }
@@ -1233,6 +1237,7 @@ pub fn render_help_overlay(rows: usize, cols: usize, modifier: &str) {
         format!("{modifier}+k/j or {modifier}+PgUp/Dn  Cycle agents"),
         format!("{modifier}+r        Rename focused agent"),
         format!("{modifier}+x        Kill focused agent"),
+        format!("{modifier}+o        Open remote agent's host (ssh + attach)"),
         "i            Info (PgUp/Dn scroll)".into(),
         "r            Rename selected".into(),
         "K/J          Move selected up/down".into(),
@@ -1458,6 +1463,7 @@ pub(crate) fn preview_agent(name: &str, status: AgentStatus) -> AgentInfo {
         started_at: None, last_error: None, exit_code: None, group: None,
         last_polled_event: None, sandbox_level: Some("normal".into()),
         sandbox_backend: None, transcript_path: None, icon: String::new(), enforced: None,
+        host: None, remote_session: None, remote_agent_id: None, unreachable: false,
     }
 }
 
@@ -1500,6 +1506,16 @@ pub(crate) fn status_letter(status: &AgentStatus) -> char {
 
 pub(crate) fn compact_name(agent: &AgentInfo) -> String {
     agent.name.chars().filter(|c| !c.is_control()).take(10).collect()
+}
+
+/// Name shown in list contexts, suffixed with the short host form for remote
+/// agents (#391): `wb-claude@workbox` (user part of `user@host` dropped — the
+/// operator picked the target, the machine is what they need to see).
+pub(crate) fn agent_display_name(agent: &AgentInfo) -> String {
+    match &agent.host {
+        Some(host) => format!("{}@{}", agent.name, host.rsplit('@').next().unwrap_or(host)),
+        None => agent.name.clone(),
+    }
 }
 
 pub(crate) fn permission_color(badge: &str) -> &'static str {
