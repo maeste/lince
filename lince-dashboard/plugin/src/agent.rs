@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use zellij_tile::prelude::*;
 
 use crate::config::{
-    shell_escape, AgentLayout, AgentTypeConfig, DashboardConfig, DEFAULT_SANDBOX_COMMAND,
+    shell_escape, AgentLayout, AgentTypeConfig, DashboardConfig, RemoteAgentConfig,
+    DEFAULT_SANDBOX_COMMAND,
 };
 use crate::sandbox_backend::SandboxBackend;
 
@@ -650,6 +651,10 @@ fn spawn_inner(
         transcript_path: None,
         enforced: None,
         icon,
+        host: None,
+        remote_session: None,
+        remote_agent_id: None,
+        unreachable: false,
     })
 }
 
@@ -693,6 +698,50 @@ pub fn spawn_agent_custom(
         sandbox_level_override,
         sandbox_backend_override,
     )
+}
+
+/// Build the dashboard-side AgentInfo for a declared remote agent (#391).
+///
+/// No pane is spawned: `pane_id` stays None forever, status arrives via
+/// `poll_remote_status_async`, and the instance is config-derived (recreated
+/// by `sync_remote_agents`, never restored from the state file).
+pub fn remote_agent_info(remote: &RemoteAgentConfig) -> AgentInfo {
+    AgentInfo {
+        id: format!("remote-{}", remote.name),
+        name: remote.name.clone(),
+        agent_type: remote.agent_type.clone(),
+        provider: None,
+        project_dir: String::new(),
+        status: AgentStatus::Unknown,
+        pane_id: None,
+        started_at: None,
+        last_error: None,
+        exit_code: None,
+        group: None,
+        last_polled_event: None,
+        sandbox_level: None,
+        sandbox_backend: None,
+        transcript_path: None,
+        enforced: None,
+        icon: String::new(),
+        host: Some(remote.host.clone()),
+        remote_session: remote.session.clone(),
+        remote_agent_id: remote.agent_id.clone(),
+        unreachable: false,
+    }
+}
+
+/// Interactive entry into a remote agent's host (#391): an SSH command pane,
+/// attaching to the agent's named Zellij session when one is configured.
+/// `-t` forces a TTY — `ssh host cmd` runs without one by default, and
+/// `zellij attach` needs a terminal. None for local agents.
+pub fn remote_attach_command(agent: &AgentInfo) -> Option<CommandToRun> {
+    let host = agent.host.as_ref()?;
+    let mut args = vec!["-t".to_string(), host.clone()];
+    if let Some(session) = &agent.remote_session {
+        args.extend(["zellij".to_string(), "attach".to_string(), session.clone()]);
+    }
+    Some(CommandToRun { path: PathBuf::from("ssh"), args, cwd: None })
 }
 
 /// Stop an agent by closing its pane.
@@ -750,6 +799,11 @@ pub fn reconcile_panes(
                 }
             }
         } else if agent.pane_id.is_none() && !matches!(agent.status, AgentStatus::Stopped) {
+            // Remote agents never claim panes (#391): their process lives on
+            // another host — a match here would steal a local pane.
+            if agent.host.is_some() {
+                continue;
+            }
             // LINCE-120: discovery is driven by "no pane yet AND not given up",
             // not by status. Post-discovery the agent stays `Unknown`; for
             // agents with native hooks the runtime emits real events (e.g.
@@ -985,6 +1039,10 @@ mod tests {
             transcript_path: None,
             enforced: None,
             icon: icon.to_string(),
+            host: None,
+            remote_session: None,
+            remote_agent_id: None,
+            unreachable: false,
         }
     }
 
@@ -1045,5 +1103,51 @@ mod tests {
     #[test]
     fn pick_slot_empty_pool_yields_none() {
         assert_eq!(pick_instance_slot(&[], &[], 0), None);
+    }
+}
+
+#[cfg(test)]
+mod remote_agent_tests {
+    use super::*;
+    use crate::config::RemoteAgentConfig;
+
+    fn remote(name: &str, session: Option<&str>) -> RemoteAgentConfig {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "agent_type": "claude", "host": "me@workbox", "session": session
+        })).expect("valid remote config")
+    }
+
+    #[test]
+    fn remote_agent_info_is_paneless_and_unknown() {
+        let info = remote_agent_info(&remote("wb-claude", Some("lince")));
+        assert_eq!(info.id, "remote-wb-claude");
+        assert_eq!(info.host.as_deref(), Some("me@workbox"));
+        assert_eq!(info.remote_session.as_deref(), Some("lince"));
+        assert_eq!(info.remote_agent_id, None, "defaults to the instance name");
+        assert!(info.pane_id.is_none());
+        assert_eq!(info.status, AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn remote_attach_command_attaches_to_the_named_session() {
+        let cmd = remote_attach_command(&remote_agent_info(&remote("wb-claude", Some("lince"))))
+            .expect("remote agent has an attach command");
+        assert_eq!(cmd.path, PathBuf::from("ssh"));
+        assert_eq!(cmd.args, vec!["-t", "me@workbox", "zellij", "attach", "lince"]);
+    }
+
+    #[test]
+    fn remote_attach_command_without_session_falls_back_to_a_plain_shell() {
+        let cmd = remote_attach_command(&remote_agent_info(&remote("wb-claude", None)))
+            .expect("remote agent has an attach command");
+        assert_eq!(cmd.args, vec!["-t", "me@workbox"]);
+    }
+
+    #[test]
+    fn local_agents_have_no_attach_command() {
+        let mut agent = crate::dashboard::preview_agent("local", AgentStatus::Running);
+        assert!(remote_attach_command(&agent).is_none());
+        agent.host = Some("me@workbox".into());
+        assert!(remote_attach_command(&agent).is_some());
     }
 }

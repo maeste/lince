@@ -41,6 +41,9 @@ pub struct Entry {
     pub sandbox_color: String,
     #[serde(default)]
     pub provenance: String,
+    /// Remote host this agent runs on (#391). Empty = local.
+    #[serde(default)]
+    pub host: String,
 }
 impl Snapshot {
     pub fn from_agents(agents: &[AgentInfo], focused: Option<&str>, config: &DashboardConfig, warning: Option<&str>) -> Self {
@@ -61,6 +64,7 @@ impl Snapshot {
                 sandbox: dashboard::sandbox_badge(a, &config.agent_types),
                 sandbox_color: dashboard::permission_color(&dashboard::sandbox_badge(a, &config.agent_types)).into(),
                 provenance: String::new(),
+                host: a.host.clone().unwrap_or_default(),
             }).collect(),
         }
     }
@@ -87,6 +91,10 @@ impl Snapshot {
                 (entry.label.clone(), tab_color(name_color)),
                 (format!(" {}{symbol}", entry.provenance), tab_color(color)),
             ]);
+            if !entry.host.is_empty() {
+                let last = groups.last_mut().unwrap();
+                last.push((format!("@{} ", entry.host), theme::color("cyan")));
+            }
         }
         if let Some(warning) = &self.warning {
             groups.push(vec![(format!(" | ! {warning}"), theme::color("yellow"))]);
