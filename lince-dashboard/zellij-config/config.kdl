@@ -17,6 +17,7 @@ keybinds clear-defaults=true {
         bind "Alt t" { MessagePlugin { name "lince-voice-ptt"; }; }
         bind "Alt x" { MessagePlugin { name "kill-focused-agent"; }; }
         bind "Alt r" { MessagePlugin { name "rename-focused-agent"; }; }
+        bind "Alt o" { MessagePlugin { name "lince-open-remote"; }; }
         bind "Ctrl Space" { MessagePlugin { name "lince-voice-ptt"; payload "submit"; }; }
         bind "Alt h" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }
         bind "Alt ?" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }
@@ -248,6 +249,7 @@ keybinds clear-defaults=true {
         bind "Alt t" { MessagePlugin { name "lince-voice-ptt"; }; }
         bind "Alt x" { MessagePlugin { name "kill-focused-agent"; }; }
         bind "Alt r" { MessagePlugin { name "rename-focused-agent"; }; }
+        bind "Alt o" { MessagePlugin { name "lince-open-remote"; }; }
         bind "Ctrl Space" { MessagePlugin { name "lince-voice-ptt"; payload "submit"; }; }
         bind "Alt h" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }
         bind "Alt ?" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }
@@ -453,8 +455,11 @@ web_client {
 // Options:
 //   - detach (Default)
 //   - quit
-// 
-// on_force_close "quit"
+//
+// #390 client mobility: the session must survive the client — agents keep
+// running after the SSH connection (or terminal) dies, and `lince`
+// reattaches to the same named session.
+on_force_close "detach"
  
 // Configure the scroll back buffer size
 // This is the number of lines zellij stores for each pane in the scroll back

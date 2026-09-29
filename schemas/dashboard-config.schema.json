@@ -77,6 +77,11 @@
           "description": "Maximum concurrent agents",
           "default": 9
         },
+        "session_name": {
+          "type": "string",
+          "description": "Named Zellij session for the launcher: attach-or-create on every 'lince' (#390 client mobility \u2014 agents survive the SSH client, relaunch reattaches). Empty string disables session management",
+          "default": "lince"
+        },
         "sandbox_backend": {
           "type": "string",
           "description": "Global backend preference"
