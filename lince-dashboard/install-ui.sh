@@ -161,6 +161,7 @@ for key, binding in [
     ('Alt t', 'bind "Alt t" { MessagePlugin { name "lince-voice-ptt"; }; }'),
     ('Alt x', 'bind "Alt x" { MessagePlugin { name "kill-focused-agent"; }; }'),
     ('Alt r', 'bind "Alt r" { MessagePlugin { name "rename-focused-agent"; }; }'),
+    ('Alt o', 'bind "Alt o" { MessagePlugin { name "lince-open-remote"; }; }'),
     ('Alt ?', 'bind "Alt ?" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }'),
     ('Ctrl Space', 'bind "Ctrl Space" { MessagePlugin { name "lince-voice-ptt"; payload "submit"; }; }'),
 ]:
@@ -176,6 +177,7 @@ def add_shared_shortcuts(match):
         ('Alt t', 'bind "Alt t" { MessagePlugin { name "lince-voice-ptt"; }; }'),
         ('Alt x', 'bind "Alt x" { MessagePlugin { name "kill-focused-agent"; }; }'),
         ('Alt r', 'bind "Alt r" { MessagePlugin { name "rename-focused-agent"; }; }'),
+        ('Alt o', 'bind "Alt o" { MessagePlugin { name "lince-open-remote"; }; }'),
         ('Alt ?', 'bind "Alt ?" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }'),
         ('Ctrl Space', 'bind "Ctrl Space" { MessagePlugin { name "lince-voice-ptt"; payload "submit"; }; }'),
     ]:
@@ -196,6 +198,7 @@ def add_locked_shortcuts(match):
         ('t', 'bind "Alt t" { MessagePlugin { name "lince-voice-ptt"; }; }'),
         ('x', 'bind "Alt x" { MessagePlugin { name "kill-focused-agent"; }; }'),
         ('r', 'bind "Alt r" { MessagePlugin { name "rename-focused-agent"; }; }'),
+        ('o', 'bind "Alt o" { MessagePlugin { name "lince-open-remote"; }; }'),
         ('?', 'bind "Alt ?" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }'),
         ('Ctrl Space', 'bind "Ctrl Space" { MessagePlugin { name "lince-voice-ptt"; payload "submit"; }; }'),
     ]:
@@ -236,6 +239,7 @@ control_bindings = [
     ('Ctrl t', 'bind "Ctrl t" { MessagePlugin { name "lince-voice-ptt"; }; }'),
     ('Ctrl x', 'bind "Ctrl x" { MessagePlugin { name "kill-focused-agent"; }; }'),
     ('Ctrl r', 'bind "Ctrl r" { MessagePlugin { name "rename-focused-agent"; }; }'),
+    ('Ctrl o', 'bind "Ctrl o" { MessagePlugin { name "lince-open-remote"; }; }'),
     ('Ctrl h', 'bind "Ctrl h" { MessagePlugin { name "lince-ui-open"; payload "help"; }; }'),
     ('Ctrl s', 'bind "Ctrl s" { MessagePlugin { name "lince-sidebar-toggle"; }; }'),
     ('Ctrl b', 'bind "Ctrl b" { MessagePlugin { name "lince-statusbar-toggle"; }; }'),
@@ -276,6 +280,15 @@ def shift_normal_conflicts(match):
 
 updated = re.sub(r'(?m)^    shared_except "locked" \{\n(?:(?!^    \}).*\n)*',
                  shift_normal_conflicts, updated)
+
+# #390 client mobility: the session must outlive the client (agents keep
+# running after the SSH connection or terminal dies). The Zellij default is
+# already detach; make it explicit on LINCE-managed configs only — a purely
+# personal config (no lince bindings) is left byte-for-byte untouched.
+if 'on_force_close' not in updated and 'name "lince-' in updated:
+    updated += ('\n// #390: agents keep running after the client dies; `lince` reattaches\n'
+                '// to the same named session.\n'
+                'on_force_close "detach"\n')
 if updated != text:
     path.with_suffix('.kdl.bak-shortcuts').write_text(text)
     path.write_text(updated)

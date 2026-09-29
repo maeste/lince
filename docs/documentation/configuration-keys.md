@@ -152,6 +152,7 @@ Dashboard behavior and defaults.
 | `status_method` | `"pipe"` \| `"file"` | `"pipe"` | Status detection method (file polling always runs; pipe is a fast-path) |
 | `status_file_dir` | str | `"/tmp/lince-dashboard"` | Directory for per-agent .state files |
 | `max_agents` | int | `9` | Maximum concurrent agents |
+| `session_name` | str | `"lince"` | Named Zellij session for the launcher: attach-or-create on every 'lince' (#390 client mobility — agents survive the SSH client, relaunch reattaches). Empty string disables session management |
 | `sandbox_backend` | str | — | Global backend preference |
 | `sandbox_colors` | table | — | Color per sandbox level (paranoid/normal/permissive/default) |
 | `project_search_roots` | list[string] | — | Roots scanned recursively by the wizard's Tab completion |

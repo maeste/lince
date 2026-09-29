@@ -666,6 +666,7 @@ DASHBOARD_CONFIG_SCHEMA = {
                 "status_file_dir": _d(_STR, "Directory for per-agent .state files",
                                       "/tmp/lince-dashboard"),
                 "max_agents": _d(_INT, "Maximum concurrent agents", 9),
+                "session_name": _d(_STR, "Named Zellij session for the launcher: attach-or-create on every 'lince' (#390 client mobility — agents survive the SSH client, relaunch reattaches). Empty string disables session management", "lince"),
                 "sandbox_backend": _d(_STR, "Global backend preference"),
                 "sandbox_colors": _d(_STR_MAP, "Color per sandbox level "
                                                "(paranoid/normal/permissive/default)"),

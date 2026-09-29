@@ -2,11 +2,25 @@
 """Launch a dashboard layout with the configured sidebar width."""
 from __future__ import annotations
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import re
 import tempfile
 import tomllib
+
+
+def resolve_session_action(session: str, listing: str) -> str:
+    """Decide attach vs create for a named Zellij session (#390).
+
+    `listing` is `zellij list-sessions --no-formatting` output: one
+    `<name> [Created …]` line per session, exited ones included. Attach
+    covers both — a live session reattaches as-is, an exited one (e.g. after
+    a host reboot) is resurrected from its serialized layout.
+    """
+    names = {line.split(" [", 1)[0].strip() for line in listing.splitlines() if line.strip()}
+    return "attach" if session in names else "create"
+
 
 
 def sidebar_layout(text: str, width: int) -> str:
@@ -81,9 +95,18 @@ def main() -> int:
     parser.add_argument("--frames", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--config", "--zellij-config", dest="zellij_config", type=Path)
     parser.add_argument("--print-layout", action="store_true")
+    parser.add_argument("--session", default=None,
+                        help="Zellij session name to attach-or-create (default: "
+                             "config session_name, itself defaulting to 'lince'). "
+                             "Pass an empty string to disable session management.")
     args, zellij_args = parser.parse_known_args()
     config_path = Path.home() / ".config/lince-dashboard/config.toml"
     config = tomllib.loads(config_path.read_text()).get("dashboard", {}) if config_path.exists() else {}
+    session = args.session
+    if session is None:
+        session = config.get("session_name", "lince")
+    if not isinstance(session, str):
+        raise ValueError("session_name must be a string")
     preset = args.preset or config.get("preset", "minimal")
     if preset not in ("classic", "minimal", "side-pane"):
         raise ValueError(f"unknown dashboard preset: {preset}")
@@ -110,14 +133,33 @@ def main() -> int:
     if args.print_layout:
         print(text)
         return 0
+    # #390 client mobility: default to a named session so closing the SSH
+    # connection (or the terminal) leaves the dashboard and its agents
+    # running, and relaunching reattaches instead of spawning a duplicate.
+    if session:
+        if os.environ.get("ZELLIJ"):
+            print("lince: already inside a Zellij session — detach first "
+                  "(Alt+q saves and quits, or `zellij detach`), or pass "
+                  "--session '' to launch nested anyway.")
+            return 2
+        listing = subprocess.run(["zellij", "list-sessions", "--no-formatting"],
+                                 capture_output=True, text=True).stdout
+        if resolve_session_action(session, listing) == "attach":
+            # Session-owned config applies; layout-only options are not
+            # meaningful on attach and would be rejected.
+            return subprocess.call(["zellij", "attach", session])
     managed_config = Path.home() / ".config/lince-dashboard/zellij.kdl"
     if not managed_config.exists():
         managed_config = Path(__file__).resolve().parent / "zellij-config/config.kdl"
     with tempfile.TemporaryDirectory(prefix="lince-layout-") as directory:
         layout = Path(directory) / "dashboard.kdl"
         layout.write_text(text)
-        return subprocess.call(["zellij", "--config-dir", str(source.parent.parent), "--config", str(args.zellij_config or managed_config),
-                                "--layout", str(layout), *zellij_args])
+        argv = ["zellij"]
+        if session:
+            argv += ["--session", session]
+        argv += ["--config-dir", str(source.parent.parent), "--config", str(args.zellij_config or managed_config),
+                 "--layout", str(layout), *zellij_args]
+        return subprocess.call(argv)
 
 
 if __name__ == "__main__":
