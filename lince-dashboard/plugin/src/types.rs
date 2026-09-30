@@ -156,6 +156,10 @@ pub enum WizardStep {
     Name,
     /// Pick the provider env-var bundle (was `Profile` pre-#81).
     Provider,
+    /// Local machine or a remote SSH host (#391). The last choice before
+    /// Confirm: remote spawns the agent on the host, fully over SSH, hidden
+    /// from the rest of the flow.
+    Location,
     Confirm,
 }
 
@@ -242,6 +246,10 @@ pub struct WizardState {
     pub project_dir_filter: String,
     /// Which control owns focus inside the unified ProjectDir step.
     pub project_dir_mode: ProjectDirMode,
+    /// Location step (#391): run the agent on this machine or over SSH.
+    pub remote: bool,
+    /// SSH target for the Location step's Remote choice (`user@host`).
+    pub remote_host: String,
 }
 
 impl WizardState {
@@ -329,6 +337,7 @@ impl WizardState {
         if self.has_providers() {
             steps.push(WizardStep::Provider);
         }
+        steps.push(WizardStep::Location);
         steps.push(WizardStep::Confirm);
         steps
     }
@@ -502,6 +511,11 @@ impl AgentInfo {
 /// every remaining field is `#[serde(default)]` so missing keys never panic.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SavedAgentInfo {
+    /// Instance id. Regenerated on restore for local agents; REQUIRED for
+    /// remote agents (#391) — the id names the agent's Zellij session on the
+    /// host, which restore must reattach to instead of duplicating.
+    #[serde(default)]
+    pub id: Option<String>,
     #[serde(default)]
     pub name: String,
     /// Agent type key referencing AgentTypeConfig in config. Defaults to DEFAULT_AGENT_TYPE for v1 compat.
@@ -521,6 +535,13 @@ pub struct SavedAgentInfo {
     /// Runtime sandbox backend selected at spawn time. None for older state files (backward compat).
     #[serde(default)]
     pub sandbox_backend: Option<crate::sandbox_backend::SandboxBackend>,
+    /// Remote host the agent runs on (#391). None = local; restore re-spawns
+    /// remote agents over SSH with the same lifecycle as local ones.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Zellij session name on the remote host (Alt+o attach target).
+    #[serde(default)]
+    pub remote_session: Option<String>,
 }
 
 fn default_agent_type() -> String {
@@ -530,6 +551,7 @@ fn default_agent_type() -> String {
 impl From<&AgentInfo> for SavedAgentInfo {
     fn from(a: &AgentInfo) -> Self {
         Self {
+            id: Some(a.id.clone()),
             name: a.name.clone(),
             agent_type: a.agent_type.clone(),
             provider: a.provider.clone(),
@@ -537,6 +559,8 @@ impl From<&AgentInfo> for SavedAgentInfo {
             group: a.group.clone(),
             sandbox_level: a.sandbox_level.clone(),
             sandbox_backend: a.sandbox_backend.clone(),
+            host: a.host.clone(),
+            remote_session: a.remote_session.clone(),
         }
     }
 }

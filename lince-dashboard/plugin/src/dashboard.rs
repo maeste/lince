@@ -998,6 +998,8 @@ pub fn render_wizard(
         WizardStep::Name => "Agent Name",
         // gh#81: this step picks an env-var bundle, not a sandbox profile.
         WizardStep::Provider => "Provider",
+        // #391: last choice before Confirm — local machine or SSH host.
+        WizardStep::Location => "Location",
         WizardStep::ProjectDir => "Project Directory",
         WizardStep::Confirm => "Confirm",
     };
@@ -1070,6 +1072,23 @@ pub fn render_wizard(
             push_box_line(&mut lines, "", box_width);
             push_box_line(&mut lines, "  [j/k] Select  [Enter] Next  [Esc] Cancel", box_width);
         }
+        WizardStep::Location => {
+            // Two options, one input — the whole step is four lines (#391).
+            for (i, label) in ["this machine", "remote (SSH)"].iter().enumerate() {
+                let marker = if (i == 1) == wizard.remote { ">" } else { " " };
+                push_box_line(&mut lines, &format!("  {} {}", marker, label), box_width);
+            }
+            if wizard.remote {
+                let cursor = if wizard.remote_host.is_empty() { "_" } else { "" };
+                push_box_line(&mut lines,
+                    &format!("  host: {}{}", wizard.remote_host, cursor), box_width);
+                push_box_line(&mut lines,
+                    "  Requires: lince installed on the host, SSH key access.", box_width);
+            }
+            push_box_line(&mut lines, "", box_width);
+            push_box_line(&mut lines,
+                "  [j/k] Choose  [type] SSH host  [Enter] Next  [Esc] Cancel", box_width);
+        }
         WizardStep::Confirm => {
             let base_display = wizard.selected_base_agent();
             let provider_display = wizard.selected_provider().unwrap_or("(none)");
@@ -1091,6 +1110,13 @@ pub fn render_wizard(
             // Provider is the env-var bundle (gh#81 — distinct from Profile/sandbox-level above).
             push_box_line(&mut lines, &format!("  Provider: {}", provider_display), box_width);
             push_box_line(&mut lines, &format!("  Dir:      {}", dir_display), box_width);
+            // Location (#391): where the agent actually runs. SSH stays
+            // invisible beyond this one line.
+            if wizard.remote {
+                push_box_line(&mut lines, &format!("  Host:     {} (remote)", wizard.remote_host), box_width);
+            } else {
+                push_box_line(&mut lines, "  Host:     this machine", box_width);
+            }
             push_box_line(&mut lines, "", box_width);
             push_box_line(
                 &mut lines,
@@ -1299,6 +1325,8 @@ mod tests {
             project_dir_index: 0,
             project_dir_filter: "a".into(),
             project_dir_mode: ProjectDirMode::Input,
+            remote: false,
+            remote_host: String::new(),
         };
         let frame = crate::render_output::capture(|| render_wizard(
             &wizard,

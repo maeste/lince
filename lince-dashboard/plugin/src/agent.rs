@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use zellij_tile::prelude::*;
 
 use crate::config::{
-    shell_escape, AgentLayout, AgentTypeConfig, DashboardConfig, RemoteAgentConfig,
-    DEFAULT_SANDBOX_COMMAND,
+    shell_escape, AgentLayout, AgentTypeConfig, DashboardConfig, DEFAULT_SANDBOX_COMMAND,
 };
 use crate::sandbox_backend::SandboxBackend;
+use crate::types::{SavedAgentInfo};
 
 /// Name of the lifecycle wrapper script for agents without native hooks.
 const AGENT_WRAPPER: &str = "lince-agent-wrapper";
@@ -432,7 +432,24 @@ fn shell_quote(s: &str) -> String {
 
 /// Internal helper that does the actual spawn work.
 /// All public spawn functions resolve their parameters and delegate here.
-fn spawn_inner(
+/// Everything `prepare_spawn` resolves before the launch actually happens:
+/// shared by the local pane path and the remote SSH path (#391).
+pub struct PreparedSpawn {
+    pub id: String,
+    pub name: String,
+    /// Full argv (starting with `/usr/bin/env`) the agent runs under.
+    pub args: Vec<String>,
+    pub sandbox_level: Option<String>,
+    pub sandbox_backend: Option<SandboxBackend>,
+    /// Per-instance marker glyph (#166) claimed for this launch.
+    pub icon: String,
+}
+
+/// Resolve id, launch argv, sandbox overrides and instance marker without
+/// opening anything. Both spawn paths call this, so a remote agent runs the
+/// exact same command line (env bundles, sandbox wrappers, hooks) it would
+/// run locally — the remote host just needs lince installed.
+fn prepare_spawn(
     config: &DashboardConfig,
     next_id: &mut u32,
     agents: &[AgentInfo],
@@ -440,10 +457,9 @@ fn spawn_inner(
     agent_type: &str,
     provider: Option<String>,
     project_dir: String,
-    group: Option<String>,
     sandbox_level_override: Option<String>,
     sandbox_backend_override: Option<SandboxBackend>,
-) -> Result<AgentInfo, String> {
+) -> Result<PreparedSpawn, String> {
     if agents.len() >= config.max_agents {
         return Err(format!(
             "Max agents reached ({}). Kill one or increase max_agents in config.",
@@ -597,9 +613,43 @@ fn spawn_inner(
         args
     };
 
+    // Resolve the effective sandbox level to store on AgentInfo for color-coding and save/restore.
+    let sandbox_level = sandbox_level_override
+        .or_else(|| config.agent_types.get(agent_type).and_then(|c| c.sandbox_level.clone()));
+    // Resolved backend for save/restore + dashboard table label override.
+    let sandbox_backend = sandbox_backend_override
+        .or_else(|| config.agent_types.get(agent_type).map(|c| c.sandbox_backend.clone()));
+
+    // #166: claim a per-instance marker not already in use by a live agent.
+    let slot = pick_instance_slot(&config.instance_icons, agents, *next_id);
+    let icon = slot
+        .and_then(|i| config.instance_icons.get(i).cloned())
+        .unwrap_or_default();
+
+    Ok(PreparedSpawn { id, name, args, sandbox_level, sandbox_backend, icon })
+}
+
+/// Local spawn: open the agent's command pane in this session.
+fn spawn_inner(
+    config: &DashboardConfig,
+    next_id: &mut u32,
+    agents: &[AgentInfo],
+    name: String,
+    agent_type: &str,
+    provider: Option<String>,
+    project_dir: String,
+    group: Option<String>,
+    sandbox_level_override: Option<String>,
+    sandbox_backend_override: Option<SandboxBackend>,
+) -> Result<AgentInfo, String> {
+    let prepared = prepare_spawn(
+        config, next_id, agents, name, agent_type, provider.clone(), project_dir.clone(),
+        sandbox_level_override, sandbox_backend_override,
+    )?;
+
     let command = CommandToRun {
         path: PathBuf::from("/usr/bin/env"),
-        args,
+        args: prepared.args,
         cwd: Some(PathBuf::from(&project_dir)),
     };
 
@@ -616,22 +666,9 @@ fn spawn_inner(
 
     let started_at = now_secs();
 
-    // Resolve the effective sandbox level to store on AgentInfo for color-coding and save/restore.
-    let resolved_sandbox_level = sandbox_level_override
-        .or_else(|| config.agent_types.get(agent_type).and_then(|c| c.sandbox_level.clone()));
-    // Resolved backend for save/restore + dashboard table label override.
-    let resolved_sandbox_backend = sandbox_backend_override
-        .or_else(|| config.agent_types.get(agent_type).map(|c| c.sandbox_backend.clone()));
-
-    // #166: claim a per-instance marker not already in use by a live agent.
-    let slot = pick_instance_slot(&config.instance_icons, agents, *next_id);
-    let icon = slot
-        .and_then(|i| config.instance_icons.get(i).cloned())
-        .unwrap_or_default();
-
     Ok(AgentInfo {
-        id,
-        name,
+        id: prepared.id,
+        name: prepared.name,
         agent_type: agent_type.to_string(),
         provider,
         project_dir,
@@ -646,11 +683,11 @@ fn spawn_inner(
         exit_code: None,
         group,
         last_polled_event: None,
-        sandbox_level: resolved_sandbox_level,
-        sandbox_backend: resolved_sandbox_backend,
+        sandbox_level: prepared.sandbox_level,
+        sandbox_backend: prepared.sandbox_backend,
         transcript_path: None,
         enforced: None,
-        icon,
+        icon: prepared.icon,
         host: None,
         remote_session: None,
         remote_agent_id: None,
@@ -700,33 +737,37 @@ pub fn spawn_agent_custom(
     )
 }
 
-/// Build the dashboard-side AgentInfo for a declared remote agent (#391).
+/// Build the dashboard-side AgentInfo for a saved remote agent (#391).
 ///
-/// No pane is spawned: `pane_id` stays None forever, status arrives via
-/// `poll_remote_status_async`, and the instance is config-derived (recreated
-/// by `sync_remote_agents`, never restored from the state file).
-pub fn remote_agent_info(remote: &RemoteAgentConfig) -> AgentInfo {
+/// Remote agents outlive the dashboard, so restore never re-spawns them —
+/// it reattaches to the session that is (probably) still running on the
+/// host. The saved id is mandatory plumbing: it names both the session and
+/// the remote LINCE_AGENT_ID. No pane is spawned; status arrives via
+/// `poll_remote_status_async`.
+pub fn remote_agent_from_saved(saved: &SavedAgentInfo) -> AgentInfo {
+    let id = saved.id.clone()
+        .unwrap_or_else(|| format!("remote-{}", saved.name));
     AgentInfo {
-        id: format!("remote-{}", remote.name),
-        name: remote.name.clone(),
-        agent_type: remote.agent_type.clone(),
-        provider: None,
-        project_dir: String::new(),
+        remote_session: saved.remote_session.clone().or_else(|| Some(remote_session_name(&id))),
+        remote_agent_id: Some(id.clone()),
+        id,
+        name: saved.name.clone(),
+        agent_type: saved.agent_type.clone(),
+        provider: saved.provider.clone(),
+        project_dir: saved.project_dir.clone(),
         status: AgentStatus::Unknown,
         pane_id: None,
         started_at: None,
         last_error: None,
         exit_code: None,
-        group: None,
+        group: saved.group.clone(),
         last_polled_event: None,
-        sandbox_level: None,
-        sandbox_backend: None,
+        sandbox_level: saved.sandbox_level.clone(),
+        sandbox_backend: saved.sandbox_backend.clone(),
         transcript_path: None,
         enforced: None,
         icon: String::new(),
-        host: Some(remote.host.clone()),
-        remote_session: remote.session.clone(),
-        remote_agent_id: remote.agent_id.clone(),
+        host: saved.host.clone(),
         unreachable: false,
     }
 }
@@ -742,6 +783,114 @@ pub fn remote_attach_command(agent: &AgentInfo) -> Option<CommandToRun> {
         args.extend(["zellij".to_string(), "attach".to_string(), session.clone()]);
     }
     Some(CommandToRun { path: PathBuf::from("ssh"), args, cwd: None })
+}
+
+/// Zellij session on the remote host dedicated to one agent (#391).
+pub fn remote_session_name(agent_id: &str) -> String {
+    format!("lince-{}", agent_id)
+}
+
+/// Shell script executed on the remote host (via `ssh host sh -c`) to launch
+/// an agent inside its own detached Zellij session (#391). Fails loudly when
+/// the lince prerequisites are missing — installing lince on the host is the
+/// operator's only setup step.
+///
+/// The command itself is passed as `sh` positional args (`"$@"`), so no
+/// agent-specific value ever passes through shell quoting.
+pub fn remote_spawn_script(session: &str, sandboxed: bool) -> String {
+    let sb_guard = if sandboxed {
+        "command -v agent-sandbox >/dev/null 2>&1 || { echo '[error] agent-sandbox not found — install lince on the remote host first'; exit 1; }; "
+    } else {
+        ""
+    };
+    format!(
+        "command -v zellij >/dev/null 2>&1 || {{ echo '[error] zellij not found — install lince on the remote host first'; exit 1; }}; \
+         {sb_guard}\
+         zellij attach -b '{session}' >/dev/null 2>&1 || {{ echo '[error] could not create session {session} on the remote host'; exit 1; }}; \
+         ZELLIJ_SESSION_NAME='{session}' zellij action new-pane -- \"$@\"",
+        session = shell_escape(session),
+        sb_guard = sb_guard,
+    )
+}
+
+/// Shell script executed on the remote host to kill an agent's session.
+pub fn remote_kill_script(session: &str) -> String {
+    format!("zellij kill-session -t '{}' >/dev/null 2>&1", shell_escape(session))
+}
+
+/// Remote spawn (#391): same command line as a local agent, executed inside
+/// a detached Zellij session on `host` over SSH. The AgentInfo is returned
+/// immediately (status Unknown); the SSH launch runs async and its failure
+/// is reported in the `CMD_SPAWN_REMOTE` result handler.
+pub fn spawn_remote(
+    config: &DashboardConfig,
+    next_id: &mut u32,
+    agents: &[AgentInfo],
+    name: String,
+    agent_type: &str,
+    provider: Option<String>,
+    project_dir: String,
+    host: &str,
+    sandbox_level_override: Option<String>,
+    sandbox_backend_override: Option<SandboxBackend>,
+) -> Result<AgentInfo, String> {
+    let prepared = prepare_spawn(
+        config, next_id, agents, name, agent_type, provider.clone(), project_dir,
+        sandbox_level_override, sandbox_backend_override,
+    )?;
+    let sandboxed = config.agent_types.get(agent_type).map_or(true, |c| c.sandboxed);
+    let session = remote_session_name(&prepared.id);
+    let script = remote_spawn_script(&session, sandboxed);
+    let mut argv: Vec<&str> = vec![
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host,
+        "sh", "-c", &script, "sh",
+    ];
+    for arg in &prepared.args {
+        argv.push(arg);
+    }
+    crate::config::run_typed_command_with(
+        &argv,
+        crate::config::CMD_SPAWN_REMOTE,
+        &[("agent_id", &prepared.id), ("host", host)],
+    );
+
+    let started_at = now_secs();
+    Ok(AgentInfo {
+        id: prepared.id.clone(),
+        name: prepared.name,
+        agent_type: agent_type.to_string(),
+        provider,
+        project_dir: String::new(),
+        status: AgentStatus::Unknown,
+        pane_id: None,
+        started_at: if started_at > 0 { Some(started_at) } else { None },
+        last_error: None,
+        exit_code: None,
+        group: None,
+        last_polled_event: None,
+        sandbox_level: prepared.sandbox_level,
+        sandbox_backend: prepared.sandbox_backend,
+        transcript_path: None,
+        enforced: None,
+        icon: prepared.icon,
+        host: Some(host.to_string()),
+        remote_session: Some(session),
+        remote_agent_id: Some(prepared.id),
+        unreachable: false,
+    })
+}
+
+/// Kill a remote agent (#391): remove its dedicated Zellij session on the
+/// host. Fire-and-forget; a failure surfaces in the CMD_KILL_REMOTE handler.
+pub fn kill_remote(agent: &AgentInfo) {
+    let Some(host) = agent.host.as_deref() else { return };
+    let Some(session) = agent.remote_session.as_deref() else { return };
+    let script = remote_kill_script(session);
+    crate::config::run_typed_command_with(
+        &["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host, "sh", "-c", &script],
+        crate::config::CMD_KILL_REMOTE,
+        &[("agent_id", &agent.id), ("host", host)],
+    );
 }
 
 /// Stop an agent by closing its pane.
@@ -1109,38 +1258,28 @@ mod tests {
 #[cfg(test)]
 mod remote_agent_tests {
     use super::*;
-    use crate::config::RemoteAgentConfig;
+    use crate::types::SavedAgentInfo;
 
-    fn remote(name: &str, session: Option<&str>) -> RemoteAgentConfig {
+    fn saved(host: Option<&str>, session: Option<&str>) -> SavedAgentInfo {
         serde_json::from_value(serde_json::json!({
-            "name": name, "agent_type": "claude", "host": "me@workbox", "session": session
-        })).expect("valid remote config")
+            "id": "claude-3", "name": "wb-claude", "agent_type": "claude",
+            "project_dir": "~/work/app", "host": host, "remote_session": session
+        })).expect("valid saved agent")
     }
 
     #[test]
-    fn remote_agent_info_is_paneless_and_unknown() {
-        let info = remote_agent_info(&remote("wb-claude", Some("lince")));
-        assert_eq!(info.id, "remote-wb-claude");
+    fn remote_sessions_are_namespaced_per_agent() {
+        assert_eq!(remote_session_name("claude-3"), "lince-claude-3");
+    }
+
+    #[test]
+    fn restore_reattaches_to_the_existing_remote_session() {
+        let info = remote_agent_from_saved(&saved(Some("me@workbox"), Some("lince-claude-3")));
         assert_eq!(info.host.as_deref(), Some("me@workbox"));
-        assert_eq!(info.remote_session.as_deref(), Some("lince"));
-        assert_eq!(info.remote_agent_id, None, "defaults to the instance name");
-        assert!(info.pane_id.is_none());
+        assert_eq!(info.remote_session.as_deref(), Some("lince-claude-3"));
+        assert_eq!(info.remote_agent_id.as_deref(), Some("claude-3"));
         assert_eq!(info.status, AgentStatus::Unknown);
-    }
-
-    #[test]
-    fn remote_attach_command_attaches_to_the_named_session() {
-        let cmd = remote_attach_command(&remote_agent_info(&remote("wb-claude", Some("lince"))))
-            .expect("remote agent has an attach command");
-        assert_eq!(cmd.path, PathBuf::from("ssh"));
-        assert_eq!(cmd.args, vec!["-t", "me@workbox", "zellij", "attach", "lince"]);
-    }
-
-    #[test]
-    fn remote_attach_command_without_session_falls_back_to_a_plain_shell() {
-        let cmd = remote_attach_command(&remote_agent_info(&remote("wb-claude", None)))
-            .expect("remote agent has an attach command");
-        assert_eq!(cmd.args, vec!["-t", "me@workbox"]);
+        assert!(info.pane_id.is_none(), "no local pane is ever spawned");
     }
 
     #[test]
@@ -1148,6 +1287,29 @@ mod remote_agent_tests {
         let mut agent = crate::dashboard::preview_agent("local", AgentStatus::Running);
         assert!(remote_attach_command(&agent).is_none());
         agent.host = Some("me@workbox".into());
-        assert!(remote_attach_command(&agent).is_some());
+        agent.remote_session = Some("lince-claude-3".into());
+        let cmd = remote_attach_command(&agent).expect("remote agent has an attach command");
+        assert_eq!(cmd.path, PathBuf::from("ssh"));
+        assert_eq!(cmd.args, vec!["-t", "me@workbox", "zellij", "attach", "lince-claude-3"]);
+    }
+
+    #[test]
+    fn remote_spawn_script_guards_prerequisites_and_attaches() {
+        let script = remote_spawn_script("lince-claude-3", true);
+        // Prerequisite checks fail loudly — the operator's only setup step.
+        assert!(script.contains("command -v zellij"));
+        assert!(script.contains("agent-sandbox not found"));
+        // Detached background session + command pane via "$@" (no shell
+        // quoting hazards for agent-specific values).
+        assert!(script.contains("zellij attach -b 'lince-claude-3'"));
+        assert!(script.contains("zellij action new-pane -- \"$@\""));
+        // Unsandboxed types skip the agent-sandbox requirement.
+        assert!(!remote_spawn_script("lince-claude-3", false).contains("agent-sandbox"));
+    }
+
+    #[test]
+    fn remote_kill_script_targets_only_the_agent_session() {
+        let script = remote_kill_script("lince-claude-3");
+        assert_eq!(script, "zellij kill-session -t 'lince-claude-3' >/dev/null 2>&1");
     }
 }

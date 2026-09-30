@@ -256,35 +256,6 @@ pub struct ProviderDetails {
     pub env_unset: Vec<String>,
 }
 
-/// One remote agent instance monitored from another host (#391).
-///
-/// Declared in the dashboard config under `remote_agents = [...]`. The agent
-/// itself runs on `host` (launched there by the remote install, usually via
-/// the agent-sandbox wrapper); this dashboard only reads its status files
-/// over SSH and opens an interactive pane on demand.
-#[derive(Debug, Clone, Deserialize)]
-pub struct RemoteAgentConfig {
-    /// Dashboard-visible instance name (also the default remote id).
-    pub name: String,
-    /// Agent type key matching `agent_types` (e.g. "claude"). Drives the
-    /// event_map used to translate remote hook events into the 5 states.
-    #[serde(default = "default_remote_agent_type")]
-    pub agent_type: String,
-    /// SSH target (`user@machine` or alias from ~/.ssh/config).
-    pub host: String,
-    /// Zellij session name on the remote host for the Alt+o attach pane.
-    /// None → Alt+o opens a plain SSH shell.
-    #[serde(default)]
-    pub session: Option<String>,
-    /// LINCE_AGENT_ID the agent runs under on the remote host. None → `name`.
-    #[serde(default)]
-    pub agent_id: Option<String>,
-}
-
-fn default_remote_agent_type() -> String {
-    DEFAULT_AGENT_TYPE.to_string()
-}
-
 /// Main dashboard configuration, deserialized from the `[dashboard]` TOML table.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashboardConfig {
@@ -352,13 +323,6 @@ pub struct DashboardConfig {
     pub status_file_dir: String,
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
-    /// Remote agent instances monitored from another host (#391). Declared as
-    /// inline tables in the dashboard config, e.g.
-    /// `remote_agents = [{ name = "wb-claude", agent_type = "claude", host = "me@workbox", session = "lince" }]`.
-    /// Remote agents are monitored read-only (SSH polling of the remote
-    /// `.state` files); no local pane is spawned. See docs/remote-agents.md.
-    #[serde(default)]
-    pub remote_agents: Vec<RemoteAgentConfig>,
     /// Agent type configurations keyed by type name (e.g. "claude", "codex").
     /// Loaded asynchronously from `agents-defaults.toml`, then merged with
     /// any `[agents.<name>]` sections from the user's `config.toml`.
@@ -448,7 +412,6 @@ impl Default for DashboardConfig {
             status_method: StatusMethod::default(),
             status_file_dir: default_status_file_dir(),
             max_agents: default_max_agents(),
-            remote_agents: Vec::new(),
             agent_types: HashMap::new(),
             sandbox_backend: BackendConfig::default(),
             sandbox_colors: SandboxColors::default(),
@@ -615,6 +578,12 @@ pub fn poll_status_files_async(status_dir: &str) {
 /// Command type for async polling of remote agents' `.state` files over SSH (#391).
 pub const CMD_POLL_STATUS_REMOTE: &str = "poll_status_remote";
 
+/// Command type for the async SSH launch of a remote agent (#391).
+pub const CMD_SPAWN_REMOTE: &str = "spawn_remote";
+
+/// Command type for the async SSH kill of a remote agent's session (#391).
+pub const CMD_KILL_REMOTE: &str = "kill_remote";
+
 /// Kick off async polling of remote agents' `.state` files (#391).
 ///
 /// One SSH invocation per distinct host per tick (not one per agent): the
@@ -627,13 +596,17 @@ pub const CMD_POLL_STATUS_REMOTE: &str = "poll_status_remote";
 /// explicit Unreachable signal — the handler must not freeze the last status.
 pub fn poll_remote_status_async(hosts: &[String], status_dir: &str) {
     let dir = shell_escape(status_dir);
-    // Remote script: same loop as the local poll. `exit 0` swallows the
-    // unmatched-glob case so "reachable, no state files yet" is a clean
-    // empty output, not a failure.
+    // Remote script: same loop as the local poll, plus a `SESSIONS` line
+    // listing the live `lince-*` Zellij sessions — the remote agent's
+    // lifecycle signal (a vanished session = exited process). `exit 0`
+    // swallows the unmatched-glob case so "reachable, no state files yet"
+    // is a clean empty output, not a failure.
     let script = format!(
-        "for f in '{dir}'/*.state; do [ -f \"$f\" ] || exit 0; \
+        "for f in '{dir}'/*.state; do [ -f \"$f\" ] || break; \
          printf '%s\\t%s\\n' \"$(basename \"$f\" .state)\" \
-         \"$(tr -d '\\n' < \"$f\" 2>/dev/null)\"; done",
+         \"$(tr -d '\\n' < \"$f\" 2>/dev/null)\"; done; \
+         printf 'SESSIONS\\t%s\\n' \"$(zellij list-sessions -n 2>/dev/null | \
+         grep -oE '^lince-[^ ]*' | tr '\\n' ' ')\"",
         dir = dir
     );
     let remote = format!("sh -c '{}'", shell_escape(&script));
@@ -1433,43 +1406,6 @@ mod tests {
         let parsed = parse_agent_defaults(toml_text.as_bytes());
         let claude = parsed.get("claude").expect("claude should parse");
         assert_eq!(claude.providers, vec!["__discover__"]);
-    }
-
-    #[test]
-    fn remote_agents_parse_from_dashboard_config_with_defaults() {
-        // #391: remote instances live in the dashboard config as inline
-        // tables; unset fields fall back (agent_type → claude, ids → name).
-        let toml_text = r#"
-            [dashboard]
-            theme = "default"
-
-            [[dashboard.remote_agents]]
-            name = "wb-claude"
-            host = "me@workbox"
-            session = "lince"
-
-            [[dashboard.remote_agents]]
-            name = "srv-codex"
-            agent_type = "codex"
-            host = "server"
-            agent_id = "codex-3"
-        "#;
-        let (cfg, err) = DashboardConfig::parse_toml_for_view(toml_text, true);
-        assert!(err.is_none(), "parse error: {err:?}");
-        assert_eq!(cfg.remote_agents.len(), 2);
-        let wb = &cfg.remote_agents[0];
-        assert_eq!(wb.name, "wb-claude");
-        assert_eq!(wb.agent_type, "claude");
-        assert_eq!(wb.host, "me@workbox");
-        assert_eq!(wb.session.as_deref(), Some("lince"));
-        assert_eq!(wb.agent_id, None);
-        let srv = &cfg.remote_agents[1];
-        assert_eq!(srv.agent_type, "codex");
-        assert_eq!(srv.agent_id.as_deref(), Some("codex-3"));
-        assert_eq!(srv.session, None);
-        // Configs without the key keep the pre-#391 behavior.
-        let (plain, _) = DashboardConfig::parse_toml_for_view("[dashboard]\ntheme = \"default\"", true);
-        assert!(plain.remote_agents.is_empty());
     }
 
     /// A full resolve --json payload maps onto the plugin structures: base +

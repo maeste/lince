@@ -666,22 +666,6 @@ DASHBOARD_CONFIG_SCHEMA = {
                 "status_file_dir": _d(_STR, "Directory for per-agent .state files",
                                       "/tmp/lince-dashboard"),
                 "max_agents": _d(_INT, "Maximum concurrent agents", 9),
-                "remote_agents": _d(
-                    {"type": "array", "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": _d(_STR, "Dashboard-visible instance name (also the default remote agent id)"),
-                            "agent_type": _d(_STR, "Agent type key driving the event_map", "claude"),
-                            "host": _d(_STR, "SSH target (user@machine or an alias from ~/.ssh/config)"),
-                            "session": _d(_STR, "Zellij session name on the remote host for the Alt+o attach pane; unset opens a plain SSH shell"),
-                            "agent_id": _d(_STR, "LINCE_AGENT_ID the agent runs under on the remote host; defaults to name"),
-                        },
-                        "required": ["name", "host"],
-                    }},
-                    "Remote agent instances monitored over SSH from another host (#391): "
-                    "status via the same 5-state contract, interaction through 'ssh + "
-                    "zellij attach' (Alt+o). The agent runs on the remote host with its "
-                    "own lince install; see docs/remote-agents.md"),
                 "session_name": _d(_STR, "Named Zellij session for the launcher: attach-or-create on every 'lince' (#390 client mobility — agents survive the SSH client, relaunch reattaches). Empty string disables session management", "lince"),
                 "sandbox_backend": _d(_STR, "Global backend preference"),
                 "sandbox_colors": _d(_STR_MAP, "Color per sandbox level "

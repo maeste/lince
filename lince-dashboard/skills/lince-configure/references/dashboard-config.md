@@ -25,7 +25,6 @@ Dashboard behavior and defaults.
 | `status_method` | `"pipe"` \| `"file"` | `"pipe"` | Status detection method (file polling always runs; pipe is a fast-path) |
 | `status_file_dir` | str | `"/tmp/lince-dashboard"` | Directory for per-agent .state files |
 | `max_agents` | int | `9` | Maximum concurrent agents |
-| `remote_agents` | list[object] | — | Remote agent instances monitored over SSH from another host (#391): status via the same 5-state contract, interaction through 'ssh + zellij attach' (Alt+o). The agent runs on the remote host with its own lince install; see docs/remote-agents.md |
 | `session_name` | str | `"lince"` | Named Zellij session for the launcher: attach-or-create on every 'lince' (#390 client mobility — agents survive the SSH client, relaunch reattaches). Empty string disables session management |
 | `sandbox_backend` | str | — | Global backend preference |
 | `sandbox_colors` | table | — | Color per sandbox level (paranoid/normal/permissive/default) |

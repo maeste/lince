@@ -77,40 +77,6 @@
           "description": "Maximum concurrent agents",
           "default": 9
         },
-        "remote_agents": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "Dashboard-visible instance name (also the default remote agent id)"
-              },
-              "agent_type": {
-                "type": "string",
-                "description": "Agent type key driving the event_map",
-                "default": "claude"
-              },
-              "host": {
-                "type": "string",
-                "description": "SSH target (user@machine or an alias from ~/.ssh/config)"
-              },
-              "session": {
-                "type": "string",
-                "description": "Zellij session name on the remote host for the Alt+o attach pane; unset opens a plain SSH shell"
-              },
-              "agent_id": {
-                "type": "string",
-                "description": "LINCE_AGENT_ID the agent runs under on the remote host; defaults to name"
-              }
-            },
-            "required": [
-              "name",
-              "host"
-            ]
-          },
-          "description": "Remote agent instances monitored over SSH from another host (#391): status via the same 5-state contract, interaction through 'ssh + zellij attach' (Alt+o). The agent runs on the remote host with its own lince install; see docs/remote-agents.md"
-        },
         "session_name": {
           "type": "string",
           "description": "Named Zellij session for the launcher: attach-or-create on every 'lince' (#390 client mobility \u2014 agents survive the SSH client, relaunch reattaches). Empty string disables session management",
