@@ -601,10 +601,6 @@ impl ZellijPlugin for State {
                             if self.config.provider_details_by_agent.is_empty() {
                                 self.config.provider_details_by_agent = prev_details;
                             }
-                            // Reconcile declared remote agents (#391). Deliberately
-                            // NOT preserved-when-empty like the three above: an
-                            // entry the user removed from config must disappear.
-                            self.sync_remote_agents();
                         }
                         // Mark as loaded so timer doesn't retry
                         self.config_mtime = 1;
@@ -874,6 +870,35 @@ impl ZellijPlugin for State {
                     Some(config::CMD_POLL_STATUS_REMOTE) => {
                         let host = context.get("host").cloned().unwrap_or_default();
                         self.apply_remote_poll(&host, exit_code, &String::from_utf8_lossy(&stdout));
+                        true
+                    }
+                    Some(config::CMD_SPAWN_REMOTE) => {
+                        // The agent entered the list at spawn time; a failed
+                        // launch removes the placeholder and reports why.
+                        let id = context.get("agent_id").cloned().unwrap_or_default();
+                        let host = context.get("host").cloned().unwrap_or_default();
+                        if exit_code != Some(0) {
+                            let err = String::from_utf8_lossy(&stderr);
+                            let out = String::from_utf8_lossy(&stdout);
+                            let detail = [out.trim(), err.trim()].into_iter()
+                                .find(|s| !s.is_empty())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| "unknown error".to_string());
+                            self.agents.retain(|a| a.id != id);
+                            self.status_message = Some(format!("{}: launch failed — {}", host, detail));
+                        } else {
+                            self.status_message = Some(format!("Launched on {}", host));
+                        }
+                        set_timeout(5.0);
+                        true
+                    }
+                    Some(config::CMD_KILL_REMOTE) => {
+                        if exit_code != Some(0) {
+                            let id = context.get("agent_id").cloned().unwrap_or_default();
+                            let host = context.get("host").cloned().unwrap_or_default();
+                            self.status_message = Some(format!("Kill failed on {}: {}", host, id));
+                            set_timeout(5.0);
+                        }
                         true
                     }
                     Some(cmd_type) if cmd_type == config::CMD_EXTRACT_TRANSCRIPT => {
@@ -1462,6 +1487,8 @@ impl State {
                     project_dir_index: 0,
                     project_dir_filter: String::new(),
                     project_dir_mode,
+                    remote: false,
+                    remote_host: String::new(),
                 };
                 state.step = state.active_steps().into_iter().next().unwrap_or(WizardStep::Name);
                 self.wizard = Some(state);
@@ -1848,6 +1875,39 @@ impl State {
                 }
                 _ => {}
             },
+            // Location (#391): local vs remote SSH host. The last choice
+            // before Confirm — everything else in the flow is identical.
+            WizardStep::Location => match bare {
+                BareKey::Enter | BareKey::Tab => {
+                    // A remote launch needs a target; block the empty case
+                    // instead of failing three steps later.
+                    if !wizard.remote || !wizard.remote_host.trim().is_empty() {
+                        if let Some(next) = wizard.next_step() {
+                            wizard.step = next;
+                        }
+                    }
+                }
+                BareKey::Backspace => {
+                    if wizard.remote && !wizard.remote_host.is_empty() {
+                        wizard.remote_host.pop();
+                    } else if let Some(prev) = wizard.prev_step() {
+                        wizard.step = prev;
+                    }
+                }
+                BareKey::Up | BareKey::Char('k') | BareKey::Left => {
+                    wizard.remote = false;
+                }
+                BareKey::Down | BareKey::Char('j') | BareKey::Right => {
+                    wizard.remote = true;
+                }
+                BareKey::Char(c) => {
+                    // Any keystroke while Remote is selected types the host —
+                    // one step, no mode switching.
+                    wizard.remote = true;
+                    wizard.remote_host.push(c);
+                }
+                _ => {}
+            },
             // Dual-mode (#127): a navigable recents picker (List) with a
             // free-text escape hatch (Input). When there are no recents the
             // wizard opens straight in Input mode (legacy behavior intact).
@@ -2068,6 +2128,12 @@ impl State {
                         wizard.selected_sandbox_level().map(|s| s.to_string())
                     };
                     let sandbox_backend = backend_choice;
+                    // Location step (#391): Some(host) spawns over SSH.
+                    let remote_host = if wizard.remote {
+                        Some(wizard.remote_host.trim().to_string())
+                    } else {
+                        None
+                    };
                     // gh#62: `!` makes these choices the active `N` quick-spawn
                     // defaults for the rest of the session and persists them in
                     // `.lince-dashboard` on the next `Q`.
@@ -2089,6 +2155,7 @@ impl State {
                         project_dir,
                         sandbox_level,
                         sandbox_backend,
+                        remote_host,
                     );
                     if save_defaults {
                         // Append the defaults-saved note to whatever spawn_wizard_agent
@@ -2122,7 +2189,40 @@ impl State {
         project_dir: String,
         sandbox_level_override: Option<String>,
         sandbox_backend_override: Option<sandbox_backend::SandboxBackend>,
+        host: Option<String>,
     ) {
+        // Remote (#391): same launch command, executed inside a detached
+        // Zellij session on the host over SSH — invisible to the operator
+        // beyond a status line. The agent enters the list immediately;
+        // a failed launch (no lince on the host, unreachable) is reported
+        // by the CMD_SPAWN_REMOTE result handler.
+        if let Some(host) = host {
+            match agent::spawn_remote(
+                &self.config,
+                &mut self.next_agent_id,
+                &self.agents,
+                name,
+                agent_type,
+                provider,
+                project_dir,
+                &host,
+                sandbox_level_override,
+                sandbox_backend_override,
+            ) {
+                Ok(info) => {
+                    self.status_message = Some(format!("Launching {} on {}…", info.name, host));
+                    self.agents.push(info);
+                    self.focus_agent_by_index(self.agents.len() - 1);
+                    self.sort_agents_by_dir();
+                    set_timeout(3.0);
+                }
+                Err(e) => {
+                    self.status_message = Some(e);
+                    set_timeout(5.0);
+                }
+            }
+            return;
+        }
         match agent::spawn_agent_custom(
             &self.config,
             &mut self.next_agent_id,
@@ -2227,34 +2327,6 @@ impl State {
     /// Stop and remove the selected agent. A global kill keeps work flowing by
     /// focusing the next entry when one exists; list-local removal stays in the
     /// dashboard so the user can continue managing the list.
-    /// Reconcile the agent list with `[dashboard].remote_agents` (#391):
-    /// add newly declared instances, drop declarations that disappeared.
-    /// Identity is (name, host); local agents are never touched, and remote
-    /// instances keep their polled state across config reloads.
-    fn sync_remote_agents(&mut self) {
-        let declared = &self.config.remote_agents;
-        let still_declared = |a: &AgentInfo| {
-            a.host.as_ref().map_or(true, |h| {
-                declared.iter().any(|r| &r.name == &a.name && &r.host == h)
-            })
-        };
-        let before = self.agents.len();
-        self.agents.retain(still_declared);
-        let mut changed = before != self.agents.len();
-        for remote in declared {
-            if self.agents.iter().any(|a| {
-                a.host.as_deref() == Some(remote.host.as_str()) && a.name == remote.name
-            }) {
-                continue;
-            }
-            self.agents.push(agent::remote_agent_info(remote));
-            changed = true;
-        }
-        if changed {
-            self.sort_agents_by_dir();
-        }
-    }
-
     /// Apply one remote-host poll result (#391).
     ///
     /// Nonzero exit is the Unreachable signal: remote agents on that host
@@ -2262,7 +2334,8 @@ impl State {
     /// instead of freezing their last status, and `last_polled_event` is
     /// cleared so the first event after recovery is never swallowed by
     /// change detection. A zero exit maps events through the same
-    /// event_map contract as the local poll.
+    /// event_map contract as the local poll, and a vanished `lince-*`
+    /// session marks the agent Stopped once it had produced events.
     fn apply_remote_poll(&mut self, host: &str, exit_code: Option<i32>, stdout: &str) {
         let indexes: Vec<(usize, String)> = self.agents.iter().enumerate()
             .filter(|(_, a)| a.host.as_deref() == Some(host))
@@ -2287,10 +2360,13 @@ impl State {
             return;
         }
         let mut events: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut sessions: Vec<&str> = Vec::new();
         for line in stdout.lines() {
-            if let Some((key, event)) = line.split_once('\t') {
-                if !event.is_empty() {
-                    events.insert(key, event);
+            if let Some((key, value)) = line.split_once('\t') {
+                if key == "SESSIONS" {
+                    sessions.extend(value.split_whitespace());
+                } else if !value.is_empty() {
+                    events.insert(key, value);
                 }
             }
         }
@@ -2301,33 +2377,47 @@ impl State {
                 let suffix = format!("-{}", remote_id);
                 events.iter().find(|(k, _)| k.ends_with(&suffix)).map(|(_, v)| *v)
             });
-            let a = &mut self.agents[i];
-            a.unreachable = false;
-            match event {
-                // Reachable but no state file (agent not launched yet, or gone).
-                None => {
-                    if a.status != AgentStatus::Unknown {
-                        a.status = AgentStatus::Unknown;
-                        a.last_polled_event = None;
+            {
+                let a = &mut self.agents[i];
+                a.unreachable = false;
+                match event {
+                    // Reachable but no state file (agent not launched yet, or gone).
+                    None => {
+                        if a.status != AgentStatus::Unknown {
+                            a.status = AgentStatus::Unknown;
+                            a.last_polled_event = None;
+                        }
+                    }
+                    Some(event) if a.last_polled_event.as_deref() == Some(event) => {}
+                    Some(event) => {
+                        a.last_polled_event = Some(event.to_string());
+                        let msg = StatusMessage {
+                            agent_id: a.id.clone(),
+                            event: event.to_string(),
+                            timestamp: None,
+                            error: None,
+                            session_id: None,
+                            transcript_path: None,
+                        };
+                        let new_status = msg.to_agent_status(
+                            self.config.event_map_for(&a.agent_type),
+                        );
+                        if a.status != new_status {
+                            a.status = new_status;
+                        }
                     }
                 }
-                Some(event) if a.last_polled_event.as_deref() == Some(event) => {}
-                Some(event) => {
-                    a.last_polled_event = Some(event.to_string());
-                    let msg = StatusMessage {
-                        agent_id: a.id.clone(),
-                        event: event.to_string(),
-                        timestamp: None,
-                        error: None,
-                        session_id: None,
-                        transcript_path: None,
-                    };
-                    let new_status = msg.to_agent_status(
-                        self.config.event_map_for(&a.agent_type),
-                    );
-                    if a.status != new_status {
-                        a.status = new_status;
-                    }
+            }
+            // Lifecycle: once this agent has produced events (status known),
+            // a vanished session means its process exited on the host.
+            if let Some(session) = self.agents[i].remote_session.clone() {
+                let a = &mut self.agents[i];
+                if !sessions.contains(&session.as_str())
+                    && a.status != AgentStatus::Unknown
+                    && a.status != AgentStatus::Stopped {
+                    a.status = AgentStatus::Stopped;
+                    a.exit_code = None;
+                    a.last_polled_event = None;
                 }
             }
         }
@@ -2336,23 +2426,19 @@ impl State {
     fn kill_selected_agent(&mut self, focus_successor: bool) {
         if self.selected_index >= self.agents.len() { return; }
 
-        // Remote agents are config-derived (#391): killing here would just be
-        // undone by the next sync. Point the operator at the config instead.
-        if let Some(agent) = self.agents.get(self.selected_index) {
-            if let Some(host) = &agent.host {
-                self.status_message = Some(format!(
-                    "{} runs on {} — remove it from [dashboard].remote_agents to detach",
-                    agent.name, host
-                ));
-                set_timeout(3.0);
-                return;
-            }
-        }
-
         let agent = self.agents.remove(self.selected_index);
         let name = agent.name.clone();
         let was_focused = self.focused_agent.as_deref() == Some(agent.id.as_str());
-        agent::stop_agent(&agent);
+        if agent.host.is_some() {
+            // Same lifecycle as local (#391): the agent's dedicated Zellij
+            // session dies on its host, over SSH.
+            agent::kill_remote(&agent);
+            self.status_message = Some(format!(
+                "Killing {name} on {}…", agent.host.as_deref().unwrap_or("?")
+            ));
+        } else {
+            agent::stop_agent(&agent);
+        }
 
         if was_focused {
             self.focused_agent = None;
@@ -2781,9 +2867,8 @@ impl State {
 
         let saved: Vec<SavedAgentInfo> = self.agents.iter()
             .filter(|a| a.status != AgentStatus::Stopped)
-            // Remote agents are config-derived (#391): sync recreates them,
-            // restoring would try to spawn them locally.
-            .filter(|a| a.host.is_none())
+            // Remote agents persist too (#391): restore reattaches to their
+            // existing session on the host instead of spawning a duplicate.
             .map(SavedAgentInfo::from)
             .collect();
 
@@ -2803,6 +2888,14 @@ impl State {
     fn restore_agents(&mut self, saved_agents: Vec<SavedAgentInfo>) {
         let mut spawned = 0u32;
         for saved in saved_agents {
+            if saved.host.is_some() {
+                // Remote agents outlive the dashboard (#391): reattach to
+                // their existing session on the host instead of spawning a
+                // duplicate. Status re-converges from the next polls.
+                self.agents.push(agent::remote_agent_from_saved(&saved));
+                spawned += 1;
+                continue;
+            }
             match agent::spawn_agent_custom(
                 &self.config,
                 &mut self.next_agent_id,
@@ -3502,61 +3595,19 @@ impl State {
 #[cfg(test)]
 mod remote_agents_tests {
     use super::*;
-    use crate::config::RemoteAgentConfig;
+    use crate::types::SavedAgentInfo;
 
-    fn remote_config(name: &str, host: &str) -> RemoteAgentConfig {
+    fn saved(host: Option<&str>, session: Option<&str>) -> SavedAgentInfo {
         serde_json::from_value(serde_json::json!({
-            "name": name, "agent_type": "claude", "host": host, "session": "lince"
-        })).expect("valid remote config")
-    }
-
-    #[test]
-    fn sync_adds_declared_remote_agents_without_touching_local_ones() {
-        let mut state = State::default();
-        state.agents = vec![dashboard::preview_agent("local-1", AgentStatus::Running)];
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
-        assert_eq!(state.agents.len(), 2);
-        let remote = state.agents.iter().find(|a| a.name == "wb-claude").expect("remote added");
-        assert_eq!(remote.host.as_deref(), Some("me@workbox"));
-        assert_eq!(remote.remote_session.as_deref(), Some("lince"));
-        assert_eq!(remote.id, "remote-wb-claude");
-        assert!(remote.pane_id.is_none());
-        assert_eq!(remote.status, AgentStatus::Unknown);
-        // Idempotent: a second sync must not duplicate.
-        state.sync_remote_agents();
-        assert_eq!(state.agents.len(), 2);
-    }
-
-    #[test]
-    fn sync_drops_remote_agents_removed_from_config_but_keeps_local() {
-        let mut state = State::default();
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
-        state.config.remote_agents = vec![remote_config("other", "me@server")];
-        state.sync_remote_agents();
-        assert_eq!(state.agents.len(), 1);
-        assert_eq!(state.agents[0].name, "other");
-    }
-
-    #[test]
-    fn sync_preserves_polled_remote_state_across_reload() {
-        let mut state = State::default();
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
-        state.agents[0].status = AgentStatus::PermissionRequired;
-        state.agents[0].last_polled_event = Some("permission".into());
-        // Config reload with the same declaration must not reset the agent.
-        state.sync_remote_agents();
-        assert_eq!(state.agents[0].status, AgentStatus::PermissionRequired);
-        assert_eq!(state.agents[0].last_polled_event.as_deref(), Some("permission"));
+            "id": "claude-3", "name": "wb-claude", "agent_type": "claude",
+            "project_dir": "~/work/app", "host": host, "remote_session": session
+        })).expect("valid saved agent")
     }
 
     #[test]
     fn unreachable_poll_degrades_explicitly_and_never_freezes() {
         let mut state = State::default();
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
+        state.agents = vec![agent::remote_agent_from_saved(&saved(Some("me@workbox"), Some("lince-claude-3")))];
         state.agents[0].status = AgentStatus::Running;
         state.agents[0].last_polled_event = Some("running".into());
         // Host down: exit code != 0 → Unreachable, stale status dropped.
@@ -3567,7 +3618,7 @@ mod remote_agents_tests {
         assert_eq!(state.agents[0].last_polled_event, None);
         // Recovery: the same event must be re-applied (not swallowed by
         // change detection after the reset above).
-        state.apply_remote_poll("me@workbox", Some(0), "wb-claude\trunning\n");
+        state.apply_remote_poll("me@workbox", Some(0), "claude-3\trunning\nSESSIONS\tlince-claude-3\n");
         assert_eq!(state.agents[0].status, AgentStatus::Running);
         assert!(!state.agents[0].unreachable);
     }
@@ -3575,23 +3626,21 @@ mod remote_agents_tests {
     #[test]
     fn remote_events_map_through_the_same_contract() {
         let mut state = State::default();
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
+        state.agents = vec![agent::remote_agent_from_saved(&saved(Some("me@workbox"), Some("lince-claude-3")))];
         // Wrapper-shaped basename `<pipe>-<agent_id>` matches too.
-        state.apply_remote_poll("me@workbox", Some(0), "claude-wb-claude\tpermission\n");
+        state.apply_remote_poll("me@workbox", Some(0), "claude-claude-3\tpermission\nSESSIONS\tlince-claude-3\n");
         assert_eq!(state.agents[0].status, AgentStatus::PermissionRequired);
-        state.apply_remote_poll("me@workbox", Some(0), "claude-wb-claude\trunning\n");
+        state.apply_remote_poll("me@workbox", Some(0), "claude-claude-3\trunning\nSESSIONS\tlince-claude-3\n");
         assert_eq!(state.agents[0].status, AgentStatus::Running);
         // Other hosts' output never crosses.
-        state.apply_remote_poll("me@server", Some(0), "wb-claude\tinput\n");
+        state.apply_remote_poll("me@server", Some(0), "claude-3\tinput\n");
         assert_eq!(state.agents[0].status, AgentStatus::Running);
     }
 
     #[test]
     fn reachable_host_without_state_files_is_unknown_not_stale() {
         let mut state = State::default();
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
+        state.agents = vec![agent::remote_agent_from_saved(&saved(Some("me@workbox"), Some("lince-claude-3")))];
         state.agents[0].status = AgentStatus::Running;
         state.apply_remote_poll("me@workbox", Some(0), "");
         assert_eq!(state.agents[0].status, AgentStatus::Unknown);
@@ -3599,28 +3648,64 @@ mod remote_agents_tests {
     }
 
     #[test]
-    fn kill_selected_refuses_remote_agents_with_a_pointer_to_config() {
+    fn vanished_session_stops_an_agent_that_had_produced_events() {
         let mut state = State::default();
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
-        state.selected_index = 0;
-        state.kill_selected_agent(true);
-        assert_eq!(state.agents.len(), 1, "remote agent must not be removed");
-        assert!(state.status_message.as_deref().unwrap_or("").contains("remote_agents"));
+        state.agents = vec![agent::remote_agent_from_saved(&saved(Some("me@workbox"), Some("lince-claude-3")))];
+        // Before the first event: session absence is honest Unknown, not a
+        // premature Stopped (the spawn race must not false-positive).
+        state.apply_remote_poll("me@workbox", Some(0), "SESSIONS\t\n");
+        assert_eq!(state.agents[0].status, AgentStatus::Unknown);
+        // Agent reported events, then its session disappears → exited.
+        state.agents[0].status = AgentStatus::Running;
+        state.apply_remote_poll("me@workbox", Some(0), "claude-3\trunning\nSESSIONS\tlince-other\n");
+        assert_eq!(state.agents[0].status, AgentStatus::Stopped);
+        // A live session keeps the event-mapped status.
+        state.agents[0].status = AgentStatus::Unknown;
+        state.apply_remote_poll("me@workbox", Some(0), "claude-3\tinput\nSESSIONS\tlince-claude-3 lince-other\n");
+        assert_eq!(state.agents[0].status, AgentStatus::WaitingForInput);
     }
 
     #[test]
-    fn save_state_excludes_remote_agents() {
+    fn kill_selected_removes_remote_agents_like_local_ones() {
         let mut state = State::default();
-        state.config.remote_agents = vec![remote_config("wb-claude", "me@workbox")];
-        state.sync_remote_agents();
-        state.agents.push(dashboard::preview_agent("local-1", AgentStatus::Running));
-        // Mirror the save_and_quit filter: remote agents must not persist.
-        let saved: Vec<SavedAgentInfo> = state.agents.iter()
-            .filter(|a| a.status != AgentStatus::Stopped && a.host.is_none())
+        state.agents = vec![
+            agent::remote_agent_from_saved(&saved(Some("me@workbox"), Some("lince-claude-3"))),
+            dashboard::preview_agent("local-1", AgentStatus::Running),
+        ];
+        state.selected_index = 0;
+        state.kill_selected_agent(true);
+        assert_eq!(state.agents.len(), 1, "remote agent leaves the list like a local one");
+        assert_eq!(state.agents[0].name, "local-1");
+    }
+
+    #[test]
+    fn restore_reattaches_remote_agents_and_spawns_local_ones() {
+        let mut state = State::default();
+        state.agent_types_loaded = true;
+        state.restore_agents(vec![
+            saved(Some("me@workbox"), Some("lince-claude-3")),
+        ]);
+        assert_eq!(state.agents.len(), 1);
+        assert_eq!(state.agents[0].host.as_deref(), Some("me@workbox"));
+        assert_eq!(state.agents[0].remote_session.as_deref(), Some("lince-claude-3"));
+        assert!(state.agents[0].pane_id.is_none(), "no local spawn for remote agents");
+    }
+
+    #[test]
+    fn save_state_includes_remote_agents_with_their_identity() {
+        let mut state = State::default();
+        state.agents = vec![
+            agent::remote_agent_from_saved(&saved(Some("me@workbox"), Some("lince-claude-3"))),
+            dashboard::preview_agent("local-1", AgentStatus::Running),
+        ];
+        // Mirror the save_and_quit filter: remote agents persist WITH their
+        // host/session so restore reattaches instead of duplicating.
+        let saved_agents: Vec<SavedAgentInfo> = state.agents.iter()
+            .filter(|a| a.status != AgentStatus::Stopped)
             .map(SavedAgentInfo::from)
             .collect();
-        assert_eq!(saved.len(), 1);
-        assert_eq!(saved[0].name, "local-1");
+        assert_eq!(saved_agents.len(), 2);
+        assert_eq!(saved_agents[0].host.as_deref(), Some("me@workbox"));
+        assert_eq!(saved_agents[0].id.as_deref(), Some("claude-3"));
     }
 }
