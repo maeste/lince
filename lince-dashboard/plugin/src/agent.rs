@@ -797,6 +797,12 @@ pub fn remote_session_name(agent_id: &str) -> String {
 ///
 /// The command itself is passed as `sh` positional args (`"$@"`), so no
 /// agent-specific value ever passes through shell quoting.
+///
+/// PATH is prefixed with `~/.local/bin` first thing: lince installs its
+/// binaries there, and a non-interactive `ssh host sh -c` does not source
+/// `.profile`, so the stock PATH does not include it.
+pub const REMOTE_PATH_PREFIX: &str = "PATH=\"$HOME/.local/bin:$PATH\"; export PATH; ";
+
 pub fn remote_spawn_script(session: &str, sandboxed: bool) -> String {
     let sb_guard = if sandboxed {
         "command -v agent-sandbox >/dev/null 2>&1 || { echo '[error] agent-sandbox not found — install lince on the remote host first'; exit 1; }; "
@@ -804,18 +810,24 @@ pub fn remote_spawn_script(session: &str, sandboxed: bool) -> String {
         ""
     };
     format!(
-        "command -v zellij >/dev/null 2>&1 || {{ echo '[error] zellij not found — install lince on the remote host first'; exit 1; }}; \
+        "{path_guard}\
+         command -v zellij >/dev/null 2>&1 || {{ echo '[error] zellij not found — install lince on the remote host first'; exit 1; }}; \
          {sb_guard}\
          zellij attach -b '{session}' >/dev/null 2>&1 || {{ echo '[error] could not create session {session} on the remote host'; exit 1; }}; \
          ZELLIJ_SESSION_NAME='{session}' zellij action new-pane -- \"$@\"",
-        session = shell_escape(session),
+        path_guard = REMOTE_PATH_PREFIX,
         sb_guard = sb_guard,
+        session = shell_escape(session),
     )
 }
 
 /// Shell script executed on the remote host to kill an agent's session.
 pub fn remote_kill_script(session: &str) -> String {
-    format!("zellij kill-session -t '{}' >/dev/null 2>&1", shell_escape(session))
+    format!(
+        "{path_guard}zellij kill-session -t '{session}' >/dev/null 2>&1",
+        path_guard = REMOTE_PATH_PREFIX,
+        session = shell_escape(session),
+    )
 }
 
 /// Remote spawn (#391): same command line as a local agent, executed inside
@@ -1308,8 +1320,16 @@ mod remote_agent_tests {
     }
 
     #[test]
-    fn remote_kill_script_targets_only_the_agent_session() {
-        let script = remote_kill_script("lince-claude-3");
-        assert_eq!(script, "zellij kill-session -t 'lince-claude-3' >/dev/null 2>&1");
+    fn remote_scripts_prefix_home_local_bin_to_path() {
+        // A non-interactive `ssh host sh -c` does not source .profile, so the
+        // stock PATH lacks ~/.local/bin — where lince installs every binary.
+        // Found live on hermes: the spawn guard failed with "zellij not
+        // found" although zellij was installed at ~/.local/bin/zellij.
+        assert!(remote_spawn_script("lince-x", true).starts_with(
+            "PATH=\"$HOME/.local/bin:$PATH\"; export PATH; "));
+        assert_eq!(
+            remote_kill_script("lince-claude-3"),
+            "PATH=\"$HOME/.local/bin:$PATH\"; export PATH; zellij kill-session -t 'lince-claude-3' >/dev/null 2>&1",
+        );
     }
 }
