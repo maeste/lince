@@ -8,6 +8,26 @@ launcher = runpy.run_path(str(ROOT / "lince-dashboard-launch"))
 
 
 class SessionLaunchTests(unittest.TestCase):
+    def test_create_argv_uses_new_session_with_layout(self):
+        # Zellij >= 0.45 regression: "--session X --layout L" ADDS L as a tab
+        # to the existing session X (failing "There is no active session!"
+        # when none exists) instead of creating X. Regression found live on
+        # 0.45.1 — the create path must use --new-session-with-layout.
+        build = launcher["build_create_argv"]
+        from pathlib import Path
+        argv = build(Path("/tmp/l.kdl"), Path("/cfg"), Path("/conf.kdl"), "lince", [])
+        self.assertEqual(argv[0], "zellij")
+        self.assertIn("--session", argv)
+        self.assertIn("--new-session-with-layout", argv)
+        self.assertNotIn("--layout", argv)
+        # Without session management, the plain create form is fine.
+        argv = build(Path("/tmp/l.kdl"), Path("/cfg"), Path("/conf.kdl"), "", [])
+        self.assertIn("--layout", argv)
+        self.assertNotIn("--new-session-with-layout", argv)
+        # Extra passthrough args survive in both shapes.
+        argv = build(Path("/tmp/l.kdl"), Path("/cfg"), Path("/conf.kdl"), "lince", ["--debug"])
+        self.assertEqual(argv[-1], "--debug")
+
     def test_attach_when_exact_session_exists_live_or_exited(self):
         resolve = launcher["resolve_session_action"]
         listing = "lince [Created 2h 3m ago]\nscratch [Created 5s ago]\n"

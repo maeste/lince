@@ -22,6 +22,25 @@ def resolve_session_action(session: str, listing: str) -> str:
     return "attach" if session in names else "create"
 
 
+def build_create_argv(layout: Path, config_dir: Path, config: Path,
+                      session: str | None, extra: list[str]) -> list[str]:
+    """Argv for creating a fresh dashboard session.
+
+    Zellij >= 0.45 turns `--session X --layout L` into "connect to the
+    EXISTING session X and add L as a tab" — with no sessions alive it
+    fails with "There is no active session!" instead of creating anything.
+    `--new-session-with-layout` (present since 0.44, the version floor our
+    installer enforces is 0.45.1) is the create-a-named-session path.
+    """
+    argv = ["zellij"]
+    if session:
+        argv += ["--session", session, "--new-session-with-layout", str(layout)]
+    else:
+        argv += ["--layout", str(layout)]
+    argv += ["--config-dir", str(config_dir), "--config", str(config), *extra]
+    return argv
+
+
 
 def sidebar_layout(text: str, width: int) -> str:
     if not isinstance(width, int) or isinstance(width, bool) or not 10 <= width <= 60:
@@ -154,11 +173,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="lince-layout-") as directory:
         layout = Path(directory) / "dashboard.kdl"
         layout.write_text(text)
-        argv = ["zellij"]
-        if session:
-            argv += ["--session", session]
-        argv += ["--config-dir", str(source.parent.parent), "--config", str(args.zellij_config or managed_config),
-                 "--layout", str(layout), *zellij_args]
+        argv = build_create_argv(layout, source.parent.parent,
+                                 args.zellij_config or managed_config, session, zellij_args)
         return subprocess.call(argv)
 
 
