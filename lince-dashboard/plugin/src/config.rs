@@ -598,15 +598,19 @@ pub fn poll_remote_status_async(hosts: &[String], status_dir: &str) {
     let dir = shell_escape(status_dir);
     // Remote script: same loop as the local poll, plus a `SESSIONS` line
     // listing the live `lince-*` Zellij sessions — the remote agent's
-    // lifecycle signal (a vanished session = exited process). `exit 0`
-    // swallows the unmatched-glob case so "reachable, no state files yet"
-    // is a clean empty output, not a failure.
+    // lifecycle signal (a vanished session = exited process). `exit 0` /
+    // `break` swallow the unmatched-glob case so "reachable, no state files
+    // yet" is a clean empty output, not a failure. PATH is prefixed with
+    // ~/.local/bin (lince's install location): a non-interactive ssh command
+    // shell does not source .profile, so the stock PATH omits it.
     let script = format!(
-        "for f in '{dir}'/*.state; do [ -f \"$f\" ] || break; \
+        "{path_guard}\
+         for f in '{dir}'/*.state; do [ -f \"$f\" ] || break; \
          printf '%s\\t%s\\n' \"$(basename \"$f\" .state)\" \
          \"$(tr -d '\\n' < \"$f\" 2>/dev/null)\"; done; \
          printf 'SESSIONS\\t%s\\n' \"$(zellij list-sessions -n 2>/dev/null | \
          grep -oE '^lince-[^ ]*' | tr '\\n' ' ')\"",
+        path_guard = crate::agent::REMOTE_PATH_PREFIX,
         dir = dir
     );
     let remote = format!("sh -c '{}'", shell_escape(&script));
